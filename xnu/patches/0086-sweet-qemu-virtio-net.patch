@@ -32,10 +32,10 @@ index 2aa4d37..45f6792 100644
  
 diff --git a/bsd/dev/sweet_vnet.c b/bsd/dev/sweet_vnet.c
 new file mode 100644
-index 0000000..72f1708
+index 0000000..f2c749f
 --- /dev/null
 +++ b/bsd/dev/sweet_vnet.c
-@@ -0,0 +1,466 @@
+@@ -0,0 +1,468 @@
 +/*
 + * SWEET virtio-net for QEMU's virt board: an Ethernet interface (en9)
 + * without the phone's Wi-Fi.
@@ -264,9 +264,11 @@ index 0000000..72f1708
 +		}
 +		if (vn.ifp != NULL && len >= ETHER_HDR_LEN && len <= ETHER_MAX_LEN) {
 +			mbuf_t m = NULL;
-+			if (mbuf_allocpacket(MBUF_DONTWAIT, len, NULL, &m) == 0 &&
-+			    mbuf_copyback(m, 0, len, frame, MBUF_DONTWAIT) == 0) {
++			if (mbuf_getpacket(MBUF_DONTWAIT, &m) == 0 && mbuf_maxlen(m) >= len) {
 +				struct ifnet_stat_increment_param stats = {};
++				memcpy(mbuf_data(m), frame, len);
++				mbuf_setlen(m, len);
++				mbuf_pkthdr_setlen(m, len);
 +				void *frame_header = mbuf_data(m);
 +				mbuf_pkthdr_setrcvif(m, vn.ifp);
 +				mbuf_pkthdr_setheader(m, frame_header);
