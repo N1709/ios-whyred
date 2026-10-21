@@ -32,10 +32,10 @@ index 2aa4d37..45f6792 100644
  
 diff --git a/bsd/dev/sweet_vnet.c b/bsd/dev/sweet_vnet.c
 new file mode 100644
-index 0000000..f2c749f
+index 0000000..1e79e9e
 --- /dev/null
 +++ b/bsd/dev/sweet_vnet.c
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,490 @@
 +/*
 + * SWEET virtio-net for QEMU's virt board: an Ethernet interface (en9)
 + * without the phone's Wi-Fi.
@@ -44,7 +44,8 @@ index 0000000..f2c749f
 + * window is polled by one thread (no interrupt is wired). en9 gets QEMU user
 + * networking's fixed setup: 10.0.2.15/24, default route via 10.0.2.2 (DNS
 + * is 10.0.2.3). Run QEMU with -device virtio-net-device,netdev=... and
-+ * -global virtio-mmio.force-legacy=false.
++ * -global virtio-mmio.force-legacy=false. The calendar clock is set from the
++ * board's PL031 so TLS certificates validate.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +#include <sys/param.h>
@@ -71,6 +72,8 @@ index 0000000..f2c749f
 +#include <netinet/in.h>
 +
 +extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern void clock_set_calendar_microtime(clock_sec_t secs, clock_usec_t microsecs);
 +extern int rtrequest(int, struct sockaddr *, struct sockaddr *,
 +    struct sockaddr *, int, struct rtentry **);
 +void sweet_vnet_init(vm_offset_t window, uint64_t window_size);
@@ -463,6 +466,24 @@ index 0000000..f2c749f
 +	}
 +}
 +
++/* The phone's RTC is in the PMIC; on QEMU's virt board it is a PL031. */
++#define QEMU_PL031              0x09010000
++#define PL031_DR                0x000
++
++static void
++vn_set_clock(void)
++{
++	vm_offset_t rtc = ml_io_map(QEMU_PL031, PAGE_SIZE);
++	if (!rtc) {
++		return;
++	}
++	uint32_t secs = *(volatile uint32_t *)(rtc + PL031_DR);
++	if (secs > 1600000000u) {
++		clock_set_calendar_microtime(secs, 0);
++		printf("SWEET VNET: calendar set from PL031: %u\n", secs);
++	}
++}
++
 +void
 +sweet_vnet_init(vm_offset_t window, uint64_t window_size)
 +{
@@ -471,6 +492,7 @@ index 0000000..f2c749f
 +	if (vn.regs || !window) {
 +		return;
 +	}
++	vn_set_clock();
 +	for (uint64_t o = 0; o + TRANSPORT_SIZE <= window_size; o += TRANSPORT_SIZE) {
 +		vn.regs = window + o;
 +		if (rd(VM_MAGIC) == VIRTIO_MAGIC && rd(VM_DEVICE_ID) == VIRTIO_ID_NET &&
