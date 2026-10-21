@@ -1,0 +1,39 @@
+name: hello-app
+
+# A minimal UIKit app (apps/hello) for testing third-party app launch on the
+# SWEET/ginkgo iOS root: compiled with swiftc for iOS 16 arm64, ad-hoc signed.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "apps/hello/**"
+      - ".github/workflows/hello-app.yml"
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Hello.app
+        run: |
+          set -euo pipefail
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcrun -sdk iphoneos --show-sdk-version
+          APP=out/Hello.app
+          mkdir -p "$APP"
+          xcrun -sdk iphoneos swiftc -target arm64-apple-ios16.0 -O \
+            apps/hello/main.swift -o "$APP/Hello"
+          cp apps/hello/Info.plist "$APP/Info.plist"
+          plutil -convert binary1 "$APP/Info.plist"
+          python3 apps/hello/icon.py "$APP/AppIcon60x60@2x.png" 120
+          python3 apps/hello/icon.py "$APP/AppIcon60x60@3x.png" 180
+          codesign -f -s - --timestamp=none "$APP"
+          codesign -dv "$APP" 2>&1
+          otool -l "$APP/Hello" | grep -A4 LC_BUILD_VERSION
+          tar -C out -cf out/Hello.app.tar Hello.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hello-app
+          path: out/Hello.app.tar
