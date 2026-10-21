@@ -47,8 +47,8 @@ GINKGO_ECID = 0x47494e4b474f0001  # 'GINKGO' + 1, synthetic
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
-# virt's first redistributor region; ginkgo's xnu core (MPIDR 0x100) is vCPU 16
-# there (-smp 17), past the 8 frames GICR_SIZE covers.
+# virt's first redistributor region; ginkgo's xnu cores (MPIDR 0x100-0x103) are
+# vCPUs 16-19 there (-smp 20), past the 8 frames GICR_SIZE covers.
 QEMU_GICR_SIZE = 0xf60000
 QEMU_VIRTIO_MMIO, QEMU_VIRTIO_MMIO_SIZE = 0x0a000000, 32 * 0x200
 
@@ -154,12 +154,13 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
     # SWEET SMP: all eight cores in physical-core order (0-5 Cortex-A55,
     # 6-7 Cortex-A76), one homogeneous cluster. The kernel defaults to one
     # and uses cpus=N to select an initial prefix (N <= 8).
-    # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
+    # QEMU retains its original single-CPU tree for sweet: its MPIDRs differ.
     # GINKGO: only the Cortex-A73 cluster (MPIDR 0x100-0x103, shared L2).
     # The A53s (0x000-0x003) have no 16K translation granule; the shim
-    # starts xnu on 0x100 (shim/board.h BOARD_XNU_MPIDR).
+    # starts xnu on 0x100 (shim/board.h BOARD_XNU_MPIDR). Under QEMU virt
+    # (-smp 20) those MPIDRs are vCPUs 16-19; boot with sweethvc=1 cpus=4.
     cpu_nodes = []
-    for core in range(1 if qemu else 4 if ginkgo else 8):
+    for core in range(4 if ginkgo else 1 if qemu else 8):
         if ginkgo:
             mpidr, l2, compat, clock = 0x100 | core, 0, 'qcom,kryo260', 2000000000
         else:

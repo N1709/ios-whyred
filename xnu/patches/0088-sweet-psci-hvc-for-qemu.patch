@@ -1,0 +1,37 @@
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+index 2545cf9..c33255f 100644
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -25,17 +25,28 @@ class SweetCPU;
+ static SweetCPU *sweet_cpus[MAX_CPUS];
+ static uint32_t sweet_cpus_registered;
+ 
+-/* SMCCC 1.0: x0 is the signed PSCI result; do not assume x1-x17 survive. */
++/*
++ * SMCCC 1.0: x0 is the signed PSCI result; do not assume x1-x17 survive.
++ * Qualcomm TZ takes SMC; QEMU virt without EL2/EL3 takes HVC (boot-arg sweethvc=1).
++ */
+ static int32_t
+ sweet_psci_cpu_on(uint64_t target, uint64_t entry, uint64_t context)
+ {
++	uint32_t hvc = 0;
++	(void)PE_parse_boot_argn("sweethvc", &hvc, sizeof(hvc));
+ 	register uint64_t x0 __asm__("x0") = 0xC4000003ULL;
+ 	register uint64_t x1 __asm__("x1") = target;
+ 	register uint64_t x2 __asm__("x2") = entry;
+ 	register uint64_t x3 __asm__("x3") = context;
+-	__asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
+-	    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+-	    "x14", "x15", "x16", "x17", "cc", "memory");
++	if (hvc) {
++		__asm__ volatile("hvc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++		    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
++		    "x14", "x15", "x16", "x17", "cc", "memory");
++	} else {
++		__asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) : :
++		    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
++		    "x14", "x15", "x16", "x17", "cc", "memory");
++	}
+ 	return (int32_t)x0;
+ }
+ 
