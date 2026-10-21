@@ -1,0 +1,17 @@
+diff --git a/bsd/dev/sweet_vblk.c b/bsd/dev/sweet_vblk.c
+index 45f6792..bf061ef 100644
+--- a/bsd/dev/sweet_vblk.c
++++ b/bsd/dev/sweet_vblk.c
+@@ -467,6 +467,12 @@ vblk_init(void)
+ 	printf("SWEET VBLK: vblk0 ready, %s\n", vb.writable ? "read-write" : "read-only");
+ 	sweet_vinput_init(window, reg[1]);
+ 	sweet_vnet_init(window, reg[1]);
++	/* The phone starts the sampler from sweet_ufs.c; on QEMU only on request. */
++	char names[8];
++	if (PE_parse_boot_argn("sweetsample", names, sizeof(names))) {
++		extern void sweet_sample_start(void);
++		sweet_sample_start();
++	}
+ 	return 0;
+ }
+ 
