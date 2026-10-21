@@ -1,0 +1,191 @@
+diff --git a/iokit/Kernel/arm/FleurGPU.cpp b/iokit/Kernel/arm/FleurGPU.cpp
+index 8ce8f5c..536effb 100644
+--- a/iokit/Kernel/arm/FleurGPU.cpp
++++ b/iokit/Kernel/arm/FleurGPU.cpp
+@@ -26,7 +26,21 @@
+  *    reprogrammed.
+  * Boot-args: sweetgpu=5, sweetgputimeout=<ms>, sweetgpumem=<MiB budget for
+  * all BOs, default 1024>, sweetgpuopen=1 (let non-root tasks open it),
+- * sweetgpulog=N (log the first N submissions, default 16).
++ * sweetgpulog=N (log the first N submissions, default 16), sweetgpudebug=1
++ * (for those logged submissions also dump the GPU page-table walk of jc and
++ * the first 64 bytes of the job descriptor, cached and uncached, before and
++ * after the chain: 0098).
++ *
++ * 0098: BO memory is created write-combined (kIOMapWriteCombineCache), so
++ * every mapping that does not ask for another cache mode is WC.
++ * clientMemoryForType() cannot force it: IOUserClient::mapClientMemory64()
++ * replaces all kIOMapUserOptionsMask bits (cache mode included) with the
++ * caller's map flags afterwards. With 0096's cacheable BOs the CPU's job
++ * descriptors stayed in its cache and the GPU read stale zeros
++ * (JS_STATUS 0x58 DATA_INVALID_FAULT, results never written). libfleurgpu
++ * also passes kIOMapWriteCombineCache explicitly. And JS_STATUS reads 0
++ * after a successful chain (seen in 0095 too), so DONE now comes from the
++ * done bit and JS_STATUS is only read on failure.
+  * Register facts: Linux panfrost_regs.h / panfrost_mmu.c / panfrost_job.c.
+  */
+ #include <pexpert/arm64/board_config.h>
+@@ -52,6 +66,10 @@ extern "C" int fleur_gpu_hw_reset(void);
+ extern "C" kern_return_t kernel_thread_start(void (*)(void *, wait_result_t), void *, thread_t *);
+ extern "C" void thread_deallocate(thread_t);
+ extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
++/* 0098 debug read-back (sweetgpudebug=1). */
++extern "C" vm_map_address_t phystokv(uint64_t pa);
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern "C" void ml_io_unmap(vm_offset_t addr, vm_size_t sz);
+ 
+ /* Mali registers (job manager GPUs). */
+ #define GPU_ID               0x000u
+@@ -183,7 +201,7 @@ public:
+ 	uint64_t fStatusSeq[STATUS_RING];
+ 	uint64_t fMemUsed, fMemBudget;
+ 	uint32_t fTimeoutMs, fLogLeft, fChainFlag[2];
+-	bool fAnyOpen;
++	bool fAnyOpen, fDebug;
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 
+@@ -206,6 +224,7 @@ public:
+ 	void finish(FleurGPUJob *job, uint32_t status); /* lock held */
+ 	void runJob(FleurGPUJob *job);                 /* lock held on entry/exit */
+ 	void recover(void);                            /* lock held */
++	void debugJob(FleurGPUJob *job, unsigned js, const char *when); /* lock held */
+ 	static void workerThread(void *arg, wait_result_t res) __attribute__((noreturn));
+ 	bool waitSeq(uint64_t seq, uint64_t timeoutNs, uint32_t *status);
+ };
+@@ -330,6 +349,9 @@ FleurMaliGPU::start(IOService *provider)
+ 	fMemBudget = (uint64_t)mib << 20;
+ 	fLogLeft = 16;
+ 	(void)PE_parse_boot_argn("sweetgpulog", &fLogLeft, sizeof(fLogLeft));
++	int dbg = 0;
++	(void)PE_parse_boot_argn("sweetgpudebug", &dbg, sizeof(dbg));
++	fDebug = dbg != 0;
+ 	if (kernel_thread_start(workerThread, this, &thread) != KERN_SUCCESS) {
+ 		IOLog("SWEET GPU: no worker thread\n");
+ 		return false;
+@@ -528,6 +550,9 @@ FleurMaliGPU::runJob(FleurGPUJob *job)
+ 	wr(JS_REG(js, JS_CONFIG_NEXT), as | JS_CFG_THREAD_PRI(8) | JS_CFG_START_FLUSH_CLEAN_INV |
+ 	    JS_CFG_END_FLUSH_CLEAN_INV | fChainFlag[js]);
+ 	__asm__ volatile ("dsb sy" ::: "memory");
++	if (log && fDebug) {
++		debugJob(job, js, "before");
++	}
+ 	wr(JS_REG(js, JS_COMMAND_NEXT), JS_CMD_START);
+ 
+ 	uint64_t t0 = mach_absolute_time(), deadline;
+@@ -572,8 +597,17 @@ FleurMaliGPU::runJob(FleurGPUJob *job)
+ 			faulted = false;    /* recover() restored every AS */
+ 		}
+ 		status = FLEUR_GPU_STATUS_TIMEOUT;
+-	} else {
++	} else if (rd(JOB_IRQ_RAWSTAT) & fail) {
++		/* JS_STATUS is only meaningful for a failed chain. */
+ 		status = rd(JS_REG(js, JS_STATUS));
++		if (status == FLEUR_GPU_STATUS_DONE || status == 0) {
++			status = 0x40;      /* JOB_CONFIG_FAULT: failed without a code */
++		}
++	} else {
++		status = FLEUR_GPU_STATUS_DONE;
++	}
++	if (log && fDebug) {
++		debugJob(job, js, "after");
+ 	}
+ 	if (fUp) {
+ 		wr(JOB_IRQ_CLEAR, done | fail);
+@@ -590,6 +624,62 @@ FleurMaliGPU::runJob(FleurGPUJob *job)
+ 	finish(job, status);
+ }
+ 
++/*
++ * sweetgpudebug=1: walk this client's GPU page tables for jc (software tree
++ * and the hardware entries the GPU reads) and dump the first 64 bytes of the
++ * job descriptor twice: through the cacheable physmap (what the CPU sees)
++ * and through an uncached device mapping of the same physical page (what
++ * the GPU sees in RAM). A difference means CPU-cache incoherence.
++ */
++void
++FleurMaliGPU::debugJob(FleurGPUJob *job, unsigned js, const char *when)
++{
++	FleurMaliGPUUserClient *c = job->client;
++	uint64_t va = job->jc;
++	FleurPT *pt = c->fRoot;
++	uint64_t e[4] = { 0, 0, 0, 0 };
++	for (unsigned level = 0; level < 4 && pt != NULL; level++) {
++		unsigned idx = (unsigned)(va >> (39 - 9 * level)) & 0x1ffu;
++		e[level] = pt->va[idx];
++		pt = (level < 3 && pt->child != NULL) ? pt->child[idx] : NULL;
++	}
++	IOLog("SWEET GPU: dbg %s seq %llu js%u jc %#llx pte L0 %#llx L1 %#llx L2 %#llx L3 %#llx\n",
++	    when, job->seq, js, va, e[0], e[1], e[2], e[3]);
++	IOLog("SWEET GPU: dbg %s job rawstat %#x js_state %#x js%u status %#x head %#llx tail %#llx "
++	    "mmu rawstat %#x as%d faultstatus %#x faultaddr %#llx\n",
++	    when, rd(JOB_IRQ_RAWSTAT), rd(0x1010u), js, rd(JS_REG(js, JS_STATUS)),
++	    rd64(JS_REG(js, JS_HEAD_LO)), rd64(JS_REG(js, JS_TAIL_LO)), rd(MMU_IRQ_RAWSTAT),
++	    c->fAs, rd(AS_REG((unsigned)c->fAs, AS_FAULTSTATUS)),
++	    rd64(AS_REG((unsigned)c->fAs, AS_FAULTADDRESS_LO)));
++	if ((e[3] & 0x3ull) != PTE_PAGE) {
++		return;
++	}
++	uint64_t pa = (e[3] & PTE_ADDR_MASK) | (va & 0xfffull);
++	uint64_t page = pa & ~((uint64_t)PAGE_MASK);
++	if ((pa & 63u) != 0 || (pa - page) + 64 > PAGE_SIZE) {
++		return;
++	}
++	volatile uint32_t *cached = (volatile uint32_t *)phystokv(pa);
++	vm_offset_t un = ml_io_map((vm_offset_t)page, PAGE_SIZE);
++	if (un == 0) {
++		return;
++	}
++	volatile uint32_t *uncached = (volatile uint32_t *)(un + (pa - page));
++	uint32_t a[16], b[16];
++	for (unsigned i = 0; i < 16; i++) {
++		a[i] = cached[i];
++		b[i] = uncached[i];
++	}
++	ml_io_unmap(un, PAGE_SIZE);
++	IOLog("SWEET GPU: dbg %s pa %#llx cached   %08x %08x %08x %08x %08x %08x %08x %08x "
++	    "%08x %08x %08x %08x %08x %08x %08x %08x\n", when, pa, a[0], a[1], a[2], a[3], a[4],
++	    a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]);
++	IOLog("SWEET GPU: dbg %s pa %#llx uncached %08x %08x %08x %08x %08x %08x %08x %08x "
++	    "%08x %08x %08x %08x %08x %08x %08x %08x%s\n", when, pa, b[0], b[1], b[2], b[3], b[4],
++	    b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
++	    memcmp(a, b, sizeof(a)) ? "  <- DIFFERS from cached" : "");
++}
++
+ void
+ FleurMaliGPU::workerThread(void *arg, wait_result_t res)
+ {
+@@ -985,8 +1075,19 @@ FleurMaliGPUUserClient::createBO(struct fleur_gpu_create_bo *p)
+ 		return kIOReturnNoMemory;
+ 	}
+ 	FleurGPUBO *bo = OSTypeAlloc(FleurGPUBO);
++	/* Write-combined by default for every mapping (see the top comment). */
+ 	IOBufferMemoryDescriptor *mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+-	    kIODirectionInOut | kIOMemoryKernelUserShared, size, page_size);
++	    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMapWriteCombineCache, size, page_size);
++	if (mem == NULL) {
++		static bool warned;
++		if (!warned) {
++			warned = true;
++			IOLog("SWEET GPU: write-combined BO allocation failed, using cacheable BOs "
++			    "(user space must map them with kIOMapWriteCombineCache)\n");
++		}
++		mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++		    kIODirectionInOut | kIOMemoryKernelUserShared, size, page_size);
++	}
+ 	if (mem != NULL && mem->prepare() != kIOReturnSuccess) {
+ 		OSSafeReleaseNULL(mem);
+ 	}
+@@ -1201,8 +1302,10 @@ FleurMaliGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options,
+ 	if (bo != NULL) {
+ 		bo->mem->retain();     /* the caller consumes one reference */
+ 		*memory = bo->mem;
+-		/* Write-combined user mapping whatever cache mode the caller asked. */
+-		*options = (*options & ~kIOMapCacheMask) | kIOMapWriteCombineCache;
++		/* No cache-mode override here: mapClientMemory64() replaces the
++		 * kIOMapUserOptionsMask bits with the caller's flags. The BO's own
++		 * default (write-combined) applies unless the caller asks otherwise. */
++		(void)options;
+ 	}
+ 	IOLockUnlock(fGPU->fLock);
+ 	return bo != NULL ? kIOReturnSuccess : kIOReturnBadArgument;
