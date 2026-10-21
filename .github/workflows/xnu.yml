@@ -12,6 +12,9 @@ on:
       machine_config:
         description: xnu MACHINE_CONFIG
         default: SWEET
+      board:
+        description: sweet (Redmi Note 10 Pro) / ginkgo (Redmi Note 8, ARMv8.0 variant, see xnu/board-overlay.py)
+        default: sweet
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
@@ -31,6 +34,7 @@ env:
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
   MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
+  BOARD: ${{ inputs.board || 'sweet' }}
 
 jobs:
   build:
@@ -48,9 +52,15 @@ jobs:
           git -C dxb checkout -q FETCH_HEAD
           # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
           cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
+          python3 xnu/board-overlay.py "$BOARD" dxb/patches
           # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
+          if [ "$BOARD" = ginkgo ]; then
+            # ARMv8.0: without -mcpu Apple clang targets apple-m1 (LSE, RCpc)
+            sed -i '' "s/ARCHS=\"x86_64 arm64e arm64\" VALID_ARCHS=\"x86_64 arm64e arm64\"/ARCHS=\"arm64\" VALID_ARCHS=\"arm64\" OTHER_CFLAGS='\$(inherited) -mcpu=cortex-a73+crypto'/" dxb/build.sh
+            grep -n 'mcpu=cortex-a73' dxb/build.sh
+          fi
           ls dxb/patches
 
       - name: Deps
@@ -119,6 +129,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: xnu-kernel
+          name: xnu-kernel${{ env.BOARD != 'sweet' && format('-{0}', env.BOARD) || '' }}
           path: out/
           if-no-files-found: warn

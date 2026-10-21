@@ -1,0 +1,10 @@
+# Scripts and sources run/compiled on Linux and macOS, also from Windows checkouts
+*.sh      text eol=lf
+*.py      text eol=lf
+*.S       text eol=lf
+*.c       text eol=lf
+*.h       text eol=lf
+*.ld      text eol=lf
+*.patch   text eol=lf
+*.yml     text eol=lf
+Dockerfile text eol=lf

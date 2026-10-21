@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
-Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
+Only what the early boot path actually reads (see NOTES.md); every sweet MMIO
+address comes from the sweet live FDT, every ginkgo one from mainline
+sm6125.dtsi / sm6125-xiaomi-ginkgo-common.dtsi.
+Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--board sweet|ginkgo]
 """
 import hashlib, os, struct, sys
 
@@ -29,9 +31,26 @@ FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4
 UFS, UFS_SIZE = 0x01d84000, 0x3000
 TIMEBASE = 19200000
 VTIMER_INTID = 19
+
+# Redmi Note 8 (ginkgo, SM6125: 4x Cortex-A53 cluster 0, 4x Cortex-A73 cluster 1).
+# RAM starts at 0x40000000 (3/4/6 GiB variants); every fixed carve-out
+# (hyp, AOP, smem, modem, ADSP/CDSP, splash, qseecom, ramoops) ends below
+# 0x61a00000 and sdsp/adsp_mem start at 0xf3000000: the kernel gets the gap,
+# which fits the 3 GiB variant too.
+GINKGO_PHYS_BASE = 0x62000000
+GINKGO_MEM_SIZE = 0xf3000000 - GINKGO_PHYS_BASE
+GINKGO_GICD, GINKGO_GICR = 0x0f200000, 0x0f300000
+GINKGO_FB, GINKGO_FB_SIZE = 0x5c000000, 0xf00000
+GINKGO_FB_H = 2340
+GINKGO_SDHC, GINKGO_SDHC_SIZE = 0x04744000, 0x2000  # sdhc_1 "hc" + "cqhci"
+GINKGO_ECID = 0x47494e4b474f0001  # 'GINKGO' + 1, synthetic
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
+# virt's first redistributor region; ginkgo's xnu core (MPIDR 0x100) is vCPU 16
+# there (-smp 17), past the 8 frames GICR_SIZE covers.
+QEMU_GICR_SIZE = 0xf60000
+QEMU_VIRTIO_MMIO, QEMU_VIRTIO_MMIO_SIZE = 0x0a000000, 32 * 0x200
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
@@ -68,10 +87,23 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False):
-    """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
-    phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
-    gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
+def build(seed=None, qemu=False, highmem=False, board='sweet'):
+    """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py).
+    board='ginkgo': Redmi Note 8 addresses; highmem does not apply (one DDR range)."""
+    ginkgo = board == 'ginkgo'
+    if ginkgo:
+        phys_base, mem_size = GINKGO_PHYS_BASE, GINKGO_MEM_SIZE
+        gicd, gicr = GINKGO_GICD, GINKGO_GICR
+        fb, fb_size, fb_h, ecid = GINKGO_FB, GINKGO_FB_SIZE, GINKGO_FB_H, GINKGO_ECID
+    else:
+        phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
+        gicd, gicr = GICD, GICR
+        fb, fb_size, fb_h, ecid = FB, FB_SIZE, FB_H, SWEET_ECID
+    timebase, gicr_size = TIMEBASE, GICR_SIZE
+    if qemu:
+        gicd, gicr, timebase = QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE
+        if ginkgo:
+            gicr_size = QEMU_GICR_SIZE
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
     ph = lambda: ('AAPL,phandle', u32(next(phandle)))
@@ -101,7 +133,7 @@ def build(seed=None, qemu=False, highmem=False):
         # files), so e.g. DataMigration never records LastSystemVersion and
         # migrates on every boot. Synthetic ECID (not the phone's); chip-id
         # of the A11 that the iPhone X userland expects.
-        ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
+        ('unique-chip-id', struct.pack('<Q', ecid)),
         ('chip-id', u32(0x8015)),
         # Security status as on a dev-fused, undemoted board (tuple 0,0,1,1):
         # MobileGestalt reads these from /chosen, and mobileactivationd's
@@ -123,23 +155,31 @@ def build(seed=None, qemu=False, highmem=False):
     # 6-7 Cortex-A76), one homogeneous cluster. The kernel defaults to one
     # and uses cpus=N to select an initial prefix (N <= 8).
     # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
+    # GINKGO: only the Cortex-A73 cluster (MPIDR 0x100-0x103, shared L2).
+    # The A53s (0x000-0x003) have no 16K translation granule; the shim
+    # starts xnu on 0x100 (shim/board.h BOARD_XNU_MPIDR).
     cpu_nodes = []
-    for core in range(1 if qemu else 8):
+    for core in range(1 if qemu else 4 if ginkgo else 8):
+        if ginkgo:
+            mpidr, l2, compat, clock = 0x100 | core, 0, 'qcom,kryo260', 2000000000
+        else:
+            mpidr, l2, compat = core << 8, core, 'qcom,kryo470'  # distinct per-core L2 nodes in live FDT
+            clock = 2304000000 if core >= 6 else 1804800000
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr('qcom,kryo470') + cstr('ARM,v8')),
-            ('reg', u32(core << 8)),  # actual MPIDR Aff1:Aff0, NOT logical ID
+            ('compatible', cstr(compat) + cstr('ARM,v8')),
+            ('reg', u32(mpidr)),  # actual MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
             ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology
             ('cluster-type', u32(0)),  # homogeneous CLUSTER_TYPE_SMP, not AMP
             ('die-cluster-id', u32(0)),
             ('cluster-core-id', u32(core)),
-            ('l2-cache-id', u32(core)),  # distinct per-core L2 nodes in live FDT
+            ('l2-cache-id', u32(l2)),
             ('l3-cache-id', u32(0)),     # shared L3
             ('state', cstr('running' if core == 0 else 'stopped')),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2304000000 if core >= 6 else 1804800000)),
+            ('clock-frequency', u32(clock)),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -153,7 +193,7 @@ def build(seed=None, qemu=False, highmem=False):
         ('compatible', cstr('arm,gic-v3')),
         ('interrupt-controller', b''),
         ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else VTIMER_INTID)),
-        ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, GICR_SIZE)),
+        ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, gicr_size)),
     ])
     arm_io = node('arm-io', [
         ph(),
@@ -181,17 +221,33 @@ def build(seed=None, qemu=False, highmem=False):
 
     fbcon = node('sweet-fbcon', [
         ph(),
-        ('reg', u64(FB, FB_SIZE)),
+        ('reg', u64(fb, fb_size)),
         ('width', u32(FB_W)),
-        ('height', u32(FB_H)),
+        ('height', u32(fb_h)),
         ('stride', u32(FB_STRIDE)),
     ])
 
-    # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
-    ufs = node('sweet-ufs', [
+    if ginkgo:
+        # eMMC host ABL booted from (absolute physical reg). No kernel driver
+        # yet: until there is one, ginkgo boots without rd=ufsroot0.
+        storage = node('sweet-sdhc', [
+            ph(),
+            ('compatible', cstr('qcom,sdhci-msm-v5')),
+            ('reg', u64(GINKGO_SDHC, GINKGO_SDHC_SIZE)),
+        ])
+    else:
+        # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
+        storage = node('sweet-ufs', [
+            ph(),
+            ('compatible', cstr('qcom,ufshc')),
+            ('reg', u64(UFS, UFS_SIZE)),
+        ])
+
+    # bsd/dev/sweet_vblk.c (rd=vblk0): QEMU virt's virtio-mmio transports.
+    vblk = node('sweet-vblk', [
         ph(),
-        ('compatible', cstr('qcom,ufshc')),
-        ('reg', u64(UFS, UFS_SIZE)),
+        ('compatible', cstr('virtio,mmio')),
+        ('reg', u64(QEMU_VIRTIO_MMIO, QEMU_VIRTIO_MMIO_SIZE)),
     ])
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
@@ -215,20 +271,24 @@ def build(seed=None, qemu=False, highmem=False):
     # Identity of the iPhone X whose userland runs here: compatible[0] is
     # hw.model/hw.target (D22AP), model is hw.machine/hw.product
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
+    soc = cstr('xiaomi,ginkgo') + cstr('qcom,sm6125') if ginkgo else cstr('qcom,sm7150')
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + cstr('qcom,sm7150') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,sweet') + soc + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([vblk] if qemu else [storage]))
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv)
+    board = sys.argv[sys.argv.index('--board') + 1] if '--board' in sys.argv else 'sweet'
+    if board not in ('sweet', 'ginkgo'):
+        raise SystemExit(f'unknown board {board!r} (sweet, ginkgo)')
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:

@@ -1,0 +1,520 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,6 +111,7 @@
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
++bsd/dev/sweet_vblk.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -782,6 +782,21 @@
+ 		*oflags = 0;
+ 		goto iofrootx;
+ 	}
++//
++//	SWEET: root on a QEMU virtio-blk disk (bsd/dev/sweet_vblk.c)
++//
++	if (strcmp(rdBootVar, "vblk0") == 0) {
++		extern int sweet_vblk_rootdev(dev_t *dev);
++		OSSafeReleaseNULL(matching);
++		int vblk_error = sweet_vblk_rootdev(root);
++		if (vblk_error) {
++			panic("IOFindBSDRoot: SWEET virtio-blk root %s unavailable: %d", rdBootVar, vblk_error);
++		}
++		strlcpy(rootName, rdBootVar, rootNameSize);
++		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
++		*oflags = 0;
++		goto iofrootx;
++	}
+ #endif
+ 
+ //
+--- /dev/null
++++ b/bsd/dev/sweet_vblk.c
+@@ -0,0 +1,483 @@
++/*
++ * SWEET virtio-blk root device for QEMU's virt board (rd=vblk0).
++ *
++ * Lets the iOS root image (many GB, too big for a RAM disk) boot in QEMU:
++ * the ADT node /sweet-vblk gives the virtio-mmio window (32 transports of
++ * 0x200 bytes on virt); the first modern (version 2) block device found is
++ * exposed whole as the BSD disk vblk0 (rvblk0), 512-byte sectors.
++ *
++ * One virtqueue of 8 descriptors, one request at a time, polled (no
++ * interrupt is wired): header, data and status descriptors around a 1 MiB
++ * physically contiguous bounce buffer. QEMU's DMA is coherent with the
++ * guest's caches, so no cache maintenance. Writes need boot-arg vblkrw=1.
++ * Run QEMU with -global virtio-mmio.force-legacy=false.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/buf.h>
++#include <sys/conf.h>
++#include <sys/disk.h>
++#include <sys/errno.h>
++#include <sys/fcntl.h>
++#include <sys/proc.h>
++#include <sys/uio.h>
++#include <miscfs/devfs/devfs.h>
++#include <kern/locks.h>
++#include <kern/clock.h>
++#include <machine/machine_routines.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <libkern/libkern.h>
++
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++#define VM_MAGIC                0x000
++#define VM_VERSION              0x004
++#define VM_DEVICE_ID            0x008
++#define VM_DEVICE_FEATURES      0x010
++#define VM_DEVICE_FEATURES_SEL  0x014
++#define VM_DRIVER_FEATURES      0x020
++#define VM_DRIVER_FEATURES_SEL  0x024
++#define VM_QUEUE_SEL            0x030
++#define VM_QUEUE_NUM_MAX        0x034
++#define VM_QUEUE_NUM            0x038
++#define VM_QUEUE_READY          0x044
++#define VM_QUEUE_NOTIFY         0x050
++#define VM_INTERRUPT_STATUS     0x060
++#define VM_INTERRUPT_ACK        0x064
++#define VM_STATUS               0x070
++#define VM_QUEUE_DESC           0x080
++#define VM_QUEUE_DRIVER         0x090
++#define VM_QUEUE_DEVICE         0x0a0
++#define VM_CONFIG               0x100
++
++#define VIRTIO_MAGIC            0x74726976      /* "virt" */
++#define VIRTIO_ID_BLOCK         2
++#define TRANSPORT_SIZE          0x200
++
++#define ST_ACKNOWLEDGE          1
++#define ST_DRIVER               2
++#define ST_DRIVER_OK            4
++#define ST_FEATURES_OK          8
++
++#define F_BLK_RO                (1u << 5)
++#define F_BLK_FLUSH             (1u << 9)
++#define F_VERSION_1_HI          (1u << 0)       /* feature bit 32 */
++
++#define REQ_IN                  0
++#define REQ_OUT                 1
++#define REQ_FLUSH               4
++
++#define DESC_NEXT               1
++#define DESC_WRITE              2
++
++#define QSIZE                   8
++#define SECTOR                  512u
++#define BOUNCE_SIZE             (1u << 20)
++#define REQ_TIMEOUT_NS          (30ull * NSEC_PER_SEC)
++
++struct vq_desc {
++	uint64_t addr;
++	uint32_t len;
++	uint16_t flags, next;
++};
++
++struct vq_avail {
++	uint16_t flags, idx;
++	uint16_t ring[QSIZE];
++};
++
++struct vq_used {
++	uint16_t flags, idx;
++	struct {
++		uint32_t id, len;
++	} ring[QSIZE];
++};
++
++struct blk_hdr {
++	uint32_t type, reserved;
++	uint64_t sector;
++};
++
++/* Layout of the contiguous DMA allocation. */
++#define DMA_DESC        0x0000          /* 16-byte aligned */
++#define DMA_AVAIL       0x0100          /* 2-byte aligned */
++#define DMA_USED        0x0200          /* 4-byte aligned */
++#define DMA_HDR         0x0400
++#define DMA_STATUS      0x0480
++#define DMA_BOUNCE      0x1000
++#define DMA_SIZE        (DMA_BOUNCE + BOUNCE_SIZE)
++
++static struct {
++	vm_offset_t regs;
++	vm_offset_t dma;
++	uint64_t dma_pa;
++	uint64_t sectors;
++	uint16_t used_seen;
++	bool flush;
++	bool writable;
++	bool ready;
++	int bmajor, cmajor;
++	dev_t bdev;
++} vb;
++
++static LCK_GRP_DECLARE(sweet_vblk_grp, "sweet_vblk");
++static LCK_MTX_DECLARE(sweet_vblk_lock, &sweet_vblk_grp);
++
++static inline uint32_t
++rd(uint32_t off)
++{
++	return *(volatile uint32_t *)(vb.regs + off);
++}
++
++static inline void
++wr(uint32_t off, uint32_t val)
++{
++	*(volatile uint32_t *)(vb.regs + off) = val;
++}
++
++static void
++wr64(uint32_t off, uint64_t val)
++{
++	wr(off, (uint32_t)val);
++	wr(off + 4, (uint32_t)(val >> 32));
++}
++
++/* Issue one request (type, sector, len bytes at the bounce buffer) and poll for it. */
++static int
++vblk_request(uint32_t type, uint64_t sector, uint32_t len)
++{
++	struct vq_desc *d = (struct vq_desc *)(vb.dma + DMA_DESC);
++	struct vq_avail *avail = (struct vq_avail *)(vb.dma + DMA_AVAIL);
++	volatile struct vq_used *used = (volatile struct vq_used *)(vb.dma + DMA_USED);
++	struct blk_hdr *hdr = (struct blk_hdr *)(vb.dma + DMA_HDR);
++	volatile uint8_t *status = (volatile uint8_t *)(vb.dma + DMA_STATUS);
++	unsigned int n = 0;
++
++	hdr->type = type;
++	hdr->reserved = 0;
++	hdr->sector = sector;
++	*status = 0xff;
++	d[0] = (struct vq_desc){ vb.dma_pa + DMA_HDR, sizeof(*hdr), DESC_NEXT, 1 };
++	n = 1;
++	if (len) {
++		d[1] = (struct vq_desc){ vb.dma_pa + DMA_BOUNCE, len,
++			                 (uint16_t)(DESC_NEXT | (type == REQ_IN ? DESC_WRITE : 0)), 2 };
++		n = 2;
++	}
++	d[n - 1].next = (uint16_t)n;
++	d[n] = (struct vq_desc){ vb.dma_pa + DMA_STATUS, 1, DESC_WRITE, 0 };
++
++	avail->ring[avail->idx % QSIZE] = 0;
++	__builtin_arm_dmb(0xb);
++	avail->idx++;
++	__builtin_arm_dsb(0xf);
++	wr(VM_QUEUE_NOTIFY, 0);
++
++	uint64_t deadline;
++	nanoseconds_to_deadline(REQ_TIMEOUT_NS, &deadline);
++	while (used->idx == vb.used_seen) {
++		if (mach_absolute_time() > deadline) {
++			printf("SWEET VBLK: request type %u sector %llu timed out\n", type, sector);
++			return EIO;
++		}
++	}
++	__builtin_arm_dmb(0xb);
++	vb.used_seen = used->idx;
++	wr(VM_INTERRUPT_ACK, rd(VM_INTERRUPT_STATUS));
++	if (*status != 0) {
++		printf("SWEET VBLK: request type %u sector %llu status %u\n", type, sector, *status);
++		return EIO;
++	}
++	return 0;
++}
++
++static int
++vblk_open(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
++{
++	if (!vb.ready) {
++		return ENXIO;
++	}
++	return ((flags & FWRITE) && !vb.writable) ? EROFS : 0;
++}
++
++static int
++vblk_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unused struct proc *p)
++{
++	return 0;
++}
++
++static void
++vblk_strategy(buf_t bp)
++{
++	int error = 0;
++	caddr_t vaddr = NULL;
++	bool is_read = buf_flags(bp) & B_READ;
++	uint64_t off = (uint64_t)buf_blkno(bp) * SECTOR;
++	uint32_t count = buf_count(bp);
++	uint64_t bytes = vb.sectors * SECTOR;
++
++	buf_setresid(bp, count);
++	if (!is_read && !vb.writable) {
++		error = EROFS;
++		goto done;
++	}
++	if (off > bytes || count > bytes - off || (count % SECTOR)) {
++		error = EINVAL;
++		goto done;
++	}
++	if (count == 0) {
++		goto done;
++	}
++	if (buf_map(bp, &vaddr)) {
++		error = EIO;
++		goto done;
++	}
++	lck_mtx_lock(&sweet_vblk_lock);
++	for (uint32_t done = 0; done < count;) {
++		uint32_t want = MIN(count - done, BOUNCE_SIZE);
++		if (!is_read) {
++			memcpy((void *)(vb.dma + DMA_BOUNCE), vaddr + done, want);
++		}
++		error = vblk_request(is_read ? REQ_IN : REQ_OUT, (off + done) / SECTOR, want);
++		if (error) {
++			break;
++		}
++		if (is_read) {
++			memcpy(vaddr + done, (const void *)(vb.dma + DMA_BOUNCE), want);
++		}
++		done += want;
++		buf_setresid(bp, count - done);
++	}
++	lck_mtx_unlock(&sweet_vblk_lock);
++	buf_unmap(bp);
++done:
++	if (error) {
++		buf_seterror(bp, error);
++	}
++	buf_biodone(bp);
++}
++
++static int
++vblk_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag,
++    __unused struct proc *p, __unused int is_char)
++{
++	uint32_t *f = (uint32_t *)data;
++	uint64_t *o = (uint64_t *)data;
++	int error;
++
++	switch (cmd) {
++	case DKIOCGETBLOCKSIZE:
++	case DKIOCGETPHYSICALBLOCKSIZE:
++		*f = SECTOR;
++		return 0;
++	case DKIOCSETBLOCKSIZE:
++		return *f == SECTOR ? 0 : EINVAL;
++	case DKIOCGETBLOCKCOUNT:
++		*o = vb.sectors;
++		return 0;
++	case DKIOCISWRITABLE:
++		*f = vb.writable;
++		return 0;
++	case DKIOCSYNCHRONIZE:
++	case DKIOCSYNCHRONIZECACHE:
++		if (!vb.writable || !vb.flush) {
++			return 0;
++		}
++		lck_mtx_lock(&sweet_vblk_lock);
++		error = vblk_request(REQ_FLUSH, 0, 0);
++		lck_mtx_unlock(&sweet_vblk_lock);
++		return error;
++	case DKIOCGETMAXBLOCKCOUNTREAD:
++	case DKIOCGETMAXBLOCKCOUNTWRITE:
++		*o = BOUNCE_SIZE / SECTOR;
++		return 0;
++	case DKIOCGETMAXSEGMENTCOUNTREAD:
++	case DKIOCGETMAXSEGMENTCOUNTWRITE:
++		*o = 1;
++		return 0;
++	default:
++		return ENOTTY;
++	}
++}
++
++static int
++vblk_bioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
++{
++	return vblk_ioctl(dev, cmd, data, flag, p, 0);
++}
++
++static int
++vblk_cioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
++{
++	return vblk_ioctl(dev, cmd, data, flag, p, 1);
++}
++
++static int
++vblk_psize(__unused dev_t dev)
++{
++	return vb.ready ? (int)MIN(vb.sectors, INT_MAX) : -1;
++}
++
++static int
++vblk_read(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return physio(vblk_strategy, NULL, dev, B_READ, minphys, uio, SECTOR);
++}
++
++static int
++vblk_write(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return physio(vblk_strategy, NULL, dev, B_WRITE, minphys, uio, SECTOR);
++}
++
++static const struct bdevsw vblk_bdevsw = {
++	.d_open     = vblk_open,
++	.d_close    = vblk_close,
++	.d_strategy = vblk_strategy,
++	.d_ioctl    = vblk_bioctl,
++	.d_dump     = eno_dump,
++	.d_psize    = vblk_psize,
++	.d_type     = D_DISK,
++};
++
++static const struct cdevsw vblk_cdevsw = {
++	.d_open       = vblk_open,
++	.d_close      = vblk_close,
++	.d_read       = vblk_read,
++	.d_write      = vblk_write,
++	.d_ioctl      = vblk_cioctl,
++	.d_stop       = eno_stop,
++	.d_reset      = eno_reset,
++	.d_ttys       = NULL,
++	.d_select     = eno_select,
++	.d_mmap       = eno_mmap,
++	.d_strategy   = eno_strat,
++	.d_reserved_1 = eno_getc,
++	.d_reserved_2 = eno_putc,
++	.d_type       = D_DISK,
++};
++
++/* Find a modern virtio block device in the window and bring its queue up. */
++static int
++vblk_probe(vm_offset_t window, uint64_t window_size)
++{
++	for (uint64_t o = 0; o + TRANSPORT_SIZE <= window_size; o += TRANSPORT_SIZE) {
++		vb.regs = window + o;
++		if (rd(VM_MAGIC) != VIRTIO_MAGIC || rd(VM_DEVICE_ID) != VIRTIO_ID_BLOCK) {
++			continue;
++		}
++		if (rd(VM_VERSION) != 2) {
++			printf("SWEET VBLK: legacy virtio-mmio at +0x%llx (use force-legacy=false)\n", o);
++			continue;
++		}
++		wr(VM_STATUS, 0);
++		wr(VM_STATUS, ST_ACKNOWLEDGE);
++		wr(VM_STATUS, ST_ACKNOWLEDGE | ST_DRIVER);
++		wr(VM_DEVICE_FEATURES_SEL, 1);
++		if (!(rd(VM_DEVICE_FEATURES) & F_VERSION_1_HI)) {
++			continue;
++		}
++		wr(VM_DEVICE_FEATURES_SEL, 0);
++		uint32_t f = rd(VM_DEVICE_FEATURES);
++		wr(VM_DRIVER_FEATURES_SEL, 1);
++		wr(VM_DRIVER_FEATURES, F_VERSION_1_HI);
++		wr(VM_DRIVER_FEATURES_SEL, 0);
++		wr(VM_DRIVER_FEATURES, f & (F_BLK_RO | F_BLK_FLUSH));
++		wr(VM_STATUS, ST_ACKNOWLEDGE | ST_DRIVER | ST_FEATURES_OK);
++		if (!(rd(VM_STATUS) & ST_FEATURES_OK)) {
++			printf("SWEET VBLK: features 0x%x not accepted\n", f);
++			continue;
++		}
++		wr(VM_QUEUE_SEL, 0);
++		if (rd(VM_QUEUE_NUM_MAX) < QSIZE) {
++			continue;
++		}
++		wr(VM_QUEUE_NUM, QSIZE);
++		wr64(VM_QUEUE_DESC, vb.dma_pa + DMA_DESC);
++		wr64(VM_QUEUE_DRIVER, vb.dma_pa + DMA_AVAIL);
++		wr64(VM_QUEUE_DEVICE, vb.dma_pa + DMA_USED);
++		wr(VM_QUEUE_READY, 1);
++		wr(VM_STATUS, ST_ACKNOWLEDGE | ST_DRIVER | ST_FEATURES_OK | ST_DRIVER_OK);
++		vb.sectors = rd(VM_CONFIG) | ((uint64_t)rd(VM_CONFIG + 4) << 32);
++		vb.flush = f & F_BLK_FLUSH;
++		if (f & F_BLK_RO) {
++			vb.writable = false;
++		}
++		printf("SWEET VBLK: virtio-blk at +0x%llx, %llu MiB, features 0x%x\n",
++		    o, vb.sectors * SECTOR >> 20, f);
++		return 0;
++	}
++	return ENXIO;
++}
++
++static int
++vblk_init(void)
++{
++	DTEntry node;
++	uintptr_t const *reg = NULL;
++	unsigned int size = 0;
++	int rw = 0;
++
++	if (SecureDTLookupEntry(NULL, "/sweet-vblk", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
++	    size < 2 * sizeof(uintptr_t)) {
++		printf("SWEET VBLK: no /sweet-vblk node in the device tree\n");
++		return ENXIO;
++	}
++	PE_parse_boot_argn("vblkrw", &rw, sizeof(rw));
++	vb.writable = rw != 0;
++	if (kmem_alloc_contig(kernel_map, &vb.dma, DMA_SIZE, PAGE_MASK, 0, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		printf("SWEET VBLK: no contiguous DMA memory\n");
++		return ENOMEM;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)vb.dma);
++	if (!pn) {
++		return ENOMEM;
++	}
++	vb.dma_pa = ptoa_64(pn);
++
++	lck_mtx_lock(&sweet_vblk_lock);
++	int error = vblk_probe(ml_io_map(reg[0], reg[1]), reg[1]);
++	lck_mtx_unlock(&sweet_vblk_lock);
++	if (error) {
++		printf("SWEET VBLK: no virtio block device\n");
++		return error;
++	}
++	vb.bmajor = bdevsw_add(-1, &vblk_bdevsw);
++	if (vb.bmajor < 0) {
++		return ENXIO;
++	}
++	vb.cmajor = cdevsw_add_with_bdev(-1, &vblk_cdevsw, vb.bmajor);
++	if (vb.cmajor < 0) {
++		return ENXIO;
++	}
++	vb.bdev = makedev(vb.bmajor, 0);
++	devfs_make_node(vb.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "vblk0");
++	devfs_make_node(makedev(vb.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rvblk0");
++	vb.ready = true;
++	printf("SWEET VBLK: vblk0 ready, %s\n", vb.writable ? "read-write" : "read-only");
++	return 0;
++}
++
++/* Root device for rd=vblk0 (IOFindBSDRoot). */
++int sweet_vblk_rootdev(dev_t *dev);
++
++int
++sweet_vblk_rootdev(dev_t *dev)
++{
++	if (!vb.ready) {
++		int error = vblk_init();
++		if (error) {
++			return error;
++		}
++	}
++	*dev = vb.bdev;
++	return 0;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */

@@ -14,6 +14,8 @@
 
 #define BOOT_LINE_LENGTH	608
 #define PAGE_16K		0x4000UL
+#define PSCI_CPU_ON_64		0xc4000003UL
+#define PSCI_CPU_OFF_32		0x84000002UL
 
 struct payload_seg {
 	uint64_t vmaddr, vmsize, file_off, file_size;
@@ -138,10 +140,25 @@ const char *loader_boot(uintptr_t dtb)
 
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	con_hex("JUMP", entry_pa);
-	con_str("XNU", "jumping (fbcon clears screen)");
 
 	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
+#ifdef BOARD_XNU_MPIDR
+	/* PSCI CPU_ON enters at EL1 with MMU and caches off, x0 = context id. */
+	con_hex("XNU CPU", BOARD_XNU_MPIDR);
+	con_str("XNU", "CPU_ON (fbcon clears screen)");
+	int64_t ret = (int64_t)psci(PSCI_CPU_ON_64, BOARD_XNU_MPIDR, entry_pa, ba_pa);
+	if (ret != 0) {
+		con_hex("CPU_ON", (uint64_t)ret);
+		return "xnu core did not start";
+	}
+	/* This core stays out of xnu's way; CPU_OFF only returns on failure. */
+	psci(PSCI_CPU_OFF_32, 0, 0, 0);
+	for (;;)
+		__asm__ volatile("wfe");
+#else
+	con_str("XNU", "jumping (fbcon clears screen)");
 	((xnu_entry_t)entry_pa)(ba_pa);
 	return "xnu returned";
+#endif
 }

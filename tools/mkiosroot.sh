@@ -4,6 +4,8 @@
 #
 #   mkiosroot.sh OS.dmg SYSTEMOS.dmg APPOS.dmg OUT.img [SIZE]     (SIZE default 16G)
 #
+# OUT may also be a block device (used whole; SIZE is ignored).
+#
 # The IPSW images are raw APFS with LZBITMAP-compressed files: they are read
 # through apfs-fuse (decompressing), so the HFS+ copy is uncompressed. On a
 # device /private/preboot is its own volume holding the cryptexes, which
@@ -18,9 +20,9 @@
 # keybagd reads with /defaults/no-effaceable-storage (tools/mkadt.py).
 set -euo pipefail
 
-[[ $# -ge 4 ]] || { sed -n '2,12p' "$0"; exit 2; }
+[[ $# -ge 4 ]] || { sed -n '2,14p' "$0"; exit 2; }
 os=$(realpath "$1") sysos=$(realpath "$2") appos=$(realpath "$3") out=$4 size=${5:-16G}
-[[ ! -e $out ]] || { echo "refusing to overwrite $out" >&2; exit 1; }
+[[ ! -e $out || -b $out ]] || { echo "refusing to overwrite $out" >&2; exit 1; }
 
 # Pre-flight tool check
 missing_tools=()
@@ -71,7 +73,7 @@ apfs_mount "$os" os
 apfs_mount "$sysos" sysos
 apfs_mount "$appos" appos
 
-truncate -s "$size" "$out"
+[[ -b $out ]] || truncate -s "$size" "$out"
 mkfs.hfsplus -s -J -v iOSRoot "$out"
 mkdir "$work/root"
 sudo mount -t hfsplus -o loop,force "$out" "$work/root"

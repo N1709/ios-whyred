@@ -12,12 +12,8 @@
 #include "loader.h"
 #include "ufs.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
-#define PSHOLD			0x0c264000UL
 
-#define GICD_BASE		0x17a00000UL
-#define GICR_BASE		0x17a60000UL
 #define GICR_SIZE		0x100000UL
 #define GICR_PE_SIZE		0x20000UL
 #define GICR_TYPER		0x08
@@ -30,8 +26,6 @@
 #define GICR_ISPENDR0		(GICR_SGI + 0x200)
 #define GICR_ISACTIVER0		(GICR_SGI + 0x300)
 #define GICR_ICFGR1		(GICR_SGI + 0xc04)
-#define VTIMER_INTID		19	/* DT: <GIC_PPI 3 ...>, not the usual 27 */
-#define PTIMER_INTID		18	/* DT: <GIC_PPI 2 ...> */
 #define SGI_INTID		1
 
 #define PSCI_VERSION		0x84000000UL
@@ -60,6 +54,7 @@ extern char secondary_entry[];
 
 static const char *stage;	/* set at runtime: no absolute pointers in data */
 static volatile uint64_t sec_mpidr[NR_CPUS];
+static volatile uint64_t sec_mmfr0[NR_CPUS];
 static volatile uint64_t sec_probe[4];	/* CPU1 redistributor write test */
 static volatile uint32_t irq_count, irq_other, irq_last;
 static volatile int irq_src;
@@ -80,12 +75,17 @@ static uint64_t smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
 	register uint64_t x1 __asm__("x1") = a1;
 	register uint64_t x2 __asm__("x2") = a2;
 	register uint64_t x3 __asm__("x3") = a3;
-	__asm__ volatile("smc #0"
+	__asm__ volatile(PSCI_CALL
 			 : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
 			 :
 			 : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
 			   "x12", "x13", "x14", "x15", "x16", "x17", "memory");
 	return x0;
+}
+
+uint64_t psci(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
+{
+	return smc(fn, a1, a2, a3);
 }
 
 static uint64_t now(void)
@@ -106,10 +106,12 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
-	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
+	if (IMEM_RESTART_REASON)
+		wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
-	wr32(PSHOLD, 0);
+	if (PSHOLD)
+		wr32(PSHOLD, 0);
 	for (;;)
 		__asm__ volatile("wfe");
 }
@@ -167,6 +169,7 @@ static uintptr_t find_gicr(void);
 
 void secondary_main(uint64_t idx)
 {
+	sec_mmfr0[idx] = rsr("id_aa64mmfr0_el1");
 	sec_mpidr[idx] = rsr("mpidr_el1") | (1ULL << 63);
 	if (idx == 1) {
 		uintptr_t r = find_gicr();
@@ -183,23 +186,37 @@ void secondary_main(uint64_t idx)
 	smc(PSCI_CPU_OFF, 0, 0, 0);
 }
 
-static void __attribute__((unused)) test_smp(void)
+static int64_t smp_ret[NR_CPUS];
+static uint64_t smp_mpidr[NR_CPUS], smp_mmfr0[NR_CPUS];
+
+/* MMU off: the secondaries write sec_* uncached, so read them uncached too. */
+static void __attribute__((unused)) smp_start(void)
 {
 	stage = "smp";
-	uint64_t self = rsr("mpidr_el1") & 0xffffff;
-	int64_t ret[NR_CPUS];
-
 	for (int i = 1; i < NR_CPUS; i++)
-		ret[i] = smc(PSCI_CPU_ON, (uint64_t)i << 8, (uintptr_t)secondary_entry, i);
+		smp_ret[i] = smc(PSCI_CPU_ON, BOARD_MPIDR(i), (uintptr_t)secondary_entry, i);
 	delay_ms(500);
+	for (int i = 1; i < NR_CPUS; i++) {
+		smp_mpidr[i] = sec_mpidr[i];
+		smp_mmfr0[i] = sec_mmfr0[i];
+	}
+}
+
+/* One line per core: MPIDR and TGran16 (1 = 16K pages usable by xnu). */
+static void __attribute__((unused)) smp_report(void)
+{
+	uint64_t self = rsr("mpidr_el1") & 0xffffff;
+
+	con_hex2("CPU0", "mpidr=", (uint32_t)rsr("mpidr_el1"), "tg16=", (rsr("id_aa64mmfr0_el1") >> 20) & 0xf);
 	for (int i = 1; i < NR_CPUS; i++) {
 		char label[] = "CPU0";
 		label[3] = '0' + i;
-		if (((uint64_t)i << 8) == self)
+		if (BOARD_MPIDR(i) == self)
 			con_str(label, "is boot cpu");
+		else if (smp_ret[i] != 0 || !smp_mpidr[i])
+			con_hex2(label, "ret=", (uint32_t)smp_ret[i], "mpidr=", (uint32_t)smp_mpidr[i] | 0xdead0000);
 		else
-			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
-				 (uint32_t)sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000));
+			con_hex2(label, "mpidr=", (uint32_t)smp_mpidr[i], "tg16=", (smp_mmfr0[i] >> 20) & 0xf);
 	}
 }
 
@@ -372,17 +389,18 @@ static uint32_t to_us(uint64_t ticks)
 
 void shim_main(uint64_t dtb)
 {
-	struct mmu_info mi;
+	static struct mmu_info mi;	/* zero if the MMU test is skipped */
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", BOARD_NAME " milestone 4: xnu loader");
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
 
+#if BOARD_HAS_UFS
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";
 	test_ufs();
@@ -391,13 +409,18 @@ void shim_main(uint64_t dtb)
 	con_str("UFS", "probe done, reset in ~3 min");
 	delay_ms(180000);
 	reset(20);
+#endif
+#if !BOARD_SWEET
+	smp_start();
+#endif
 
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);
 	uint64_t mem_off = ticks_mem();
 
 	stage = "mmu enable";
-	int rc = mmu_enable(&mi);
+	/* The test tables use the 16K granule; Cortex-A53 only has 4K/64K. */
+	int rc = ((rsr("id_aa64mmfr0_el1") >> 20) & 0xf) ? mmu_enable(&mi) : -2;
 
 	stage = "fill on";
 	uint64_t fill_on = rc ? 0 : ticks_fill(RED);
@@ -405,8 +428,11 @@ void shim_main(uint64_t dtb)
 	if (rc)
 		con_clear(RED);
 
-	con_str("SHIM", "sweet milestone 3");
+	con_str("SHIM", BOARD_NAME " milestone 3");
 	con_skip();
+	/* ISAR0 bits 23:20 = LSE atomics, MMFR1 bits 23:20 = PAN (0 = absent: ARMv8.0) */
+	con_hex2("ISA", "lse=", (rsr("id_aa64isar0_el1") >> 20) & 0xf, "pan=", (rsr("id_aa64mmfr1_el1") >> 20) & 0xf);
+	con_hex("MIDR", rsr("midr_el1"));
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(rd32(dtb)) : 0);
 	con_hex2("IMAGE", "lo=", mi.img_lo, "hi=", mi.img_hi);
 	con_hex2("MMU", "rc=", rc, "l3=", mi.n_l3);
@@ -429,6 +455,10 @@ void shim_main(uint64_t dtb)
 	con_hex2("PSCI", "ver=", smc(PSCI_VERSION, 0, 0, 0), "smccc=", smc(SMCCC_VERSION, 0, 0, 0));
 	con_skip();
 	test_gic();
+#if !BOARD_SWEET
+	con_skip();
+	smp_report();
+#endif
 
 	stage = "done";
 	reset(40);

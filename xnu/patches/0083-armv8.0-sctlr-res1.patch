@@ -1,0 +1,27 @@
+--- a/osfmk/arm64/proc_reg.h
++++ b/osfmk/arm64/proc_reg.h
+@@ -651,12 +651,23 @@
+ #define SCTLR_JOP_KEYS_DEFAULT  0
+ #endif
+ 
++#if defined(SWEET) && !defined(__ARM_PAN_AVAILABLE__)
++/*
++ * ARMv8.0 cores (ginkgo: Cortex-A73) have SPAN, EIS and EOS as RES1. With
++ * SPAN=0 any v8.1+ core sets PSTATE.PAN on every exception to EL1, and this
++ * PAN-less configuration never clears it, so copyio faults forever.
++ */
++#define SCTLR_V80_RES1          (SCTLR_PAN_UNCHANGED | SCTLR_EIS | SCTLR_EOS)
++#else
++#define SCTLR_V80_RES1          0
++#endif
++
+ #define SCTLR_EL1_DEFAULT \
+ 	(SCTLR_RESERVED | SCTLR_UCI_ENABLED | SCTLR_nTWE_WFE_ENABLED | SCTLR_DZE_ENABLED | \
+ 	 SCTLR_I_ENABLED | SCTLR_SED_DISABLED | SCTLR_CP15BEN_ENABLED |                    \
+ 	 SCTLR_SA0_ENABLED | SCTLR_SA_ENABLED | SCTLR_C_ENABLED | SCTLR_M_ENABLED |        \
+ 	 SCTLR_CSEH_DEFAULT | SCTLR_DSSBS_DEFAULT |                                        \
+-	 SCTLR_ROP_KEYS_DEFAULT | SCTLR_JOP_KEYS_DEFAULT)
++	 SCTLR_ROP_KEYS_DEFAULT | SCTLR_JOP_KEYS_DEFAULT | SCTLR_V80_RES1)
+ 
+ /*
+  * Coprocessor Access Control Register (CPACR)

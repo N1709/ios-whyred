@@ -8,3 +8,5 @@ shim/out/
 xnu/out/
 xnu/out-*/
 __pycache__/
+# local QEMU test runs (tools/qemu-shim.py, tools/qemu-sweet.py)
+.qemu-test/
