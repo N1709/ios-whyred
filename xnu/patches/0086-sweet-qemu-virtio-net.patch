@@ -32,10 +32,10 @@ index 2aa4d37..45f6792 100644
  
 diff --git a/bsd/dev/sweet_vnet.c b/bsd/dev/sweet_vnet.c
 new file mode 100644
-index 0000000..1e79e9e
+index 0000000..d9c406b
 --- /dev/null
 +++ b/bsd/dev/sweet_vnet.c
-@@ -0,0 +1,490 @@
+@@ -0,0 +1,495 @@
 +/*
 + * SWEET virtio-net for QEMU's virt board: an Ethernet interface (en9)
 + * without the phone's Wi-Fi.
@@ -69,6 +69,7 @@ index 0000000..1e79e9e
 +#include <net/kpi_interface.h>
 +#include <net/kpi_protocol.h>
 +#include <net/route.h>
++#include <net/bpf.h>
 +#include <netinet/in.h>
 +
 +extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
@@ -274,6 +275,7 @@ index 0000000..1e79e9e
 +				mbuf_pkthdr_setlen(m, len);
 +				void *frame_header = mbuf_data(m);
 +				mbuf_pkthdr_setrcvif(m, vn.ifp);
++				bpf_tap_in(vn.ifp, DLT_EN10MB, m, NULL, 0);
 +				mbuf_pkthdr_setheader(m, frame_header);
 +				mbuf_pkthdr_adjustlen(m, -ETHER_HDR_LEN);
 +				(void)mbuf_setdata(m, (char *)mbuf_data(m) + ETHER_HDR_LEN, mbuf_len(m) - ETHER_HDR_LEN);
@@ -310,6 +312,7 @@ index 0000000..1e79e9e
 +{
 +	size_t len = mbuf_pkthdr_len(m);
 +
++	bpf_tap_out(ifp, DLT_EN10MB, m, NULL, 0);
 +	lck_mtx_lock(vn.lock);
 +	vn_tx_reclaim_locked();
 +	if ((uint16_t)(vn.tx_next - vn.tx_seen) >= QSIZE || len > BUF_SIZE - NET_HDR) {
@@ -415,6 +418,8 @@ index 0000000..1e79e9e
 +		return;
 +	}
 +	ifnet_set_lladdr(vn.ifp, vn.mac, ETHER_ADDR_LEN);
++	/* IPConfiguration's ARP probe opens BPF on the interface. */
++	bpfattach(vn.ifp, DLT_EN10MB, ETHER_HDR_LEN);
 +
 +	errno_t err = proto_plumb(PF_INET, vn.ifp);
 +	socket_t so = NULL;
