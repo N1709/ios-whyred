@@ -148,7 +148,8 @@ def main():
     if a.disk:
         cmd += ['-global', 'virtio-mmio.force-legacy=false',
                 '-drive', f'file={a.disk},if=none,format=raw,id=d0', '-device', 'virtio-blk-device,drive=d0',
-                '-device', 'virtio-tablet-device,id=touch', '-device', 'virtio-keyboard-device,id=keys']
+                '-device', 'virtio-tablet-device,id=touch', '-device', 'virtio-keyboard-device,id=keys',
+                '-netdev', 'user,id=n0', '-device', 'virtio-net-device,netdev=n0']
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
     try:
         if a.live:
