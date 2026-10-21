@@ -11,7 +11,8 @@ The early framebuffer console (0010, 0012) hard-codes sweet's splash
 address 0x9c000000, which is kernel RAM on ginkgo (splash at 0x5c000000,
 1080x2340). 0012's context lines repeat 0010's result, so both change.
 The A53s cannot use xnu's 16K pages, so the kernel's CPU topology checks
-(0065, 0078) accept the A73 cluster instead of sweet's Aff1 numbering.
+(0065, 0078) accept the A73 cluster instead of sweet's Aff1 numbering,
+with up to 16 cores in it for QEMU.
 Each edit replaces one line in place, so hunk line counts stay valid.
 """
 import os, sys
@@ -60,9 +61,17 @@ EDITS = {
         ('0038-sweet-applekeystore.patch',
          '     "     \'IONameMatch\'     = \'qcom,kryo470\';"\n',
          '     "     \'IONameMatch\'     = \'qcom,kryo260\';"\n'),
+        # The phone has four A73s (0x100-0x103); QEMU virt can give the same
+        # cluster up to 16 vCPUs (0x100-0x10f, -smp 32).
         ('0078-sweet-smp-8-cores.patch',
          '+\tif (cpu->phys_id > 0x700 || (cpu->phys_id & 0xff) != 0 ||\n',
-         '+\tif ((cpu->phys_id & ~0x3u) != 0x100 ||\n'),
+         '+\tif ((cpu->phys_id & ~0xfu) != 0x100 ||\n'),
+        ('0078-sweet-smp-8-cores.patch',
+         '+#define SWEET_SMP_MAX_CPUS         8\n',
+         '+#define SWEET_SMP_MAX_CPUS         16\n'),
+        ('0004-sweet-machine-config.patch',
+         '+#define MAX_CPUS                       8\n',
+         '+#define MAX_CPUS                       16\n'),
     ],
 }
 

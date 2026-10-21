@@ -129,6 +129,7 @@ def main():
     ap.add_argument('outdir')
     ap.add_argument('--cpu', default='cortex-a53')
     ap.add_argument('--smp', type=int, default=8)
+    ap.add_argument('--mem', default='4G', help='guest RAM (ginkgo ADT DRAM ends at 0xf3000000: 3G covers it)')
     ap.add_argument('--secs', type=float, default=8)
     ap.add_argument('--initrd', help='ramdisk (default: none; the shim then reports "no initrd")')
     ap.add_argument('--test-payload', action='store_true', help='boot a tiny test payload instead of xnu')
@@ -145,7 +146,7 @@ def main():
     mon = f'{out}/qmp.sock'
     if os.path.exists(mon):
         os.unlink(mon)
-    cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', str(a.smp), '-m', '4G',
+    cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3', '-cpu', a.cpu, '-smp', str(a.smp), '-m', a.mem,
            '-nographic', '-nic', 'none', '-serial', 'none', '-monitor', 'none', '-qmp', f'unix:{mon},server,nowait',
            '-d', 'guest_errors,unimp' if a.live else 'int,guest_errors,unimp', '-D', f'{out}/qemu.log',
            '-no-reboot', '-kernel', a.image]
@@ -161,12 +162,14 @@ def main():
         if a.live:
             serve_live(out, a.live, bool(a.disk))
         t0 = time.time()
+        # pmemsave runs under QEMU's global lock; a slow (host-shared) OUT stalls vCPUs waiting for it
+        live_raw = os.path.join(tempfile.gettempdir(), f'qemu-live-{os.getpid()}.raw')
         while p.poll() is None and time.time() - t0 < a.secs:
             if a.live:
                 time.sleep(1)
                 if os.path.exists(mon):
-                    qmp(mon, ('pmemsave', {'val': FB_BASE, 'size': FB_STRIDE * FB_H, 'filename': f'{out}/live.raw'}))
-                    write_png(f'{out}/fb.png', open(f'{out}/live.raw', 'rb').read(), level=1)
+                    qmp(mon, ('pmemsave', {'val': FB_BASE, 'size': FB_STRIDE * FB_H, 'filename': live_raw}))
+                    write_png(f'{out}/fb.png', open(live_raw, 'rb').read(), level=1)
             else:
                 time.sleep(0.2)
         if p.poll() is not None:
