@@ -65,9 +65,15 @@ setInterval(() => { const n = new Image(); n.onload = () => { s.src = n.src; };
 </script>'''
 
 
-def serve_live(out, port):
-    """Serve OUT/index.html (self-refreshing) and OUT/fb.png on 0.0.0.0:PORT."""
-    import functools, http.server, threading
+def serve_live(out, port, interactive):
+    """Serve OUT/fb.png on 0.0.0.0:PORT; with a disk (iOS), the page also takes mouse touches (tools/qemu-live.py)."""
+    import functools, http.server, importlib.util, threading
+    if interactive:
+        spec = importlib.util.spec_from_file_location('qemu_live', os.path.join(os.path.dirname(__file__), 'qemu-live.py'))
+        live = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(live)
+        live.serve(out, port)
+        return
     open(f'{out}/index.html', 'wb').write(LIVE_HTML)
 
     class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -153,7 +159,7 @@ def main():
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
     try:
         if a.live:
-            serve_live(out, a.live)
+            serve_live(out, a.live, bool(a.disk))
         t0 = time.time()
         while p.poll() is None and time.time() - t0 < a.secs:
             if a.live:
