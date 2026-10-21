@@ -1,0 +1,43 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index cb67b4d..965762b 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -30,6 +30,7 @@
+ #include <sys/codesign.h>
+ #include <sys/mount.h>
+ #include <sys/priv.h>
++#include <IOKit/IOBSD.h>
+ #include <sys/proc.h>
+ #include <sys/systm.h>
+ #include <sys/ubc_internal.h>
+@@ -323,12 +324,30 @@ static struct {
+ } sweet_priv_logged[SWEET_PRIV_LOG_MAX];
+ static int sweet_priv_logged_count;
+ 
++/* What Sandbox grants for an entitlement on iOS (WebKit networking, NECP clients). */
++static const struct {
++	int priv;
++	const char *entitlement;
++} sweet_priv_entitlements[] = {
++	{ PRIV_NET_PRIVILEGED_SOCKET_DELEGATE, "com.apple.private.network.socket-delegate" },
++	{ PRIV_NET_PRIVILEGED_NECP_MATCH, "com.apple.private.necp.match" },
++	{ PRIV_NET_PRIVILEGED_NECP_POLICIES, "com.apple.private.necp.policies" },
++	{ PRIV_NET_PRIVILEGED_TRAFFIC_CLASS, "com.apple.private.network.traffic-class" },
++	{ PRIV_NET_PRIVILEGED_NETWORK_STATISTICS, "com.apple.private.network.statistics" },
++};
++
+ static int
+ sweet_sandbox_priv_grant(kauth_cred_t cred __unused, int priv)
+ {
+ 	if (priv == PRIV_WORK_INTERVAL) {
+ 		return 0;
+ 	}
++	for (size_t i = 0; i < sizeof(sweet_priv_entitlements) / sizeof(sweet_priv_entitlements[0]); i++) {
++		if (sweet_priv_entitlements[i].priv == priv &&
++		    IOCurrentTaskHasEntitlement(sweet_priv_entitlements[i].entitlement)) {
++			return 0;
++		}
++	}
+ 	char name[20];
+ 	proc_selfname(name, sizeof(name));
+ 	for (int i = 0; i < sweet_priv_logged_count; i++) {
