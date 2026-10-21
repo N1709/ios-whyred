@@ -8,8 +8,29 @@ func sysctlString(_ name: String) -> String {
     return String(cString: buf)
 }
 
+func resolve(_ host: String) -> String {
+    var hints = addrinfo()
+    hints.ai_family = AF_INET
+    hints.ai_socktype = SOCK_STREAM
+    var res: UnsafeMutablePointer<addrinfo>?
+    let err = getaddrinfo(host, "80", &hints, &res)
+    guard err == 0, let first = res else { return "error: \(String(cString: gai_strerror(err)))" }
+    defer { freeaddrinfo(first) }
+    var ips: [String] = []
+    var p: UnsafeMutablePointer<addrinfo>? = first
+    while let ai = p {
+        var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        if getnameinfo(ai.pointee.ai_addr, ai.pointee.ai_addrlen, &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+            ips.append(String(cString: buf))
+        }
+        p = ai.pointee.ai_next
+    }
+    return ips.joined(separator: ", ")
+}
+
 final class HelloViewController: UIViewController {
     private let counter = UILabel()
+    private let netResult = UILabel()
     private var taps = 0
 
     override func viewDidLoad() {
@@ -44,10 +65,23 @@ final class HelloViewController: UIViewController {
         counter.text = "taps: 0"
         counter.font = .monospacedDigitSystemFont(ofSize: 22, weight: .medium)
 
-        for label in [title, info, counter] {
+        let netButton = UIButton(type: .system)
+        netButton.setTitle("Network test", for: .normal)
+        netButton.titleLabel?.font = .boldSystemFont(ofSize: 22)
+        netButton.backgroundColor = .white
+        netButton.setTitleColor(.systemIndigo, for: .normal)
+        netButton.layer.cornerRadius = 14
+        netButton.contentEdgeInsets = UIEdgeInsets(top: 10, left: 28, bottom: 10, right: 28)
+        netButton.addTarget(self, action: #selector(networkTest), for: .touchUpInside)
+
+        netResult.numberOfLines = 0
+        netResult.textAlignment = .left
+        netResult.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+
+        for label in [title, info, counter, netResult] {
             label.textColor = .white
         }
-        let stack = UIStackView(arrangedSubviews: [title, info, button, counter])
+        let stack = UIStackView(arrangedSubviews: [title, info, button, counter, netButton, netResult])
         stack.axis = .vertical
         stack.alignment = .center
         stack.spacing = 28
@@ -63,6 +97,36 @@ final class HelloViewController: UIViewController {
     @objc private func tapped() {
         taps += 1
         counter.text = "taps: \(taps)"
+    }
+
+    private func show(_ lines: [String]) {
+        DispatchQueue.main.async { self.netResult.text = lines.joined(separator: "\n") }
+    }
+
+    @objc private func networkTest() {
+        show(["testing..."])
+        DispatchQueue.global().async {
+            var lines = ["DNS example.com: \(resolve("example.com"))"]
+            self.show(lines)
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForRequest = 20
+            let session = URLSession(configuration: config)
+            for url in ["http://10.0.2.2:8000/", "http://example.com/", "https://www.apple.com/"] {
+                let done = DispatchSemaphore(value: 0)
+                var result = ""
+                session.dataTask(with: URL(string: url)!) { data, response, error in
+                    if let http = response as? HTTPURLResponse {
+                        result = "HTTP \(http.statusCode), \(data?.count ?? 0) bytes"
+                    } else {
+                        result = "error: \(error?.localizedDescription ?? "?")"
+                    }
+                    done.signal()
+                }.resume()
+                done.wait()
+                lines.append("\(url)\n  \(result)")
+                self.show(lines)
+            }
+        }
     }
 }
 

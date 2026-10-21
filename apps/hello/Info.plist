@@ -38,6 +38,11 @@
 	<string>iphoneos</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>MinimumOSVersion</key>
 	<string>16.0</string>
 	<key>UIDeviceFamily</key>
