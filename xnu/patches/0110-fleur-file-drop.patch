@@ -1,0 +1,239 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index eb68fa2..c5d0d03 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -109,6 +109,7 @@ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/fleur_battery.c			standard
++bsd/dev/fleur_drop.c			standard
+ bsd/dev/fleur_gpu.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+diff --git a/bsd/dev/fleur_drop.c b/bsd/dev/fleur_drop.c
+new file mode 100644
+index 0000000..994c7c5
+--- /dev/null
++++ b/bsd/dev/fleur_drop.c
+@@ -0,0 +1,205 @@
++/*
++ * fleur "file drop": install a few files into the mounted root at boot,
++ * carried in the boot image, so test binaries and launchd jobs reach the
++ * iOS root without rewriting userdata (which re-runs data migration).
++ *
++ * tools/mkpayload.py --drop ARCHIVE appends the archive as one more segment
++ * behind the kernel (inside topOfKernelData, like --ramdisk) and adds
++ * /chosen/memory-map "FleurDrop" = <phys, size>. With boot-arg sweetdrop=1,
++ * bsd_init calls fleur_drop_apply() after the root is mounted and before
++ * launchd starts; each file is written through the VFS (vnode_open +
++ * vn_rdwr + fsync), never as raw blocks, so the HFS journal stays coherent.
++ *
++ * Archive: "FLDR" u32 version(1) u32 count u32 0, then count entries of
++ * { char path[256]; u32 mode; u32 0; u64 size; data[size]; pad to 16 }.
++ * Only whitelisted paths are written: /usr/libexec/fleur* and
++ * /System/Library/xpc/launchd.plist. Before replacing launchd.plist the
++ * current one is copied once to launchd.plist.fleur-orig. Owner is root.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <sys/fcntl.h>
++#include <sys/proc.h>
++#include <sys/uio.h>
++#include <sys/vnode.h>
++#include <sys/vnode_internal.h>
++#include <kern/kalloc.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++
++void fleur_drop_apply(void);
++
++#define DROP_MAGIC      0x52444c46u     /* "FLDR" little endian */
++#define DROP_PATH       256u
++#define DROP_PLIST      "/System/Library/xpc/launchd.plist"
++#define DROP_PLIST_ORIG "/System/Library/xpc/launchd.plist.fleur-orig"
++#define DROP_MAX_FILE   (64u << 20)
++
++struct drop_hdr {
++	uint32_t magic, version, count, rsvd;
++};
++
++struct drop_ent {
++	char     path[DROP_PATH];
++	uint32_t mode, rsvd;
++	uint64_t size;
++};
++
++static bool
++drop_path_ok(const char *p)
++{
++	static const char lib[] = "/usr/libexec/fleur";
++	if (strncmp(p, lib, sizeof(lib) - 1) == 0) {
++		/* A plain file name in /usr/libexec: no further '/' and no "..". */
++		for (const char *c = p + sizeof("/usr/libexec/") - 1; *c; c++) {
++			if (*c == '/' || (c[0] == '.' && c[1] == '.')) {
++				return false;
++			}
++		}
++		return true;
++	}
++	return strcmp(p, DROP_PLIST) == 0;
++}
++
++static int
++drop_write(const char *path, const void *data, uint64_t size, uint32_t mode)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	int resid = 0, err;
++
++	if (size > DROP_MAX_FILE) {
++		return EFBIG;
++	}
++	err = vnode_open(path, O_CREAT | O_TRUNC | FWRITE, (int)(mode & 07777), 0, &vp, ctx);
++	if (err) {
++		return err;
++	}
++	if (size) {
++		err = vn_rdwr(UIO_WRITE, vp, (caddr_t)(uintptr_t)data, (int)size, 0, UIO_SYSSPACE,
++		    IO_NOAUTH, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++		if (!err && resid) {
++			err = EIO;
++		}
++	}
++	if (!err) {
++		/* O_CREAT's mode only applies to new files: set it explicitly. */
++		struct vnode_attr va;
++		VATTR_INIT(&va);
++		VATTR_SET(&va, va_mode, (mode_t)(mode & 07777));
++		VATTR_SET(&va, va_uid, 0);
++		VATTR_SET(&va, va_gid, 0);
++		err = vnode_setattr(vp, &va, ctx);
++	}
++	if (!err) {
++		err = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++	}
++	(void)vnode_close(vp, FWRITE, ctx);
++	return err;
++}
++
++/* Copy launchd.plist to launchd.plist.fleur-orig once, before the first replace. */
++static int
++drop_backup_plist(void)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	off_t size = 0;
++	int resid = 0, err;
++
++	if (vnode_lookup(DROP_PLIST_ORIG, 0, &vp, ctx) == 0) {
++		vnode_put(vp);
++		return 0;       /* already saved */
++	}
++	err = vnode_open(DROP_PLIST, FREAD, 0, 0, &vp, ctx);
++	if (err) {
++		return err;
++	}
++	err = vnode_size(vp, &size, ctx);
++	if (!err && (size <= 0 || size > (off_t)DROP_MAX_FILE)) {
++		err = EFBIG;
++	}
++	void *buf = NULL;
++	if (!err) {
++		buf = kalloc_data((vm_size_t)size, Z_WAITOK);
++		if (buf == NULL) {
++			err = ENOMEM;
++		}
++	}
++	if (!err) {
++		err = vn_rdwr(UIO_READ, vp, (caddr_t)buf, (int)size, 0, UIO_SYSSPACE, IO_NOAUTH,
++		    vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++		if (!err && resid) {
++			err = EIO;
++		}
++	}
++	(void)vnode_close(vp, FREAD, ctx);
++	if (!err) {
++		err = drop_write(DROP_PLIST_ORIG, buf, (uint64_t)size, 0644);
++		printf("SWEET DROP: saved %s (%lld bytes) -> %d\n", DROP_PLIST_ORIG, size, err);
++	}
++	if (buf) {
++		kfree_data(buf, (vm_size_t)size);
++	}
++	return err;
++}
++
++void
++fleur_drop_apply(void)
++{
++	int on = 0;
++	DTEntry node;
++	uintptr_t const *range = NULL;
++	unsigned int psize = 0;
++
++	if (!PE_parse_boot_argn("sweetdrop", &on, sizeof(on)) || !on) {
++		return;
++	}
++	if (SecureDTLookupEntry(NULL, "/chosen/memory-map", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "FleurDrop", (void const **)&range, &psize) != kSuccess ||
++	    psize < 2 * sizeof(uintptr_t)) {
++		printf("SWEET DROP: sweetdrop=1 but no FleurDrop in /chosen/memory-map\n");
++		return;
++	}
++	const uint8_t *base = (const uint8_t *)ml_static_ptovirt(range[0]);
++	uint64_t total = range[1], off = sizeof(struct drop_hdr);
++	const struct drop_hdr *h = (const struct drop_hdr *)base;
++	if (base == NULL || total < off || h->magic != DROP_MAGIC || h->version != 1) {
++		printf("SWEET DROP: bad archive at %#lx (%llu bytes)\n", range[0], total);
++		return;
++	}
++	printf("SWEET DROP: %u files, %llu bytes\n", h->count, total);
++	for (uint32_t i = 0; i < h->count; i++) {
++		if (total - off < sizeof(struct drop_ent)) {
++			printf("SWEET DROP: truncated at entry %u\n", i);
++			return;
++		}
++		const struct drop_ent *e = (const struct drop_ent *)(base + off);
++		off += sizeof(*e);
++		if (e->size > total - off) {
++			printf("SWEET DROP: entry %u overruns the archive\n", i);
++			return;
++		}
++		char path[DROP_PATH];
++		strlcpy(path, e->path, sizeof(path));
++		const uint8_t *data = base + off;
++		off += (e->size + 15u) & ~15ULL;
++		if (!drop_path_ok(path)) {
++			printf("SWEET DROP: refused %s\n", path);
++			continue;
++		}
++		if (strcmp(path, DROP_PLIST) == 0) {
++			int berr = drop_backup_plist();
++			if (berr) {
++				printf("SWEET DROP: no backup of %s (%d); not replacing it\n", DROP_PLIST, berr);
++				continue;
++			}
++		}
++		int err = drop_write(path, data, e->size, e->mode);
++		printf("SWEET DROP: %s %llu bytes mode %o -> %d\n", path, e->size, e->mode, err);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index bb2a2bf..441e1d2 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1043,6 +1043,11 @@ bsd_init(void)
+ 	bsd_init_kprintf("calling siginit\n");
+ 	siginit(kernproc);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* fleur: install boot-image files into the mounted root (sweetdrop=1). */
++	extern void fleur_drop_apply(void);
++	fleur_drop_apply();
++#endif
+ 	bsd_init_kprintf("calling bsd_utaskbootstrap\n");
+ 	bsd_utaskbootstrap();
+ 

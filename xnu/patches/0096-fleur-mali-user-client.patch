@@ -1,0 +1,1702 @@
+diff --git a/bsd/dev/fleur_gpu.c b/bsd/dev/fleur_gpu.c
+index f1027d2..d3df06c 100644
+--- a/bsd/dev/fleur_gpu.c
++++ b/bsd/dev/fleur_gpu.c
+@@ -24,6 +24,10 @@
+  * sweetgpupause=N  seconds to sleep before each risky step (default 12,
+  *                  > ufslogsecs) so the last line before a bus hang is on
+  *                  disk; 0 = no pauses.
++ *   5  service mode: no boot probe. The FleurMaliGPU IOKit service
++ *      (iokit/Kernel/arm/FleurGPU.cpp) registers, and the first user client
++ *      open runs the mode 3 power-up (without pauses) through
++ *      fleur_gpu_hw_init(); see research/gpu/REPORT.md.
+  * The GPU is left powered after 2/3/4 (AS0 stays configured after 4; its
+  * page tables are never freed). Every poll has a timeout; JOB/MMU/GPU IRQs
+  * stay masked.
+@@ -44,6 +48,7 @@
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+ #include <sys/systm.h>
++#include <sys/errno.h>
+ #include <kern/clock.h>
+ #include <kern/thread.h>
+ #include <kern/sched_prim.h>
+@@ -62,6 +67,10 @@ extern void flush_dcache64(addr64_t addr, unsigned count, int phys);
+ /* Mach MIG declaration is not included by BSD's exported thread.h (as sweet_touch.c). */
+ extern kern_return_t thread_terminate(thread_t);
+ void fleur_gpu_probe(void);
++/* Service interface (iokit/Kernel/arm/FleurGPU.cpp). */
++int fleur_gpu_mode(void);
++int fleur_gpu_hw_init(vm_offset_t *gpu_regs);
++int fleur_gpu_hw_reset(void);
+ 
+ #define GPU_PA           0x13000000u /* DT mali@13000000, 0x4000 */
+ #define GPU_SIZE         0x4000u
+@@ -269,7 +278,7 @@ static struct {
+ 	int mode;
+ 	unsigned delay_s, pause_s, js;
+ 	uint32_t pwrap_status;
+-	bool pmic_ok;
++	bool pmic_ok, mapped, service_up;
+ } fg;
+ static int fg_sleep_chan;
+ 
+@@ -845,6 +854,10 @@ fg_first_job(void)
+ 	    RESULT_SENTINEL, RESULT_MAGIC);
+ }
+ 
++static void fg_pmic_detect(void);
++static bool fg_power_and_check(bool vgpu_on, bool vsram_on);
++static bool fg_map(void);
++
+ static void
+ fg_thread(void *arg, wait_result_t result)
+ {
+@@ -852,7 +865,33 @@ fg_thread(void *arg, wait_result_t result)
+ 	(void)arg;
+ 	(void)result;
+ 	fg_sleep_s(fg.delay_s);
++	fg_pmic_detect();
++	fg_dump_pmic(&vgpu_on, &vsram_on);
++	fg_dump_soc();
++	if (!fg_power_and_check(vgpu_on, vsram_on)) {
++		goto out;
++	}
++	fg_checkpoint("read GPU registers");
++	fg_dump_gpu();
++	if (fg.mode >= 3) {
++		bool up = fg_gpu_bringup();
++		if (fg.mode >= 4) {
++			if (up) {
++				fg_first_job();
++			} else {
++				printf("SWEET GPU: L2 not ready, no job\n");
++			}
++		}
++	}
++	printf("SWEET GPU: probe done\n");
++out:
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
+ 
++static void
++fg_pmic_detect(void)
++{
+ 	uint32_t en = fg_rd(fg.pwrap, PWRAP_WACS2_EN);
+ 	uint32_t done = fg_rd(fg.pwrap, PWRAP_INIT_DONE2);
+ 	uint32_t rdata = fg_rd(fg.pwrap, PWRAP_WACS2_RDATA);
+@@ -866,18 +905,21 @@ fg_thread(void *arg, wait_result_t result)
+ 	}
+ 	printf("SWEET GPU: mode %d, pwrap en=%#x init=%#x rdata=%#x hwcid=%#x\n",
+ 	    fg.mode, en, done, rdata, hwcid);
+-	fg_dump_pmic(&vgpu_on, &vsram_on);
+-	fg_dump_soc();
++}
+ 
++/* Mode >= 2: power on. Then true if the GPU registers are safe to touch. */
++static bool
++fg_power_and_check(bool vgpu_on, bool vsram_on)
++{
+ 	if (fg.mode >= 2) {
+ 		if (!fg.pmic_ok) {
+ 			printf("SWEET GPU: no PMIC access, not powering on\n");
+-			goto out;
++			return false;
+ 		}
+ 		if (!fg_power_on(vgpu_on, vsram_on)) {
+ 			printf("SWEET GPU: power-on failed\n");
+ 			fg_dump_soc();
+-			goto out;
++			return false;
+ 		}
+ 		fg_dump_pmic(&vgpu_on, &vsram_on);
+ 		fg_dump_soc();
+@@ -886,24 +928,87 @@ fg_thread(void *arg, wait_result_t result)
+ 	if (!fg_mfg_all_on() || (fg_rd(fg.mfg, MFG_CG_STA) & 1u)) {
+ 		printf("SWEET GPU: GPU not powered, registers not read%s\n",
+ 		    fg.mode == 1 ? " (sweetgpu=2 powers it)" : "");
+-		goto out;
++		return false;
+ 	}
+-	fg_checkpoint("read GPU registers");
+-	fg_dump_gpu();
+-	if (fg.mode >= 3) {
+-		bool up = fg_gpu_bringup();
+-		if (fg.mode >= 4) {
+-			if (up) {
+-				fg_first_job();
+-			} else {
+-				printf("SWEET GPU: L2 not ready, no job\n");
+-			}
++	return true;
++}
++
++static bool
++fg_map(void)
++{
++	if (fg.mapped) {
++		return true;
++	}
++	fg.gpu = ml_io_map(GPU_PA, GPU_SIZE);
++	fg.mfg = ml_io_map(MFGCFG_PA, 0x1000);
++	fg.top = ml_io_map(TOP_PA, 0x1000);
++	fg.infra = ml_io_map(INFRA_PA, 0x1000);
++	fg.spm = ml_io_map(SPM_PA, 0x1000);
++	fg.apmixed = ml_io_map(APMIXED_PA, 0x1000);
++	fg.pwrap = ml_io_map(PWRAP_PA, 0x1000);
++	if (!fg.gpu || !fg.mfg || !fg.top || !fg.infra || !fg.spm || !fg.apmixed || !fg.pwrap) {
++		printf("SWEET GPU: ml_io_map failed\n");
++		return false;
++	}
++	fg.mapped = true;
++	return true;
++}
++
++/* sweetgpu boot-arg (0 when absent). */
++int
++fleur_gpu_mode(void)
++{
++	int mode = 0;
++	(void)PE_parse_boot_argn("sweetgpu", &mode, sizeof(mode));
++	return mode;
++}
++
++/*
++ * Service mode (sweetgpu>=5): power on and bring the GPU up once, as modes
++ * 2+3 without pauses. Called by FleurMaliGPU under its lock, from a user
++ * thread (the first open). Returns 0 and the mapped GPU registers, or EIO.
++ */
++int
++fleur_gpu_hw_init(vm_offset_t *gpu_regs)
++{
++	bool vgpu_on, vsram_on;
++	if (fleur_gpu_mode() < 5 || !fg_map()) {
++		return EIO;
++	}
++	if (!fg.service_up) {
++		fg.mode = fleur_gpu_mode();
++		fg.pause_s = 0;
++		fg_pmic_detect();
++		fg_dump_pmic(&vgpu_on, &vsram_on);
++		fg_dump_soc();
++		if (!fg_power_and_check(vgpu_on, vsram_on)) {
++			return EIO;
++		}
++		fg_dump_gpu();
++		if (!fg_gpu_bringup()) {
++			printf("SWEET GPU: service: L2 not ready\n");
++			return EIO;
+ 		}
++		fg_wr(fg.gpu, GPU_COHERENCY_ENABLE, GPU_COHERENCY_NONE);
++		fg.service_up = true;
++		printf("SWEET GPU: service: GPU up\n");
+ 	}
+-	printf("SWEET GPU: probe done\n");
+-out:
+-	(void)thread_terminate(current_thread());
+-	thread_block(THREAD_CONTINUE_NULL);
++	*gpu_regs = fg.gpu;
++	return 0;
++}
++
++/* Soft reset + L2/tiler/shader power-up again (job timeout recovery). */
++int
++fleur_gpu_hw_reset(void)
++{
++	if (!fg.service_up) {
++		return EIO;
++	}
++	if (!fg_gpu_bringup()) {
++		return EIO;
++	}
++	fg_wr(fg.gpu, GPU_COHERENCY_ENABLE, GPU_COHERENCY_NONE);
++	return 0;
+ }
+ 
+ void
+@@ -915,25 +1020,20 @@ fleur_gpu_probe(void)
+ 		return;
+ 	}
+ 	started = true;
+-	fg.mode = 0;
+ 	fg.delay_s = 30;
+ 	fg.pause_s = 12;
+-	(void)PE_parse_boot_argn("sweetgpu", &fg.mode, sizeof(fg.mode));
++	fg.mode = fleur_gpu_mode();
+ 	if (fg.mode <= 0) {
+ 		return;
+ 	}
++	if (fg.mode >= 5) {
++		printf("SWEET GPU: service mode (sweetgpu=%d), no boot probe\n", fg.mode);
++		return;
++	}
+ 	(void)PE_parse_boot_argn("sweetgpudelay", &fg.delay_s, sizeof(fg.delay_s));
+ 	(void)PE_parse_boot_argn("sweetgpupause", &fg.pause_s, sizeof(fg.pause_s));
+ 	(void)PE_parse_boot_argn("sweetgpujs", &fg.js, sizeof(fg.js));
+-	fg.gpu = ml_io_map(GPU_PA, GPU_SIZE);
+-	fg.mfg = ml_io_map(MFGCFG_PA, 0x1000);
+-	fg.top = ml_io_map(TOP_PA, 0x1000);
+-	fg.infra = ml_io_map(INFRA_PA, 0x1000);
+-	fg.spm = ml_io_map(SPM_PA, 0x1000);
+-	fg.apmixed = ml_io_map(APMIXED_PA, 0x1000);
+-	fg.pwrap = ml_io_map(PWRAP_PA, 0x1000);
+-	if (!fg.gpu || !fg.mfg || !fg.top || !fg.infra || !fg.spm || !fg.apmixed || !fg.pwrap) {
+-		printf("SWEET GPU: ml_io_map failed\n");
++	if (!fg_map()) {
+ 		return;
+ 	}
+ 	kern_return_t kr = kernel_thread_start(fg_thread, NULL, &thread);
+diff --git a/iokit/Kernel/arm/FleurGPU.cpp b/iokit/Kernel/arm/FleurGPU.cpp
+new file mode 100644
+index 0000000..8ce8f5c
+--- /dev/null
++++ b/iokit/Kernel/arm/FleurGPU.cpp
+@@ -0,0 +1,1263 @@
++/*
++ * FleurMaliGPU: Mali-G57 MC2 (MT6781, Valhall v9, job manager) for user
++ * space, with a Panfrost-like user client. ABI: FleurGPUUAPI.h.
++ *
++ * Off unless boot-arg sweetgpu=5 (start() fails and nothing is registered,
++ * so normal boots are unchanged). The first IOServiceOpen powers the GPU
++ * through bsd/dev/fleur_gpu.c (fleur_gpu_hw_init: PMIC check, MTCMOS,
++ * clocks, soft reset, L2/tiler/shader power-up), then the GPU stays on.
++ *
++ * Model (deliberately simple, first version):
++ *  - Each connection owns one hardware address space (AS1..AS7) programmed
++ *    at open with its own AArch64 4K page tables (TRANSCFG/MEMATTR as the
++ *    0095 boot probe, which ran a WRITE_VALUE job on the phone).
++ *  - Buffer objects are IOBufferMemoryDescriptors mapped at a GPU VA in
++ *    [32 MiB, 4 GiB) of the connection's AS; the GPU sees them
++ *    non-cacheable, user mappings are write-combined, so neither side
++ *    needs cache maintenance. The kernel's cacheable alias is cleaned and
++ *    invalidated once after allocation and never touched again.
++ *  - Jobs run strictly one chain at a time, in submission order, from one
++ *    worker thread that polls JOB/MMU raw status (all GPU IRQs stay masked;
++ *    the GIC SPIs are never enabled). Fragment chains (FLEUR_GPU_JD_REQ_FS)
++ *    go to job slot 0, everything else to slot 1, as Panfrost.
++ *  - MMU faults are logged, the AS is set to UNMAPPED so the job fails, then
++ *    restored. A chain that runs longer than sweetgputimeout ms (default
++ *    2000) is hard-stopped; if that fails the GPU is reset and every AS is
++ *    reprogrammed.
++ * Boot-args: sweetgpu=5, sweetgputimeout=<ms>, sweetgpumem=<MiB budget for
++ * all BOs, default 1024>, sweetgpuopen=1 (let non-root tasks open it),
++ * sweetgpulog=N (log the first N submissions, default 16).
++ * Register facts: Linux panfrost_regs.h / panfrost_mmu.c / panfrost_job.c.
++ */
++#include <pexpert/arm64/board_config.h>
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <IOKit/IOLib.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOBufferMemoryDescriptor.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <IOKit/IOLocks.h>
++#include <libkern/c++/OSArray.h>
++#include <kern/clock.h>
++#include <sys/proc.h>
++#include <pexpert/pexpert.h>
++#include "FleurGPUUAPI.h"
++
++/* bsd/dev/fleur_gpu.c */
++extern "C" int fleur_gpu_mode(void);
++extern "C" int fleur_gpu_hw_init(vm_offset_t *gpu_regs);
++extern "C" int fleur_gpu_hw_reset(void);
++/* Mach, not in IOKit's headers. */
++extern "C" kern_return_t kernel_thread_start(void (*)(void *, wait_result_t), void *, thread_t *);
++extern "C" void thread_deallocate(thread_t);
++extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
++
++/* Mali registers (job manager GPUs). */
++#define GPU_ID               0x000u
++#define GPU_L2_FEATURES      0x004u
++#define GPU_CORE_FEATURES    0x008u
++#define GPU_TILER_FEATURES   0x00cu
++#define GPU_MEM_FEATURES     0x010u
++#define GPU_MMU_FEATURES     0x014u
++#define GPU_AS_PRESENT       0x018u
++#define GPU_JS_PRESENT       0x01cu
++#define GPU_AFBC_FEATURES    0x04cu
++#define GPU_TIMESTAMP_LO     0x098u
++#define GPU_THREAD_MAX_THREADS 0x0a0u
++#define GPU_THREAD_MAX_WORKGROUP 0x0a4u
++#define GPU_THREAD_MAX_BARRIER 0x0a8u
++#define GPU_THREAD_FEATURES  0x0acu
++#define GPU_TEXTURE_FEATURES(n) (0x0b0u + 4u * (n))
++#define GPU_JS_FEATURES(n)   (0x0c0u + 4u * (n))
++#define GPU_SHADER_PRESENT   0x100u
++#define GPU_TILER_PRESENT    0x110u
++#define GPU_L2_PRESENT       0x120u
++#define GPU_COHERENCY_FEATURES 0x300u
++#define GPU_THREAD_TLS_ALLOC 0x310u
++#define GPU_STACK_PRESENT    0xe00u
++#define GPU_FAULTSTATUS      0x03cu
++#define GPU_STATUS           0x034u
++#define JOB_IRQ_RAWSTAT      0x1000u
++#define JOB_IRQ_CLEAR        0x1004u
++#define JS_REG(n, off)       (0x1800u + 0x80u * (n) + (off))
++#define JS_HEAD_LO           0x00u
++#define JS_TAIL_LO           0x08u
++#define JS_COMMAND           0x20u
++#define JS_STATUS            0x24u
++#define JS_HEAD_NEXT_LO      0x40u
++#define JS_AFFINITY_NEXT_LO  0x50u
++#define JS_CONFIG_NEXT       0x58u
++#define JS_COMMAND_NEXT      0x60u
++#define JS_CMD_START         0x01u
++#define JS_CMD_HARD_STOP     0x03u
++#define JS_CFG_START_FLUSH_CLEAN_INV (3u << 8)
++#define JS_CFG_JOB_CHAIN_FLAG (1u << 11)
++#define JS_CFG_END_FLUSH_CLEAN_INV (3u << 12)
++#define JS_CFG_THREAD_PRI(n) ((n) << 16)
++#define MMU_IRQ_RAWSTAT      0x2000u
++#define MMU_IRQ_CLEAR        0x2004u
++#define AS_REG(as, off)      (0x2400u + 0x40u * (as) + (off))
++#define AS_TRANSTAB_LO       0x00u
++#define AS_MEMATTR_LO        0x08u
++#define AS_LOCKADDR_LO       0x10u
++#define AS_COMMAND           0x18u
++#define AS_FAULTSTATUS       0x1cu
++#define AS_FAULTADDRESS_LO   0x20u
++#define AS_STATUS            0x28u
++#define AS_TRANSCFG_LO       0x30u
++#define AS_CMD_UPDATE        0x01u
++#define AS_CMD_LOCK          0x02u
++#define AS_CMD_FLUSH_PT      0x04u
++#define AS_CMD_FLUSH_MEM     0x05u
++#define AS_STATUS_ACTIVE     0x01u
++#define AS_TRANSCFG_UNMAPPED 0x1ull
++/* As 0095 (tested): AARCH64_4K, INA_BITS(55-48), PTW non-cacheable. */
++#define AS_TRANSCFG_VAL      (6ull | (7ull << 6) | (1ull << 24))
++#define AS_MEMATTR_VAL       0x4c4c4c4c4c4c4c4cull
++#define AS_LOCK_MIN_LOG2     15
++#define PTE_VALID_TABLE      0x3ull
++#define PTE_PAGE             0x3ull
++#define PTE_RW               (1ull << 6)
++#define PTE_AF               (1ull << 10)
++#define PTE_NX               (1ull << 54)
++#define PTE_ADDR_MASK        0x000ffffffffff000ull
++#define GPU_PAGE             4096ull
++#define NUM_AS               8u
++#define STATUS_RING          256u
++
++class FleurMaliGPUUserClient;
++
++/* ---------------------------------------------------------------- BO */
++
++class FleurGPUBO : public OSObject {
++	OSDeclareDefaultStructors(FleurGPUBO);
++public:
++	IOBufferMemoryDescriptor *mem;
++	uint64_t va, size;
++	uint64_t lastSeq;
++	uint32_t handle, flags;
++	bool mapped;
++	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }
++	void free() APPLE_KEXT_OVERRIDE;
++};
++OSDefineMetaClassAndStructors(FleurGPUBO, OSObject);
++
++void
++FleurGPUBO::free()
++{
++	if (mem != NULL) {
++		mem->complete();
++	}
++	OSSafeReleaseNULL(mem);
++	OSObject::free();
++}
++
++/* ---------------------------------------------------------------- job */
++
++class FleurGPUJob : public OSObject {
++	OSDeclareDefaultStructors(FleurGPUJob);
++public:
++	FleurMaliGPUUserClient *client;   /* retained: keeps its AS alive */
++	OSArray *bos;                     /* retained BOs */
++	uint64_t jc, seq;
++	uint32_t requirements;
++	FleurGPUJob *next;
++	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }
++	void free() APPLE_KEXT_OVERRIDE;
++};
++OSDefineMetaClassAndStructors(FleurGPUJob, OSObject);
++
++/* ---------------------------------------------------------------- device */
++
++class FleurMaliGPU : public IOService {
++	OSDeclareDefaultStructors(FleurMaliGPU);
++public:
++	IOLock *fLock;
++	vm_offset_t fRegs;
++	bool fUp;
++	FleurMaliGPUUserClient *fAs[NUM_AS];   /* AS owners (not retained) */
++	FleurGPUJob *fHead, *fTail;
++	uint64_t fNextSeq, fDoneSeq;
++	uint32_t fStatus[STATUS_RING];
++	uint64_t fStatusSeq[STATUS_RING];
++	uint64_t fMemUsed, fMemBudget;
++	uint32_t fTimeoutMs, fLogLeft, fChainFlag[2];
++	bool fAnyOpen;
++
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++
++	uint32_t rd(uint32_t off) const;
++	void wr(uint32_t off, uint32_t v) const;
++	uint64_t rd64(uint32_t off) const;
++	void wr64(uint32_t off, uint64_t v) const;
++
++	IOReturn ensureUp(void);                       /* lock held */
++	bool asWait(unsigned as);                      /* lock held */
++	bool asCmd(unsigned as, uint32_t cmd);         /* lock held */
++	bool asLockRegion(unsigned as, uint64_t start, uint64_t size);
++	bool asEnable(unsigned as, uint64_t transtab); /* lock held */
++	void asDisable(unsigned as);                   /* lock held */
++	void asFlushRange(unsigned as, uint64_t va, uint64_t size); /* lock held */
++	int allocAs(FleurMaliGPUUserClient *c);        /* lock held */
++	void freeAs(unsigned as);                      /* lock held */
++
++	uint64_t queueJob(FleurGPUJob *job);            /* lock held */
++	void finish(FleurGPUJob *job, uint32_t status); /* lock held */
++	void runJob(FleurGPUJob *job);                 /* lock held on entry/exit */
++	void recover(void);                            /* lock held */
++	static void workerThread(void *arg, wait_result_t res) __attribute__((noreturn));
++	bool waitSeq(uint64_t seq, uint64_t timeoutNs, uint32_t *status);
++};
++OSDefineMetaClassAndStructors(FleurMaliGPU, IOService);
++
++/* ---------------------------------------------------------------- client */
++
++struct FleurPT {                 /* one 4 KiB GPU page table */
++	volatile uint64_t *va;
++	uint64_t pa;
++	FleurPT **child;             /* 512 entries for levels 0-2, NULL for L3 */
++};
++
++struct FleurVARange {
++	uint64_t start, end;
++};
++
++class FleurMaliGPUUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(FleurMaliGPUUserClient);
++public:
++	FleurMaliGPU *fGPU;
++	task_t fTask;
++	int fAs;                     /* hardware AS, -1 = none */
++	FleurPT *fRoot;
++	OSArray *fPTMem;             /* IOBufferMemoryDescriptors backing tables */
++	vm_offset_t fPTFreeVa;       /* next free 4 KiB table in the last chunk */
++	uint64_t fPTFreePa;
++	unsigned fPTFreeLeft;
++	OSArray *fBOs;               /* index = handle - 1; kOSBooleanFalse when freed */
++	FleurVARange *fFree;         /* free GPU VA ranges, sorted */
++	unsigned fFreeCount, fFreeMax;
++	uint64_t fLastSeq;
++	bool fClosed;
++
++	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	void free(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) APPLE_KEXT_OVERRIDE;
++	IOReturn clientMemoryForType(UInt32 type, IOOptionBits *options,
++	    IOMemoryDescriptor **memory) APPLE_KEXT_OVERRIDE;
++
++	FleurPT *newTable(bool leaf);                /* lock held */
++	void freeTables(FleurPT *pt, unsigned level);
++	bool mapPage(uint64_t va, uint64_t pa, uint64_t flags);   /* lock held */
++	void unmapPage(uint64_t va);                 /* lock held */
++	bool vaAlloc(uint64_t size, uint64_t *va);
++	void vaFree(uint64_t va, uint64_t size);
++	FleurGPUBO *lookup(uint32_t handle);         /* lock held */
++
++	IOReturn getParam(struct fleur_gpu_get_param *p);
++	IOReturn createBO(struct fleur_gpu_create_bo *p);
++	IOReturn freeBO(struct fleur_gpu_bo_handle *p);
++	IOReturn getBOOffset(struct fleur_gpu_bo_handle *p);
++	IOReturn submit(struct fleur_gpu_submit *p);
++	IOReturn waitBO(struct fleur_gpu_wait_bo *p);
++};
++OSDefineMetaClassAndStructors(FleurMaliGPUUserClient, IOUserClient);
++
++void
++FleurGPUJob::free()
++{
++	OSSafeReleaseNULL(bos);
++	OSSafeReleaseNULL(client);
++	OSObject::free();
++}
++
++/* ================================================================ device */
++
++uint32_t
++FleurMaliGPU::rd(uint32_t off) const
++{
++	uint32_t v = *(volatile uint32_t *)(fRegs + off);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return v;
++}
++
++void
++FleurMaliGPU::wr(uint32_t off, uint32_t v) const
++{
++	__asm__ volatile ("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(fRegs + off) = v;
++	__asm__ volatile ("dsb osh" ::: "memory");
++}
++
++uint64_t
++FleurMaliGPU::rd64(uint32_t off) const
++{
++	uint64_t lo = rd(off);
++	return lo | ((uint64_t)rd(off + 4) << 32);
++}
++
++void
++FleurMaliGPU::wr64(uint32_t off, uint64_t v) const
++{
++	wr(off, (uint32_t)v);
++	wr(off + 4, (uint32_t)(v >> 32));
++}
++
++bool
++FleurMaliGPU::start(IOService *provider)
++{
++	thread_t thread;
++	int mode = fleur_gpu_mode();
++	if (mode < 5) {
++		return false;   /* not even registered: default boots unchanged */
++	}
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	fLock = IOLockAlloc();
++	if (fLock == NULL) {
++		return false;
++	}
++	fNextSeq = 1;
++	fDoneSeq = 0;
++	fTimeoutMs = 2000;
++	(void)PE_parse_boot_argn("sweetgputimeout", &fTimeoutMs, sizeof(fTimeoutMs));
++	uint32_t mib = 1024;
++	(void)PE_parse_boot_argn("sweetgpumem", &mib, sizeof(mib));
++	fMemBudget = (uint64_t)mib << 20;
++	fLogLeft = 16;
++	(void)PE_parse_boot_argn("sweetgpulog", &fLogLeft, sizeof(fLogLeft));
++	if (kernel_thread_start(workerThread, this, &thread) != KERN_SUCCESS) {
++		IOLog("SWEET GPU: no worker thread\n");
++		return false;
++	}
++	thread_deallocate(thread);
++	setProperty(kIOUserClientClassKey, "FleurMaliGPUUserClient");
++	setProperty("FleurGPUABI", FLEUR_GPU_ABI_VERSION, 32);
++	registerService();
++	IOLog("SWEET GPU: FleurMaliGPU registered (sweetgpu=%d, timeout %u ms, budget %u MiB)\n",
++	    mode, fTimeoutMs, mib);
++	return true;
++}
++
++IOReturn
++FleurMaliGPU::ensureUp(void)
++{
++	if (fUp) {
++		return kIOReturnSuccess;
++	}
++	if (fleur_gpu_hw_init(&fRegs) != 0) {
++		IOLog("SWEET GPU: power-up failed\n");
++		return kIOReturnNotReady;
++	}
++	wr(JOB_IRQ_CLEAR, 0xffffffffu);
++	wr(MMU_IRQ_CLEAR, 0xffffffffu);
++	fUp = true;
++	IOLog("SWEET GPU: up, GPU_ID %#x shader %#x as %#x js %#x\n", rd(GPU_ID),
++	    rd(GPU_SHADER_PRESENT), rd(GPU_AS_PRESENT), rd(GPU_JS_PRESENT));
++	return kIOReturnSuccess;
++}
++
++/* wait_ready() of panfrost_mmu.c, 100 ms. */
++bool
++FleurMaliGPU::asWait(unsigned as)
++{
++	for (unsigned i = 0; i < 100000; i++) {
++		if (!(rd(AS_REG(as, AS_STATUS)) & AS_STATUS_ACTIVE)) {
++			return true;
++		}
++		IODelay(1);
++	}
++	IOLog("SWEET GPU: AS%u stuck active\n", as);
++	return false;
++}
++
++bool
++FleurMaliGPU::asCmd(unsigned as, uint32_t cmd)
++{
++	if (!asWait(as)) {
++		return false;
++	}
++	wr(AS_REG(as, AS_COMMAND), cmd);
++	return asWait(as);
++}
++
++/* lock_region() of panfrost_mmu.c. */
++bool
++FleurMaliGPU::asLockRegion(unsigned as, uint64_t start, uint64_t size)
++{
++	uint64_t end = start + size;
++	uint64_t diff = start ^ (end - 1);
++	unsigned width = diff ? 64u - (unsigned)__builtin_clzll(diff) : 0;
++	if (width < AS_LOCK_MIN_LOG2) {
++		width = AS_LOCK_MIN_LOG2;
++	}
++	width -= 1;
++	start &= ~((1ull << width) - 1);
++	wr64(AS_REG(as, AS_LOCKADDR_LO), start | width);
++	return asCmd(as, AS_CMD_LOCK);
++}
++
++/* panfrost_mmu_enable(). */
++bool
++FleurMaliGPU::asEnable(unsigned as, uint64_t transtab)
++{
++	if (!asLockRegion(as, 0, ~0ull) || !asCmd(as, AS_CMD_FLUSH_MEM)) {
++		return false;
++	}
++	wr64(AS_REG(as, AS_TRANSTAB_LO), transtab);
++	wr64(AS_REG(as, AS_MEMATTR_LO), AS_MEMATTR_VAL);
++	wr64(AS_REG(as, AS_TRANSCFG_LO), AS_TRANSCFG_VAL);
++	return asCmd(as, AS_CMD_UPDATE);
++}
++
++/* panfrost_mmu_disable(): in-flight accesses of this AS then fault. */
++void
++FleurMaliGPU::asDisable(unsigned as)
++{
++	(void)asLockRegion(as, 0, ~0ull);
++	(void)asCmd(as, AS_CMD_FLUSH_MEM);
++	wr64(AS_REG(as, AS_TRANSTAB_LO), 0);
++	wr64(AS_REG(as, AS_MEMATTR_LO), 0);
++	wr64(AS_REG(as, AS_TRANSCFG_LO), AS_TRANSCFG_UNMAPPED);
++	(void)asCmd(as, AS_CMD_UPDATE);
++}
++
++void
++FleurMaliGPU::asFlushRange(unsigned as, uint64_t va, uint64_t size)
++{
++	if (asLockRegion(as, va, size)) {
++		(void)asCmd(as, AS_CMD_FLUSH_PT);
++	}
++}
++
++int
++FleurMaliGPU::allocAs(FleurMaliGPUUserClient *c)
++{
++	uint32_t present = rd(GPU_AS_PRESENT);
++	for (unsigned as = 1; as < NUM_AS; as++) {   /* AS0: boot probe */
++		if ((present & (1u << as)) && fAs[as] == NULL) {
++			fAs[as] = c;
++			return (int)as;
++		}
++	}
++	return -1;
++}
++
++void
++FleurMaliGPU::freeAs(unsigned as)
++{
++	if (fUp) {
++		asDisable(as);
++	}
++	fAs[as] = NULL;
++}
++
++uint64_t
++FleurMaliGPU::queueJob(FleurGPUJob *job)
++{
++	job->seq = fNextSeq++;
++	job->next = NULL;
++	if (fTail != NULL) {
++		fTail->next = job;
++	} else {
++		fHead = job;
++	}
++	fTail = job;
++	IOLockWakeup(fLock, &fHead, true);
++	return job->seq;
++}
++
++void
++FleurMaliGPU::finish(FleurGPUJob *job, uint32_t status)
++{
++	fStatus[job->seq % STATUS_RING] = status;
++	fStatusSeq[job->seq % STATUS_RING] = job->seq;
++	fDoneSeq = job->seq;
++	IOLockWakeup(fLock, &fDoneSeq, false);
++}
++
++/* After a failed hard stop: reset the GPU and restore every live AS. */
++void
++FleurMaliGPU::recover(void)
++{
++	IOLog("SWEET GPU: resetting the GPU\n");
++	if (fleur_gpu_hw_reset() != 0) {
++		IOLog("SWEET GPU: reset failed, GPU unusable until reboot\n");
++		fUp = false;
++		return;
++	}
++	wr(JOB_IRQ_CLEAR, 0xffffffffu);
++	wr(MMU_IRQ_CLEAR, 0xffffffffu);
++	for (unsigned as = 1; as < NUM_AS; as++) {
++		if (fAs[as] != NULL && fAs[as]->fRoot != NULL) {
++			(void)asEnable(as, fAs[as]->fRoot->pa);
++		}
++	}
++}
++
++/*
++ * panfrost_job_hw_submit() + bounded polling. Called and returns with the
++ * lock held; the lock is dropped while sleeping between polls.
++ */
++void
++FleurMaliGPU::runJob(FleurGPUJob *job)
++{
++	FleurMaliGPUUserClient *c = job->client;
++	unsigned js = (job->requirements & FLEUR_GPU_JD_REQ_FS) ? 0u : 1u;
++	uint32_t done = 1u << js, fail = 1u << (16 + js);
++	uint32_t status = FLEUR_GPU_STATUS_LOST;
++	bool log = fLogLeft > 0;
++
++	if (!fUp || c->fAs < 0 || rd(JS_REG(js, JS_COMMAND_NEXT)) != 0) {
++		IOLog("SWEET GPU: seq %llu dropped (up %d as %d)\n", job->seq, fUp, c->fAs);
++		finish(job, status);
++		return;
++	}
++	unsigned as = (unsigned)c->fAs;
++	if (log) {
++		fLogLeft--;
++	}
++	fChainFlag[js] ^= JS_CFG_JOB_CHAIN_FLAG;
++	wr(JOB_IRQ_CLEAR, done | fail);
++	wr64(JS_REG(js, JS_HEAD_NEXT_LO), job->jc);
++	wr64(JS_REG(js, JS_AFFINITY_NEXT_LO), rd64(GPU_SHADER_PRESENT));
++	wr(JS_REG(js, JS_CONFIG_NEXT), as | JS_CFG_THREAD_PRI(8) | JS_CFG_START_FLUSH_CLEAN_INV |
++	    JS_CFG_END_FLUSH_CLEAN_INV | fChainFlag[js]);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	wr(JS_REG(js, JS_COMMAND_NEXT), JS_CMD_START);
++
++	uint64_t t0 = mach_absolute_time(), deadline;
++	clock_interval_to_deadline(fTimeoutMs, kMillisecondScale, &deadline);
++	bool finished = false, faulted = false;
++	for (unsigned spin = 0;; spin++) {
++		uint32_t raw = rd(JOB_IRQ_RAWSTAT);
++		uint32_t mmu = rd(MMU_IRQ_RAWSTAT);
++		if (mmu & ((1u << as) | (1u << (16 + as)))) {
++			/* Unhandled fault: log, unmap the AS so the chain fails, clear. */
++			IOLog("SWEET GPU: seq %llu AS%u fault status %#x addr %#llx (mmu raw %#x)\n",
++			    job->seq, as, rd(AS_REG(as, AS_FAULTSTATUS)),
++			    rd64(AS_REG(as, AS_FAULTADDRESS_LO)), mmu);
++			asDisable(as);
++			wr(MMU_IRQ_CLEAR, (1u << as) | (1u << (16 + as)));
++			faulted = true;
++		}
++		if (raw & (done | fail)) {
++			finished = true;
++			break;
++		}
++		if (mach_absolute_time() > deadline) {
++			break;
++		}
++		if (spin < 200) {
++			IODelay(5);
++		} else {
++			IOLockUnlock(fLock);
++			IOSleep(1);
++			IOLockLock(fLock);
++		}
++	}
++	if (!finished) {
++		IOLog("SWEET GPU: seq %llu js%u timeout, head %#llx tail %#llx; hard stop\n",
++		    job->seq, js, rd64(JS_REG(js, JS_HEAD_LO)), rd64(JS_REG(js, JS_TAIL_LO)));
++		wr(JS_REG(js, JS_COMMAND), JS_CMD_HARD_STOP);
++		for (unsigned i = 0; i < 100 && !(rd(JOB_IRQ_RAWSTAT) & (done | fail)); i++) {
++			IODelay(1000);
++		}
++		if (!(rd(JOB_IRQ_RAWSTAT) & (done | fail))) {
++			recover();
++			faulted = false;    /* recover() restored every AS */
++		}
++		status = FLEUR_GPU_STATUS_TIMEOUT;
++	} else {
++		status = rd(JS_REG(js, JS_STATUS));
++	}
++	if (fUp) {
++		wr(JOB_IRQ_CLEAR, done | fail);
++	}
++	if (faulted && fUp && c->fRoot != NULL) {
++		(void)asEnable(as, c->fRoot->pa);
++	}
++	if (log || status != FLEUR_GPU_STATUS_DONE) {
++		uint64_t us;
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &us);
++		IOLog("SWEET GPU: seq %llu js%u AS%u jc %#llx -> status %#x in %llu us\n",
++		    job->seq, js, as, job->jc, status, us / 1000);
++	}
++	finish(job, status);
++}
++
++void
++FleurMaliGPU::workerThread(void *arg, wait_result_t res)
++{
++	FleurMaliGPU *gpu = (FleurMaliGPU *)arg;
++	(void)res;
++	IOLockLock(gpu->fLock);
++	for (;;) {
++		while (gpu->fHead == NULL) {
++			IOLockSleep(gpu->fLock, &gpu->fHead, THREAD_UNINT);
++		}
++		FleurGPUJob *job = gpu->fHead;
++		gpu->fHead = job->next;
++		if (gpu->fHead == NULL) {
++			gpu->fTail = NULL;
++		}
++		gpu->runJob(job);
++		/* Releasing may free the client (and its AS): not under the lock. */
++		IOLockUnlock(gpu->fLock);
++		job->release();
++		IOLockLock(gpu->fLock);
++	}
++}
++
++bool
++FleurMaliGPU::waitSeq(uint64_t seq, uint64_t timeoutNs, uint32_t *status)
++{
++	uint64_t deadline;
++	nanoseconds_to_absolutetime(timeoutNs, &deadline);
++	deadline += mach_absolute_time();
++	IOLockLock(fLock);
++	while (fDoneSeq < seq && timeoutNs != 0) {
++		int r = IOLockSleepDeadline(fLock, &fDoneSeq, deadline, THREAD_INTERRUPTIBLE);
++		if (r != THREAD_AWAKENED) {
++			break;
++		}
++	}
++	bool done = fDoneSeq >= seq;
++	*status = FLEUR_GPU_STATUS_DONE;
++	if (done && fStatusSeq[seq % STATUS_RING] == seq) {
++		*status = fStatus[seq % STATUS_RING];
++	}
++	IOLockUnlock(fLock);
++	return done;
++}
++
++/* ================================================================ client */
++
++bool
++FleurMaliGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
++{
++	int any = 0;
++	(void)PE_parse_boot_argn("sweetgpuopen", &any, sizeof(any));
++	if (!any && clientHasPrivilege(securityID, kIOClientPrivilegeAdministrator) != kIOReturnSuccess) {
++		return false;
++	}
++	if (type != 0 || !IOUserClient::initWithTask(owningTask, securityID, type)) {
++		return false;
++	}
++	fTask = owningTask;
++	fAs = -1;
++	fBOs = OSArray::withCapacity(64);
++	fPTMem = OSArray::withCapacity(8);
++	fFreeMax = 1024;
++	fFree = IONewZero(FleurVARange, fFreeMax);
++	if (fBOs == NULL || fPTMem == NULL || fFree == NULL) {
++		return false;
++	}
++	fFree[0].start = FLEUR_GPU_VA_START;
++	fFree[0].end = FLEUR_GPU_VA_END;
++	fFreeCount = 1;
++	return true;
++}
++
++bool
++FleurMaliGPUUserClient::start(IOService *provider)
++{
++	fGPU = OSDynamicCast(FleurMaliGPU, provider);
++	if (fGPU == NULL || !IOUserClient::start(provider)) {
++		return false;
++	}
++	IOLockLock(fGPU->fLock);
++	bool ok = fGPU->ensureUp() == kIOReturnSuccess;
++	if (ok) {
++		fRoot = newTable(false);
++		fAs = fRoot ? fGPU->allocAs(this) : -1;
++		ok = fAs >= 0 && fGPU->asEnable((unsigned)fAs, fRoot->pa);
++		if (!ok && fAs >= 0) {
++			fGPU->freeAs((unsigned)fAs);
++			fAs = -1;
++		}
++	}
++	IOLockUnlock(fGPU->fLock);
++	if (!ok) {
++		IOLog("SWEET GPU: open refused (no GPU, AS or memory)\n");
++		return false;
++	}
++	char name[32];
++	proc_selfname(name, sizeof(name));
++	IOLog("SWEET GPU: %s opened, AS%d\n", name, fAs);
++	return true;
++}
++
++IOReturn
++FleurMaliGPUUserClient::clientClose(void)
++{
++	IOLockLock(fGPU->fLock);
++	fClosed = true;
++	IOLockUnlock(fGPU->fLock);
++	/* Queued jobs keep this object (and so the AS) alive until they ran. */
++	terminate();
++	return kIOReturnSuccess;
++}
++
++void
++FleurMaliGPUUserClient::free(void)
++{
++	if (fGPU != NULL) {
++		IOLockLock(fGPU->fLock);
++		if (fAs >= 0) {
++			fGPU->freeAs((unsigned)fAs);
++		}
++		if (fBOs != NULL) {
++			for (unsigned i = 0; i < fBOs->getCount(); i++) {
++				FleurGPUBO *bo = OSDynamicCast(FleurGPUBO, fBOs->getObject(i));
++				if (bo != NULL) {
++					fGPU->fMemUsed -= bo->size;
++				}
++			}
++		}
++		IOLockUnlock(fGPU->fLock);
++	}
++	if (fRoot != NULL) {
++		freeTables(fRoot, 0);
++	}
++	OSSafeReleaseNULL(fBOs);
++	if (fPTMem != NULL) {
++		for (unsigned i = 0; i < fPTMem->getCount(); i++) {
++			((IOMemoryDescriptor *)fPTMem->getObject(i))->complete();
++		}
++	}
++	OSSafeReleaseNULL(fPTMem);
++	if (fFree != NULL) {
++		IODelete(fFree, FleurVARange, fFreeMax);
++	}
++	IOUserClient::free();
++}
++
++/* Tables come four per 16 KiB contiguous chunk; written through the cacheable
++ * kernel alias, then cleaned to RAM (the walker is non-cacheable). */
++FleurPT *
++FleurMaliGPUUserClient::newTable(bool leaf)
++{
++	if (fPTFreeLeft == 0) {
++		IOBufferMemoryDescriptor *m = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
++			kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
++			16384, 0x000000fffffff000ull);
++		if (m == NULL || m->prepare() != kIOReturnSuccess) {
++			OSSafeReleaseNULL(m);
++			return NULL;
++		}
++		fPTMem->setObject(m);
++		m->release();
++		fPTFreeVa = (vm_offset_t)m->getBytesNoCopy();
++		fPTFreePa = m->getPhysicalSegment(0, NULL, kIOMemoryMapperNone);
++		fPTFreeLeft = 4;
++		bzero((void *)fPTFreeVa, 16384);
++		flush_dcache64((addr64_t)fPTFreePa, 16384, TRUE);
++	}
++	FleurPT *pt = IOMallocType(FleurPT);
++	if (pt == NULL) {
++		return NULL;
++	}
++	bzero(pt, sizeof(*pt));
++	if (!leaf) {
++		pt->child = IONewZero(FleurPT *, 512);
++		if (pt->child == NULL) {
++			IOFreeType(pt, FleurPT);
++			return NULL;
++		}
++	}
++	pt->va = (volatile uint64_t *)fPTFreeVa;
++	pt->pa = fPTFreePa;
++	fPTFreeVa += 4096;
++	fPTFreePa += 4096;
++	fPTFreeLeft--;
++	return pt;
++}
++
++void
++FleurMaliGPUUserClient::freeTables(FleurPT *pt, unsigned level)
++{
++	if (pt->child != NULL) {
++		for (unsigned i = 0; i < 512; i++) {
++			if (pt->child[i] != NULL) {
++				freeTables(pt->child[i], level + 1);
++			}
++		}
++		IODelete(pt->child, FleurPT *, 512);
++	}
++	IOFreeType(pt, FleurPT);
++}
++
++static void
++pte_write(FleurPT *pt, unsigned idx, uint64_t v)
++{
++	pt->va[idx] = v;
++	flush_dcache64((addr64_t)(pt->pa + 8u * idx), 8, TRUE);
++}
++
++bool
++FleurMaliGPUUserClient::mapPage(uint64_t va, uint64_t pa, uint64_t flags)
++{
++	FleurPT *pt = fRoot;
++	for (unsigned level = 0; level < 3; level++) {
++		unsigned idx = (unsigned)(va >> (39 - 9 * level)) & 0x1ffu;
++		if (pt->child[idx] == NULL) {
++			FleurPT *n = newTable(level == 2);
++			if (n == NULL) {
++				return false;
++			}
++			pt->child[idx] = n;
++			pte_write(pt, idx, n->pa | PTE_VALID_TABLE);
++		}
++		pt = pt->child[idx];
++	}
++	pte_write(pt, (unsigned)(va >> 12) & 0x1ffu, (pa & PTE_ADDR_MASK) | flags);
++	return true;
++}
++
++void
++FleurMaliGPUUserClient::unmapPage(uint64_t va)
++{
++	FleurPT *pt = fRoot;
++	for (unsigned level = 0; level < 3 && pt != NULL; level++) {
++		pt = pt->child[(va >> (39 - 9 * level)) & 0x1ffu];
++	}
++	if (pt != NULL) {
++		pte_write(pt, (unsigned)(va >> 12) & 0x1ffu, 0);
++	}
++}
++
++/* First fit over sorted free ranges; 2 MiB alignment for >= 2 MiB BOs. */
++bool
++FleurMaliGPUUserClient::vaAlloc(uint64_t size, uint64_t *va)
++{
++	uint64_t align = size >= (2ull << 20) ? (2ull << 20) : GPU_PAGE;
++	for (unsigned i = 0; i < fFreeCount; i++) {
++		uint64_t s = (fFree[i].start + align - 1) & ~(align - 1);
++		if (s + size > fFree[i].end) {
++			continue;
++		}
++		uint64_t oldEnd = fFree[i].end;
++		if (s > fFree[i].start) {
++			fFree[i].end = s;             /* keep the gap before */
++			if (s + size < oldEnd) {
++				if (fFreeCount == fFreeMax) {
++					fFree[i].end = oldEnd;
++					return false;
++				}
++				memmove(&fFree[i + 2], &fFree[i + 1], (fFreeCount - i - 1) * sizeof(FleurVARange));
++				fFree[i + 1].start = s + size;
++				fFree[i + 1].end = oldEnd;
++				fFreeCount++;
++			}
++		} else if (s + size < oldEnd) {
++			fFree[i].start = s + size;
++		} else {
++			memmove(&fFree[i], &fFree[i + 1], (fFreeCount - i - 1) * sizeof(FleurVARange));
++			fFreeCount--;
++		}
++		*va = s;
++		return true;
++	}
++	return false;
++}
++
++void
++FleurMaliGPUUserClient::vaFree(uint64_t va, uint64_t size)
++{
++	uint64_t end = va + size;
++	unsigned i = 0;
++	while (i < fFreeCount && fFree[i].start < va) {
++		i++;
++	}
++	bool joinPrev = i > 0 && fFree[i - 1].end == va;
++	bool joinNext = i < fFreeCount && fFree[i].start == end;
++	if (joinPrev && joinNext) {
++		fFree[i - 1].end = fFree[i].end;
++		memmove(&fFree[i], &fFree[i + 1], (fFreeCount - i - 1) * sizeof(FleurVARange));
++		fFreeCount--;
++	} else if (joinPrev) {
++		fFree[i - 1].end = end;
++	} else if (joinNext) {
++		fFree[i].start = va;
++	} else if (fFreeCount < fFreeMax) {
++		memmove(&fFree[i + 1], &fFree[i], (fFreeCount - i) * sizeof(FleurVARange));
++		fFree[i].start = va;
++		fFree[i].end = end;
++		fFreeCount++;
++	}       /* else: leak the range (table full) */
++}
++
++FleurGPUBO *
++FleurMaliGPUUserClient::lookup(uint32_t handle)
++{
++	if (handle == 0 || handle > fBOs->getCount()) {
++		return NULL;
++	}
++	return OSDynamicCast(FleurGPUBO, fBOs->getObject(handle - 1));
++}
++
++IOReturn
++FleurMaliGPUUserClient::getParam(struct fleur_gpu_get_param *p)
++{
++	FleurMaliGPU *g = fGPU;
++	uint64_t v = 0;
++	uint32_t n = p->param;
++	IOLockLock(g->fLock);
++	if (!g->fUp) {
++		IOLockUnlock(g->fLock);
++		return kIOReturnNotReady;
++	}
++	IOReturn ret = kIOReturnSuccess;
++	switch (n) {
++	case FLEUR_GPU_PARAM_GPU_PROD_ID: v = g->rd(GPU_ID) >> 16; break;
++	case FLEUR_GPU_PARAM_GPU_REVISION: v = g->rd(GPU_ID) & 0xffffu; break;
++	case FLEUR_GPU_PARAM_SHADER_PRESENT: v = g->rd64(GPU_SHADER_PRESENT); break;
++	case FLEUR_GPU_PARAM_TILER_PRESENT: v = g->rd64(GPU_TILER_PRESENT); break;
++	case FLEUR_GPU_PARAM_L2_PRESENT: v = g->rd64(GPU_L2_PRESENT); break;
++	case FLEUR_GPU_PARAM_STACK_PRESENT: v = g->rd64(GPU_STACK_PRESENT); break;
++	case FLEUR_GPU_PARAM_AS_PRESENT: v = g->rd(GPU_AS_PRESENT); break;
++	case FLEUR_GPU_PARAM_JS_PRESENT: v = g->rd(GPU_JS_PRESENT); break;
++	case FLEUR_GPU_PARAM_L2_FEATURES: v = g->rd(GPU_L2_FEATURES); break;
++	case FLEUR_GPU_PARAM_CORE_FEATURES: v = g->rd(GPU_CORE_FEATURES); break;
++	case FLEUR_GPU_PARAM_TILER_FEATURES: v = g->rd(GPU_TILER_FEATURES); break;
++	case FLEUR_GPU_PARAM_MEM_FEATURES: v = g->rd(GPU_MEM_FEATURES); break;
++	case FLEUR_GPU_PARAM_MMU_FEATURES: v = g->rd(GPU_MMU_FEATURES); break;
++	case FLEUR_GPU_PARAM_THREAD_FEATURES: v = g->rd(GPU_THREAD_FEATURES); break;
++	case FLEUR_GPU_PARAM_MAX_THREADS: v = g->rd(GPU_THREAD_MAX_THREADS); break;
++	case FLEUR_GPU_PARAM_THREAD_MAX_WORKGROUP_SZ: v = g->rd(GPU_THREAD_MAX_WORKGROUP); break;
++	case FLEUR_GPU_PARAM_THREAD_MAX_BARRIER_SZ: v = g->rd(GPU_THREAD_MAX_BARRIER); break;
++	case FLEUR_GPU_PARAM_COHERENCY_FEATURES: v = g->rd(GPU_COHERENCY_FEATURES); break;
++	case FLEUR_GPU_PARAM_TEXTURE_FEATURES0:
++	case FLEUR_GPU_PARAM_TEXTURE_FEATURES1:
++	case FLEUR_GPU_PARAM_TEXTURE_FEATURES2:
++	case FLEUR_GPU_PARAM_TEXTURE_FEATURES3:
++		v = g->rd(GPU_TEXTURE_FEATURES(n - FLEUR_GPU_PARAM_TEXTURE_FEATURES0));
++		break;
++	case FLEUR_GPU_PARAM_NR_CORE_GROUPS: v = 1; break;
++	case FLEUR_GPU_PARAM_THREAD_TLS_ALLOC: v = g->rd(GPU_THREAD_TLS_ALLOC); break;
++	case FLEUR_GPU_PARAM_AFBC_FEATURES: v = g->rd(GPU_AFBC_FEATURES); break;
++	case FLEUR_GPU_PARAM_SYSTEM_TIMESTAMP: v = g->rd64(GPU_TIMESTAMP_LO); break;
++	case FLEUR_GPU_PARAM_SYSTEM_TIMESTAMP_FREQUENCY: {
++		uint64_t f;
++		__asm__ volatile ("mrs %0, cntfrq_el0" : "=r"(f));
++		v = f;
++		break;
++	}
++	case FLEUR_GPU_PARAM_ALLOWED_JM_CTX_PRIORITIES: v = 1u << 1; break; /* medium */
++	case FLEUR_GPU_PARAM_SELECTED_COHERENCY: v = 31; break;            /* none */
++	case FLEUR_GPU_PARAM_ABI_VERSION: v = FLEUR_GPU_ABI_VERSION; break;
++	case FLEUR_GPU_PARAM_AS_NUMBER: v = (uint64_t)fAs; break;
++	case FLEUR_GPU_PARAM_LAST_DONE_SEQNO: v = g->fDoneSeq; break;
++	default:
++		if (n >= FLEUR_GPU_PARAM_JS_FEATURES0 && n <= FLEUR_GPU_PARAM_JS_FEATURES15) {
++			unsigned js = n - FLEUR_GPU_PARAM_JS_FEATURES0;
++			v = (g->rd(GPU_JS_PRESENT) & (1u << js)) ? g->rd(GPU_JS_FEATURES(js)) : 0;
++		} else {
++			ret = kIOReturnBadArgument;
++		}
++		break;
++	}
++	IOLockUnlock(g->fLock);
++	p->value = v;
++	return ret;
++}
++
++IOReturn
++FleurMaliGPUUserClient::createBO(struct fleur_gpu_create_bo *p)
++{
++	uint64_t size = ((uint64_t)p->size + GPU_PAGE - 1) & ~(GPU_PAGE - 1);
++	if (size == 0 || (p->flags & ~(FLEUR_GPU_BO_NOEXEC | FLEUR_GPU_BO_HEAP)) != 0) {
++		return kIOReturnBadArgument;
++	}
++	IOLockLock(fGPU->fLock);
++	bool fits = fGPU->fMemUsed + size <= fGPU->fMemBudget;
++	if (fits) {
++		fGPU->fMemUsed += size;
++	}
++	IOLockUnlock(fGPU->fLock);
++	if (!fits) {
++		IOLog("SWEET GPU: BO of %llu KiB over the budget\n", size >> 10);
++		return kIOReturnNoMemory;
++	}
++	FleurGPUBO *bo = OSTypeAlloc(FleurGPUBO);
++	IOBufferMemoryDescriptor *mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryKernelUserShared, size, page_size);
++	if (mem != NULL && mem->prepare() != kIOReturnSuccess) {
++		OSSafeReleaseNULL(mem);
++	}
++	if (bo == NULL || !bo->init() || mem == NULL) {
++		OSSafeReleaseNULL(bo);
++		if (mem != NULL) {
++			mem->complete();
++		}
++		OSSafeReleaseNULL(mem);
++		IOLockLock(fGPU->fLock);
++		fGPU->fMemUsed -= size;
++		IOLockUnlock(fGPU->fLock);
++		return kIOReturnNoMemory;
++	}
++	bo->mem = mem;
++	bo->size = size;
++	bo->flags = p->flags;
++	/* Zero through the kernel alias, then push it out of the CPU caches:
++	 * user (write-combined) and GPU (non-cacheable) never see stale lines. */
++	bzero(mem->getBytesNoCopy(), (vm_size_t)size);
++	for (uint64_t off = 0; off < size;) {
++		uint64_t len = 0;
++		addr64_t pa = mem->getPhysicalSegment(off, &len, kIOMemoryMapperNone);
++		if (pa == 0 || len == 0) {
++			break;
++		}
++		if (len > size - off) {
++			len = size - off;
++		}
++		flush_dcache64(pa, (unsigned)len, TRUE);
++		off += len;
++	}
++
++	IOReturn ret = kIOReturnSuccess;
++	IOLockLock(fGPU->fLock);
++	uint64_t va = 0;
++	if (fClosed || !vaAlloc(size, &va)) {
++		ret = kIOReturnNoSpace;
++	}
++	uint64_t ate = PTE_PAGE | PTE_RW | PTE_AF | ((bo->flags & FLEUR_GPU_BO_NOEXEC) ? PTE_NX : 0);
++	uint64_t mappedTo = 0;
++	for (uint64_t off = 0; ret == kIOReturnSuccess && off < size; off += GPU_PAGE) {
++		addr64_t pa = mem->getPhysicalSegment(off, NULL, kIOMemoryMapperNone);
++		if (pa == 0 || !mapPage(va + off, pa, ate)) {
++			ret = kIOReturnNoMemory;
++			break;
++		}
++		mappedTo = off + GPU_PAGE;
++	}
++	if (ret == kIOReturnSuccess) {
++		fGPU->asFlushRange((unsigned)fAs, va, size);
++		bo->va = va;
++		bo->mapped = true;
++		fBOs->setObject(bo);
++		bo->handle = fBOs->getCount();
++		p->handle = bo->handle;
++		p->offset = va;
++	} else {
++		for (uint64_t off = 0; off < mappedTo; off += GPU_PAGE) {
++			unmapPage(va + off);
++		}
++		if (mappedTo != 0) {
++			fGPU->asFlushRange((unsigned)fAs, va, mappedTo);
++		}
++		if (va != 0) {
++			vaFree(va, size);
++		}
++		fGPU->fMemUsed -= size;
++	}
++	IOLockUnlock(fGPU->fLock);
++	bo->release();          /* fBOs holds it on success */
++	return ret;
++}
++
++IOReturn
++FleurMaliGPUUserClient::freeBO(struct fleur_gpu_bo_handle *p)
++{
++	IOLockLock(fGPU->fLock);
++	FleurGPUBO *bo = lookup(p->handle);
++	if (bo == NULL) {
++		IOLockUnlock(fGPU->fLock);
++		return kIOReturnBadArgument;
++	}
++	bo->retain();
++	IOLockUnlock(fGPU->fLock);
++	/* Never pull pages out from under a queued or running chain. */
++	uint32_t st;
++	if (!fGPU->waitSeq(bo->lastSeq, 5000000000ull, &st)) {
++		bo->release();
++		return kIOReturnBusy;
++	}
++	IOLockLock(fGPU->fLock);
++	if (lookup(p->handle) == bo && bo->mapped) {
++		for (uint64_t off = 0; off < bo->size; off += GPU_PAGE) {
++			unmapPage(bo->va + off);
++		}
++		fGPU->asFlushRange((unsigned)fAs, bo->va, bo->size);
++		vaFree(bo->va, bo->size);
++		bo->mapped = false;
++		fGPU->fMemUsed -= bo->size;
++		fBOs->replaceObject(p->handle - 1, kOSBooleanFalse);  /* handles are not reused */
++	}
++	IOLockUnlock(fGPU->fLock);
++	bo->release();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++FleurMaliGPUUserClient::getBOOffset(struct fleur_gpu_bo_handle *p)
++{
++	IOLockLock(fGPU->fLock);
++	FleurGPUBO *bo = lookup(p->handle);
++	if (bo != NULL) {
++		p->offset = bo->va;
++	}
++	IOLockUnlock(fGPU->fLock);
++	return bo != NULL ? kIOReturnSuccess : kIOReturnBadArgument;
++}
++
++IOReturn
++FleurMaliGPUUserClient::submit(struct fleur_gpu_submit *p)
++{
++	if (p->bo_handle_count > FLEUR_GPU_MAX_SUBMIT_BOS || p->jc == 0) {
++		return kIOReturnBadArgument;
++	}
++	uint32_t count = p->bo_handle_count;
++	uint32_t *handles = NULL;
++	if (count != 0) {
++		handles = IONewData(uint32_t, count);
++		IOMemoryDescriptor *md = IOMemoryDescriptor::withAddressRange(p->bo_handles,
++		    count * sizeof(uint32_t), kIODirectionOut, fTask);
++		bool ok = handles != NULL && md != NULL && md->prepare() == kIOReturnSuccess;
++		if (ok) {
++			ok = md->readBytes(0, handles, count * sizeof(uint32_t)) == count * sizeof(uint32_t);
++			md->complete();
++		}
++		OSSafeReleaseNULL(md);
++		if (!ok) {
++			if (handles != NULL) {
++				IODeleteData(handles, uint32_t, count);
++			}
++			return kIOReturnBadArgument;
++		}
++	}
++	FleurGPUJob *job = OSTypeAlloc(FleurGPUJob);
++	OSArray *bos = OSArray::withCapacity(count ? count : 1);
++	if (job == NULL || !job->init() || bos == NULL) {
++		OSSafeReleaseNULL(job);
++		OSSafeReleaseNULL(bos);
++		if (handles != NULL) {
++			IODeleteData(handles, uint32_t, count);
++		}
++		return kIOReturnNoMemory;
++	}
++	job->bos = bos;
++	job->jc = p->jc;
++	job->requirements = p->requirements;
++	retain();
++	job->client = this;
++
++	IOReturn ret = kIOReturnSuccess;
++	IOLockLock(fGPU->fLock);
++	for (uint32_t i = 0; i < count; i++) {
++		FleurGPUBO *bo = lookup(handles[i]);
++		if (bo == NULL) {
++			ret = kIOReturnBadArgument;
++			break;
++		}
++		bos->setObject(bo);
++	}
++	if (ret == kIOReturnSuccess && (fClosed || !fGPU->fUp)) {
++		ret = kIOReturnNotReady;
++	}
++	if (ret == kIOReturnSuccess) {
++		uint64_t seq = fGPU->queueJob(job);    /* the queue owns the job reference */
++		for (uint32_t i = 0; i < bos->getCount(); i++) {
++			((FleurGPUBO *)bos->getObject(i))->lastSeq = seq;
++		}
++		fLastSeq = seq;
++		p->seqno = seq;
++		job = NULL;
++	}
++	IOLockUnlock(fGPU->fLock);
++	OSSafeReleaseNULL(job);
++	if (handles != NULL) {
++		IODeleteData(handles, uint32_t, count);
++	}
++	return ret;
++}
++
++IOReturn
++FleurMaliGPUUserClient::waitBO(struct fleur_gpu_wait_bo *p)
++{
++	IOLockLock(fGPU->fLock);
++	FleurGPUBO *bo = lookup(p->handle);
++	uint64_t seq = bo != NULL ? bo->lastSeq : 0;
++	IOLockUnlock(fGPU->fLock);
++	if (bo == NULL) {
++		return kIOReturnBadArgument;
++	}
++	uint32_t st;
++	p->done = fGPU->waitSeq(seq, p->timeout_ns, &st) ? 1 : 0;
++	return kIOReturnSuccess;
++}
++
++IOReturn
++FleurMaliGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options,
++    IOMemoryDescriptor **memory)
++{
++	IOLockLock(fGPU->fLock);
++	FleurGPUBO *bo = lookup(type);
++	if (bo != NULL) {
++		bo->mem->retain();     /* the caller consumes one reference */
++		*memory = bo->mem;
++		/* Write-combined user mapping whatever cache mode the caller asked. */
++		*options = (*options & ~kIOMapCacheMask) | kIOMapWriteCombineCache;
++	}
++	IOLockUnlock(fGPU->fLock);
++	return bo != NULL ? kIOReturnSuccess : kIOReturnBadArgument;
++}
++
++#define FLEUR_SEL(sel, type, call) \
++	case sel: { \
++	        if (args->structureInputSize != sizeof(type) || args->structureOutputSize != sizeof(type) || \
++	            args->structureInput == NULL || args->structureOutput == NULL) { \
++	                return kIOReturnBadArgument; \
++	        } \
++	        type v; \
++	        memcpy(&v, args->structureInput, sizeof(v)); \
++	        IOReturn r = call(&v); \
++	        memcpy(args->structureOutput, &v, sizeof(v)); \
++	        return r; \
++	}
++
++IOReturn
++FleurMaliGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++    __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target, __unused void *reference)
++{
++	switch (selector) {
++		FLEUR_SEL(FLEUR_GPU_SEL_GET_PARAM, struct fleur_gpu_get_param, getParam)
++		FLEUR_SEL(FLEUR_GPU_SEL_CREATE_BO, struct fleur_gpu_create_bo, createBO)
++		FLEUR_SEL(FLEUR_GPU_SEL_FREE_BO, struct fleur_gpu_bo_handle, freeBO)
++		FLEUR_SEL(FLEUR_GPU_SEL_GET_BO_OFFSET, struct fleur_gpu_bo_handle, getBOOffset)
++		FLEUR_SEL(FLEUR_GPU_SEL_SUBMIT, struct fleur_gpu_submit, submit)
++		FLEUR_SEL(FLEUR_GPU_SEL_WAIT_BO, struct fleur_gpu_wait_bo, waitBO)
++	case FLEUR_GPU_SEL_WAIT: {
++		struct fleur_gpu_wait w;
++		if (args->structureInputSize != sizeof(w) || args->structureOutputSize != sizeof(w) ||
++		    args->structureInput == NULL || args->structureOutput == NULL) {
++			return kIOReturnBadArgument;
++		}
++		memcpy(&w, args->structureInput, sizeof(w));
++		uint32_t st = 0;
++		w.done = fGPU->waitSeq(w.seqno, w.timeout_ns, &st) ? 1 : 0;
++		w.status = w.done ? st : 0;
++		memcpy(args->structureOutput, &w, sizeof(w));
++		return kIOReturnSuccess;
++	}
++	case FLEUR_GPU_SEL_MADVISE: {
++		struct fleur_gpu_madvise m;
++		if (args->structureInputSize != sizeof(m) || args->structureOutputSize != sizeof(m) ||
++		    args->structureInput == NULL || args->structureOutput == NULL) {
++			return kIOReturnBadArgument;
++		}
++		memcpy(&m, args->structureInput, sizeof(m));
++		m.retained = 1;
++		memcpy(args->structureOutput, &m, sizeof(m));
++		return kIOReturnSuccess;
++	}
++	default:
++		return kIOReturnUnsupported;
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/FleurGPUUAPI.h b/iokit/Kernel/arm/FleurGPUUAPI.h
+new file mode 100644
+index 0000000..758124a
+--- /dev/null
++++ b/iokit/Kernel/arm/FleurGPUUAPI.h
+@@ -0,0 +1,150 @@
++/*
++ * FleurMaliGPU user client ABI (fleur, MT6781, Mali-G57 MC2, job manager).
++ * Shared by the kernel (iokit/Kernel/arm/FleurGPU.cpp) and user space
++ * (Mesa pan_kmod "fleur" backend, tests): keep both copies identical
++ * (canonical copy: research/gpu/uapi/fleur_gpu_uapi.h).
++ *
++ * The verbs and parameter numbers follow Linux include/uapi/drm/panfrost_drm.h
++ * so a Mesa backend maps 1:1. Differences:
++ *  - Open: IOServiceGetMatchingService(IOServiceMatching("FleurMaliGPU")),
++ *    IOServiceOpen(type 0). One GPU address space (AS) per connection; at
++ *    most 7 connections (AS1..AS7; AS0 is left to the boot probe).
++ *  - Every call is IOConnectCallStructMethod(selector, in, sizeof in, out,
++ *    &sizeof out) with the structs below (both sizes must match exactly).
++ *  - mmap: IOConnectMapMemory64(conn, handle, mach_task_self(), &addr,
++ *    &size, kIOMapAnywhere). CPU mappings are write-combined (normal
++ *    non-cacheable) and the GPU accesses all memory non-cacheable, so no
++ *    cache maintenance is needed; issue a store barrier (dmb/dsb) before
++ *    SUBMIT, which the kernel follows with dsb before starting the job.
++ *  - Sync: no syncobjs. SUBMIT returns a 64-bit sequence number (global,
++ *    monotonic). Jobs run strictly in submission order (one chain at a time
++ *    on the whole GPU), so waiting for seqno N waits for every earlier job.
++ *    WAIT_BO waits for the last submission that listed the BO.
++ *  - GPU VA range per connection: [FLEUR_GPU_VA_START, FLEUR_GPU_VA_END)
++ *    (32 MiB .. 4 GiB, like Panfrost).
++ */
++#ifndef FLEUR_GPU_UAPI_H
++#define FLEUR_GPU_UAPI_H
++
++#include <stdint.h>
++
++#define FLEUR_GPU_CLASS          "FleurMaliGPU"
++#define FLEUR_GPU_ABI_VERSION    1u
++#define FLEUR_GPU_VA_START       0x02000000ull
++#define FLEUR_GPU_VA_END         0x100000000ull
++
++enum fleur_gpu_selector {
++	FLEUR_GPU_SEL_GET_PARAM      = 0,
++	FLEUR_GPU_SEL_CREATE_BO      = 1,
++	FLEUR_GPU_SEL_FREE_BO        = 2,
++	FLEUR_GPU_SEL_GET_BO_OFFSET  = 3,
++	FLEUR_GPU_SEL_SUBMIT         = 4,
++	FLEUR_GPU_SEL_WAIT           = 5,
++	FLEUR_GPU_SEL_WAIT_BO        = 6,
++	FLEUR_GPU_SEL_MADVISE        = 7,
++	FLEUR_GPU_SEL_COUNT
++};
++
++/* Same numbering as enum drm_panfrost_param. */
++enum fleur_gpu_param {
++	FLEUR_GPU_PARAM_GPU_PROD_ID = 0,
++	FLEUR_GPU_PARAM_GPU_REVISION,
++	FLEUR_GPU_PARAM_SHADER_PRESENT,
++	FLEUR_GPU_PARAM_TILER_PRESENT,
++	FLEUR_GPU_PARAM_L2_PRESENT,
++	FLEUR_GPU_PARAM_STACK_PRESENT,
++	FLEUR_GPU_PARAM_AS_PRESENT,
++	FLEUR_GPU_PARAM_JS_PRESENT,
++	FLEUR_GPU_PARAM_L2_FEATURES,
++	FLEUR_GPU_PARAM_CORE_FEATURES,
++	FLEUR_GPU_PARAM_TILER_FEATURES,
++	FLEUR_GPU_PARAM_MEM_FEATURES,
++	FLEUR_GPU_PARAM_MMU_FEATURES,
++	FLEUR_GPU_PARAM_THREAD_FEATURES,
++	FLEUR_GPU_PARAM_MAX_THREADS,
++	FLEUR_GPU_PARAM_THREAD_MAX_WORKGROUP_SZ,
++	FLEUR_GPU_PARAM_THREAD_MAX_BARRIER_SZ,
++	FLEUR_GPU_PARAM_COHERENCY_FEATURES,
++	FLEUR_GPU_PARAM_TEXTURE_FEATURES0,
++	FLEUR_GPU_PARAM_TEXTURE_FEATURES1,
++	FLEUR_GPU_PARAM_TEXTURE_FEATURES2,
++	FLEUR_GPU_PARAM_TEXTURE_FEATURES3,
++	FLEUR_GPU_PARAM_JS_FEATURES0,
++	FLEUR_GPU_PARAM_JS_FEATURES15 = FLEUR_GPU_PARAM_JS_FEATURES0 + 15,
++	FLEUR_GPU_PARAM_NR_CORE_GROUPS,
++	FLEUR_GPU_PARAM_THREAD_TLS_ALLOC,
++	FLEUR_GPU_PARAM_AFBC_FEATURES,
++	FLEUR_GPU_PARAM_SYSTEM_TIMESTAMP,
++	FLEUR_GPU_PARAM_SYSTEM_TIMESTAMP_FREQUENCY,
++	FLEUR_GPU_PARAM_ALLOWED_JM_CTX_PRIORITIES,
++	FLEUR_GPU_PARAM_SELECTED_COHERENCY,
++	FLEUR_GPU_PARAM_PANFROST_COUNT,
++	/* fleur extensions */
++	FLEUR_GPU_PARAM_ABI_VERSION = 0x1000,
++	FLEUR_GPU_PARAM_AS_NUMBER,       /* this connection's hardware AS */
++	FLEUR_GPU_PARAM_LAST_DONE_SEQNO,
++};
++
++struct fleur_gpu_get_param {
++	uint32_t param;
++	uint32_t pad;
++	uint64_t value;          /* out */
++};
++
++/* Same values as PANFROST_BO_*. */
++#define FLEUR_GPU_BO_NOEXEC      (1u << 0)
++#define FLEUR_GPU_BO_HEAP        (1u << 1)  /* backed fully at creation (no grow-on-fault yet) */
++
++struct fleur_gpu_create_bo {
++	uint32_t size;           /* in: bytes, rounded up to 4 KiB */
++	uint32_t flags;          /* in: FLEUR_GPU_BO_* */
++	uint32_t handle;         /* out: also the IOConnectMapMemory64 type */
++	uint32_t pad;
++	uint64_t offset;         /* out: GPU VA */
++};
++
++struct fleur_gpu_bo_handle {
++	uint32_t handle;
++	uint32_t pad;
++	uint64_t offset;         /* out (GET_BO_OFFSET only) */
++};
++
++#define FLEUR_GPU_JD_REQ_FS      (1u << 0)  /* fragment chain: job slot 0, else slot 1 */
++#define FLEUR_GPU_MAX_SUBMIT_BOS 4096u
++
++struct fleur_gpu_submit {
++	uint64_t jc;             /* in: GPU VA of the first job descriptor */
++	uint64_t bo_handles;     /* in: user pointer to uint32_t[bo_handle_count] */
++	uint32_t bo_handle_count;
++	uint32_t requirements;   /* in: FLEUR_GPU_JD_REQ_* */
++	uint64_t seqno;          /* out */
++};
++
++/* Result of a finished job chain, from JS_STATUS (0x01 = DONE). */
++#define FLEUR_GPU_STATUS_DONE    0x01u
++#define FLEUR_GPU_STATUS_TIMEOUT 0x1000u  /* never finished: hard-stopped / GPU reset */
++#define FLEUR_GPU_STATUS_LOST    0x1001u  /* dropped by a GPU reset before it ran */
++
++struct fleur_gpu_wait {
++	uint64_t seqno;          /* in */
++	uint64_t timeout_ns;     /* in: relative; 0 = poll */
++	uint32_t done;           /* out: 1 if seqno finished */
++	uint32_t status;         /* out: JS_STATUS of that chain (if done) */
++};
++
++struct fleur_gpu_wait_bo {
++	uint32_t handle;
++	uint32_t pad;
++	uint64_t timeout_ns;
++	uint32_t done;           /* out */
++	uint32_t pad2;
++};
++
++struct fleur_gpu_madvise {
++	uint32_t handle;
++	uint32_t madv;           /* ignored */
++	uint32_t retained;       /* out: always 1 */
++	uint32_t pad;
++};
++
++#endif /* FLEUR_GPU_UAPI_H */
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 92f3e26..3df3386 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -82,6 +82,11 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetBattery;"
+     "   },"
++    "   {"
++    "     'IOClass'         = FleurMaliGPU;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = FleurMaliGPU;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index acc9ae0..ca01a92 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -16,6 +16,7 @@ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitc
+ iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
+ iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
+ iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
++iokit/Kernel/arm/FleurGPU.cpp                                    optional iokitcpp
+ iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
