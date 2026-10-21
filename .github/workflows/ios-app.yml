@@ -1,0 +1,77 @@
+name: ios-app
+
+# Build any app in apps/<name> for the SWEET/ginkgo iOS 16 root (arm64,
+# ad-hoc signed; the kernel's AMFI stub accepts that). Two layouts:
+#   - an Xcode project (apps/<name>/*.xcodeproj, scheme = <name> unless
+#     the `scheme` input says otherwise): built with xcodebuild, no signing;
+#   - plain sources: apps/<name>/*.swift + Info.plist (+ optional icon.py),
+#     compiled with swiftc (main.swift with top-level code, or @main in any
+#     file, e.g. a SwiftUI App).
+# Artifact ios-app-<name> holds <Product>.app.tar for
+# .qemu-test/ios-app.ps1 (install into the QEMU image).
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "folder under apps/"
+        required: true
+      scheme:
+        description: "Xcode scheme (default: the folder name)"
+        required: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          APP: ${{ inputs.app }}
+          SCHEME: ${{ inputs.scheme }}
+        run: |
+          set -euo pipefail
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcrun -sdk iphoneos --show-sdk-version
+          SRC="apps/$APP"
+          test -d "$SRC" || { echo "no such folder: $SRC"; exit 1; }
+          mkdir -p out
+          PROJ=$(ls -d "$SRC"/*.xcodeproj 2>/dev/null | head -1 || true)
+          if [ -n "$PROJ" ]; then
+            xcodebuild -project "$PROJ" -scheme "${SCHEME:-$APP}" -configuration Release \
+              -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath dd \
+              ARCHS=arm64 IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+            BUILT=$(ls -d dd/Build/Products/Release-iphoneos/*.app | head -1)
+            cp -R "$BUILT" out/
+            BUNDLE="out/$(basename "$BUILT")"
+          else
+            NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$SRC/Info.plist")
+            BUNDLE="out/$NAME.app"
+            mkdir -p "$BUNDLE"
+            LIB=-parse-as-library
+            [ -f "$SRC/main.swift" ] && LIB=
+            xcrun -sdk iphoneos swiftc -target arm64-apple-ios16.0 -O $LIB \
+              "$SRC"/*.swift -o "$BUNDLE/$NAME"
+            cp "$SRC/Info.plist" "$BUNDLE/Info.plist"
+            plutil -convert binary1 "$BUNDLE/Info.plist"
+            if [ -f "$SRC/icon.py" ]; then
+              python3 "$SRC/icon.py" "$BUNDLE/AppIcon60x60@2x.png" 120
+              python3 "$SRC/icon.py" "$BUNDLE/AppIcon60x60@3x.png" 180
+            fi
+            for f in "$SRC"/*; do
+              case "$f" in *.swift|*/Info.plist|*/icon.py) ;; *) cp -R "$f" "$BUNDLE/";; esac
+            done
+          fi
+          codesign -f -s - --deep --timestamp=none "$BUNDLE"
+          codesign -dv "$BUNDLE" 2>&1
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$BUNDLE/Info.plist")
+          lipo -info "$BUNDLE/$EXE"
+          otool -l "$BUNDLE/$EXE" | grep -A4 LC_BUILD_VERSION
+          tar -C out -cf "out/$(basename "$BUNDLE").tar" "$(basename "$BUNDLE")"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-app-${{ inputs.app }}
+          path: out/*.app.tar
