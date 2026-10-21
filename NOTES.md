@@ -1,5 +1,267 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## >>> MATISSE PORT (Redmi K50 Pro, MT6983) - handoff 2026-10-21 <<<
+
+### ACTIVE UPDATE 2026-10-21 - hardware entry/MMU/IRQ proven; phone restored
+
+**CURRENT DEVICE STATE (latest):** OrangeFox recovery, boot_a fully restored
+from `backup/boot_a-stock-trim.img`. Entire 67,108,864-byte partition readback
+`backup/recovery-20261021/boot_a-final-after-all-probes.img` byte-matches
+`backup/boot_a-stock.img`, SHA256
+`7a6a462d5e8858c6f7ecd77655363dd84964d44ea6e7c239e961632996a96e94`.
+No test image remains installed. No userdata, vendor_boot, LK/preloader,
+GPT or calibration writes were performed. This is the preserved known-good
+(possibly Magisk-patched) backup, not a newly verified pristine vendor image.
+
+**Completed implementation commits:** `8a31ac8` (actual IRQ/EOI + guarded matisse ADT/payload), `3021f5a` (same-boot entry/FDT/MMU/timer
+probe + logging safety). Further completed work below adds actual IRQ/EOI
+and matisse ADT/payload guards; see newest git log for its commit.
+
+**IN PROGRESS 2026-10-21: XNU screen-log request.** Working branch
+`codex/matisse-xnu-screen-log`. New patch 0082 removes hard-coded sweet
+physical framebuffer writes/maps, derives geometry from boot_args Video,
+reuses the real bootstrap L2 for high RAM, supports two adjacent 32MiB
+blocks and preserves offset in the final alias. Malformed/unmapped surfaces
+stay headless. Normal fbcon geometry validation hardened.
+
+Local check against successful upstream run **39158169212** build tree:
+all five modified compile units emitted real objects (including start.s).
+11 instruction-level bootstrap mapping cases PASS via
+`tools/check-xnu-video.py`; this is NOT hardware display validation.
+Entire original 81-patch sequence applied strictly to Apple tag
+xnu-8796.141.3; patch0082 also applies to the uploaded CI build tree.
+
+GitHub CLI installed under ignored research/host-tools, authenticated as
+Jinsens. Upstream permission READ. User approved creating public build fork
+`Jinsens/ios-sweet`; not yet pushed or dispatched at this point.
+Next: run CI for patch0082 and read-only same-boot display-state probe.
+No XNU/iOS boot claimed. Panel command trigger remains unimplemented;
+writing pixels alone has not made logs visible on hardware.
+
+**Additional completed host work:** `mkadt.py --board matisse`: one A510
+(affinity=0), 13MHz, PPI27, GICD 0xc400000/size0x40000, GICR
+0xc440000/size0x200000, fb 0xfcb3f000/1440x3200/stride5760, kernel RAM
+0x100000000+0x12e000000, no Qualcomm UFS node. Retains iPhone10,3/D22AP
+and logical 1125x2436 canvas. Not a generic daumier profile. `mkpayload.py`
+recognizes it and rejects conflicting/truncated boot-args, requiring
+cpus=1/sweetkeys=0/sweettouch=0/sweetbattery=0/sweetusb=0/ufsrw=0.
+13 host unit tests PASS, existing sweet/QEMU profiles tested unchanged.
+Apple /product ADT is missing locally; generator warns and omits that node.
+
+**Hardware results:**
+
+| Probe | Stage/fault | Observation |
+| --- | --- | --- |
+| entry | 1 / 0 | EL1, MIDR0x410fd462, MPIDR0x81000000, CNTFRQ13MHz, DTB0x47c80000, SCTLR0x30d00980 |
+| board | 2 / 0 | Actual shim board_probe discovers GICD0xc400000, PPI27, fb0xfcb3f000 |
+| mmu | 5 / 0 | Actual shim/mmu.c enables 16KiB granule, rc0, AT succeeds; SCTLR0x30d01985 |
+| timer | 7 / 0 | Redist0xc440000, GICD_CTLR0x12; ISTATUS and PPI27 pending asserted after ~100us |
+| irq | 9 / 0 | **Actual IRQ entry/EOI PASS**: rc0, count1, last INTID27; returns to recovery |
+| logstore | no Linux result | FAIL to return; isolated extra direct PL/LK memory-access path, root cause unknown |
+
+Every successful probe handed back to the preserved original Linux kernel
+within the SAME boot and returned to recovery. Each flashed prefix was
+read back fully and matched first. IRQ test saves/restores modified GIC
+and timer state; timer-only stage leaves CPU DAIF masked. IRQ probe SHA256
+`961f9a260d7dffd2e267b08102a8cb6ca53461d2c76b9a50a4318261128e77f5`
+(20,832,256 bytes). Exact raw dmesg logs, readbacks and source/layout/hash
+manifests are gitignored under `research/matisse/20261021-live/` and
+`shim/out/entryprobe-{entry,board,mmu,timer,irq}.{img,json,elf}`.
+MMU image SHA256 cabdfa644bfaa3b0514fad5e2fae44469e8e2e56c9a38e21c8808c2f7d14bbb2;
+timer image SHA256 c8d5c402126d9a699cca197b00cb5559d0cae0563b7d466c62f949db834d5a2b.
+
+**Safety fix:** old dram_log() wrote text INTO the packed 256-byte
+log_store header (including pointer/signature). New writer is append-only,
+validates bounds/overflow/tag length and needs a live FDT-provided header;
+ASan+UBSan host cases PASS. Nonetheless direct log_store access is NOT
+hardware-working: normal dram_log and markers are disabled unless explicitly
+SHIM_LOGSTORE_MARK. Raw partition logs and misc BCB writes are opt-in only
+via SHIM_STORAGE_LOG. Stop relying on a warm-reset PL/LK log reader.
+
+Fresh backup set (read-only) at `backup/recovery-20261021/manifest.json`:
+boot_a, vendor_boot_a, dtbo_a, lk_a/b, vbmeta_a/b, misc, persist,
+nvcfg/nvdata/nvram, protect1/2, seccfg. Fresh live DTB (410,235 bytes),
+stock dmesg, PL/LK log, partitions and iomem in the live research directory.
+Host FDT reader passes on this live tree under ASan/UBSan. Complete shim
+cross-build passes (pre-existing unused reset() warning only); C ABS64
+relocation check passes. No Apple artifact/device dump/serial is tracked.
+
+Local toolchain: installed Android NDK
+`/Users/xiaohuasheng/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin`.
+ADB/fastboot:
+`/Users/xiaohuasheng/Library/Android/sdk/platform-tools/{adb,fastboot}`;
+USB needs escalated access. `tools/fbraw.py` works around LK's macOS
+platform-tools pipe error. Prefer `adb devices -l` then direct exec-out:
+`adb wait-for-device` sometimes remains waiting although recovery enumerates.
+The linked kernel/boot probes and same-boot diagnostic format are documented
+in `docs/matisse-bringup.md`.
+
+All device-state summaries and experiments BELOW are historical and
+superseded by this section; in particular the old bootloop snapshot is NOT
+current.
+
+### UPDATE 2026-10-21 late - log channel found, phone needs stock boot restored
+
+**Device state right now:** `boot_a` contains the instrumented shim
+(`shim/out/shim-boot.img`, log_store marker build, `EXTRA_CFLAGS=-DSHIM_LOGSTORE_MARK`).
+The phone bootloops on it and does not enter recovery from the `misc`
+`boot-recovery` BCB; it is currently not enumerating on USB. Restore with
+`fastboot flash boot_a backup/boot_a-stock-trim.img` after Power+VolDown.
+The stock image is intact; nothing else was written.
+
+**Why the marker test is still unproven:** the shim writes a valid append into
+the **pl_lk log_store buffer** (`dram_buf_header.buf_addr` = 0x7ffbf000 from
+the 256-byte header at `/chosen/log_store` = 0x00df1100). `fastboot oem lkmsg`
+dumps a **different** 256 KiB buffer (the kernel/UART `klog`, all Android
+`dmesg` text), so absence of `SWEET-SHIM` there proves nothing. `/proc/pl_lk`
+in recovery is the right reader.
+
+**Verified log_store layout** (recovery `/proc/pl_lk`, live header):
+- sram header sig 0xabcd1234 at 0x00df1100; packed DRAM buffer address at +0x14,
+  size at +0x1c; `pl_lk_log` at +0x40: sig 0xcdab3412, buff_size 0x40000,
+  off_pl **0x400**, sz_pl, off_lk = 0x400 + sz_pl, sz_lk.
+- The PL/LK text is clean. `oem lpmsg` returns 0x10000 bytes; `oem lkmsg`
+  returns 0x40000 bytes of the kernel log, not the PL/LK sections.
+- `shim/logstore.c` appends `SWEET-SHIM <tag> a=... b=...\n` at
+  `buf + off_lk + sz_lk` and bumps sz_lk, guarded by the sig and bounds.
+
+**Fastboot on macOS:** platform-tools 34.0.5 and 37.0.0 both fail with
+`could not clear input pipe ... usb_read failed e00002e8` after sending a
+command to this LK, even for `reboot`; `fastboot devices` still works.
+`tools/fbraw.py` (pyusb + libusb) speaks the protocol directly and **works**:
+`oem lkmsg` returned exactly 0x40000 bytes and `reboot-recovery` returned
+OKAY. Use it for all local fastboot operations.
+
+**BCB caveat:** writing `boot-recovery` into misc block 0 from recovery did
+not make LK boot recovery after the shim reset; the phone kept booting
+`boot_a`. Do not rely on that loop for log retrieval until the MTK boot-mode
+selection is understood.
+
+
+**Goal:** run the same iOS bring-up on the user's Redmi K50 Pro (`matisse`,
+MT6983 / Dimensity 9000, 8 GB, 1440x3200, UFS 3.1). Everything below was
+measured on the device or read out of its own firmware, not from datasheets.
+
+### Device state right now (safe)
+
+- `boot_a` is **byte-identical to `backup/boot_a-stock.img`** (verified with
+  `adb exec-out dd`, sha256 `ba4255e2...`). Android boots normally; OrangeFox
+  recovery boots (`adb reboot recovery`). Nothing else was written.
+- `misc` command block is zero (no pending boot-recovery), `oops` is zero.
+- The Magisk-patched stock boot is the backup: kernel 19,610,141 B gzip ->
+  46,848,116 B `ARMd`, ramdisk 1,250,233 B lz4 (vs 1,380,091 B in the
+  firmware package - that difference is Magisk).
+
+### Device facts
+
+| Item | Value | Source |
+| --- | --- | --- |
+| Product | `matisse`, 22011211C, board `mt6983` | getprop |
+| Bootloader | MTK LK (`lk_a` 2.8 MB), `verifiedbootstate=orange` | `lk.img`, getprop |
+| boot.img | header **v4**, kernel **gzip**, ramdisk **lz4**, 4096 B signature block, AVB footer (SHA256_RSA2048) | `boot.img` |
+| vendor_boot | header v4, dtb 335,112 B, `vendor_ramdisk` lz4, tags/dtb 0x47c80000 | `vendor_boot.img` |
+| `fastboot boot` | **NOT SUPPORTED** - LK's command table is download/flash/erase/getvar/oem/set_active only | `lk.img` strings |
+| Recovery | lives in **vendor_boot**; there is no recovery partition | TWRP BoardConfig, partitions |
+| RAM | `/memory` 0x40000000 + 8 GiB; carve-outs up to 0x22e000000 | live FDT |
+| Usable window | 0x100000000 .. 0x22e000000 (4.72 GiB) | live FDT |
+| GIC | GICv3, GICD **0x0c400000** (0x40000), GICR **0x0c440000** (0x200000) | live FDT `/interrupt-controller` |
+| Timer | CNTFRQ **13 MHz**, virt PPI 11 -> INTID **27**, phys 14 -> 30 | live FDT `/timer` |
+| UFS | `ufshci@112b0000`, `mediatek,mt8183-ufshci`, Samsung KLUDG4UHGC-B0E1 | live FDT, sysfs |
+| Framebuffer | base **0xfcb3f000**, vramSize **0x34c0000** (3 frames), panel 1440x3200 | `/chosen/atag,videolfb*` |
+| Panel | `nt36672e_fhdp_dsi_vdo_120hz_jdi_dphy_drv`, **DSC command mode** | `/chosen/atag,videolfb-lcmname` |
+| Touch | FocalTech `fts@0` on SPI6 0x11016000, IRQ GPIO 8, reset GPIO 3 | live FDT |
+| Keys | MT6363 (`spmi@1c015000/pmic@4/mt6363keys`), power 116, home 115 | live FDT |
+| Battery | MT6375 charger+gauge at I2C 0x11e01000 | live FDT, dmesg |
+| USB | MTU3 + xHCI 0x11201000 / 0x11200000 (not DWC3) | live FDT |
+| DRAM logs | `ram_console` 0x00d01100 (512 KiB), `log_store` 0x00df1100 (256 B) | `/chosen` |
+
+### What was built (all committed)
+
+The shim is now **board-generic**: `shim/board.c` reads the framebuffer, GIC,
+timer PPIs, UFS base, RAM, initrd and the DRAM log buffers out of the **live
+FDT**; per-board constants are only fallbacks.
+
+- `shim/fdt.c` - real FDT walker: path lookup with a match stack, multi-entry
+  `reg`, string lists, `compatible` search. **Verified on the dumped matisse
+  tree** (`shim/host_board.c`: board matisse, fb 0xfcb3f000/0x34c0000,
+  gicd 0xc400000, gicr 0xc440000, virt 27, ufs 0x112b0000, dram 8 GiB,
+  initrd 0x66f00000..0x6aa514be, lcm name). Two real bugs found that way:
+  `~3UL` truncates on Windows/LLP64, and "/" must be zero path components.
+- `shim/start.S` - drops EL2 -> EL1 (LK may enter at EL2), sets VBAR_EL2
+  early, and turns off a bootloader-left MMU before any C runs.
+- `shim/loader.c` - finds the payload by scanning the initrd for `SWEETXNU`
+  (MTK concatenates boot.img and vendor_boot ramdisks).
+- `shim/console.c` - parameterized geometry, `con_redraw` to repaint into
+  another scanout buffer, keeps a text copy for the log channels.
+- `shim/ufs.c` - parameterized by the board's UFS base; partition read/write,
+  `ufs_mark` progress blocks, `ufs_log_write`.
+- `shim/shim.c` - stage markers (`mark()`), DRAM log (`dram_log()`), boot to
+  recovery via the `misc` BCB, halt instead of reset on panic.
+- `tools/mkbootimg.py` - packs header v2 (ABL) and v4 (LK) from a stock
+  template, keeping the signature block; `shim/build.sh` gzips the kernel when
+  the template's is gzip and builds with clang+lld (Windows/MSYS2 works:
+  `PATH=/d/msys2/ucrt64/bin:$PATH EXTRA_CFLAGS=... bash build.sh --template ...`).
+- `tools/avbtool.py` (LineageOS copy, patched for Windows `os.urandom`),
+  `tools/shimlog.py`, `tools/matisse-flash.sh`.
+
+### What the hardware did (the important part)
+
+1. **LK accepts our image and jumps to our code.** Proof: a 92-byte stub
+   kernel (`shim/out/reset_stub.bin`, just `smc PSCI_SYSTEM_RESET`) makes the
+   phone blink and reboot instantly, while the stock image sits on the logo.
+2. **The panel is not a usable output.** Every shim build (full, minimal,
+   no-clear) shows only the logo, then the watchdog resets. The panel is
+   command-mode DSI with DSC: LK pushes one frame into the panel's GRAM and
+   stops, so framebuffer writes never appear. `atag,videolfb-islcm_inited`
+   is 0 in a normal boot. **Do not spend more time on the framebuffer until
+   something drives the DSI command queue.**
+3. **UFS writes from the shim never land.** `ufs_mark`/`ufs_log_write` into
+   `oops` and `boot_a`+4 MiB left the blocks zero. Either the MTK host is
+   gated after LK (clocks/power) or our UTRL takeover fails; the marker
+   records HCS/HCE/UTRLBA/UTRLRSR so a successful run would show which.
+4. **DRAM logs are the promising channel.** `fastboot oem lkmsg` really does
+   dump text (it printed the previous kernel's console), and `oem lpmsg`
+   returns OKAY. The 04:11 build wrote plain text into `log_store` and
+   `ram_console` and `lpmsg` came back empty - so either the shim never
+   reached `shim_main`, or `lpmsg` parses a header we did not write.
+
+### Next experiment (start here tomorrow)
+
+Bisect between `_start` and `shim_main` with the DRAM channel, no C:
+
+1. In `start.S`, as the **first** instructions after saving x0, write a magic
+   word + a byte counter to `log_store+0x80` and `ram_console+0x100`, then
+   `smc` reset. Boot it, `fastboot oem lkmsg` / `oem lpmsg`.
+2. If nothing: the write itself is the problem (address wrong, or the buffers
+   are re-initialised by LK after the jump). Then read the `log_store` header
+   format out of `lk.img` (`oem lkmsg` prints `DATA%08llx` chunks - the dump
+   path probably walks a ring header).
+3. If it works: move the marker forward one step at a time (after bss zeroing,
+   after `board_probe`, after `con_clear`, after `mmu_enable`, after
+   `test_gic`, after `test_ufs`) and the first missing marker names the fault.
+4. Only then fix the real blocker (likely the UFS host: compare the MTK
+   `ufshcd-mtk` probe sequence in the vendor kernel, or keep LK's list and
+   issue commands through it).
+
+### Operational rules learned the hard way
+
+- **Always flash a trimmed image.** `fastboot flash` of a 64 MiB file wedges
+  LK's USB stack ("Write to device failed (no link)"); trimming to the AVB
+  `original_image_size` (or just the real size) works every time. Re-entering
+  fastboot needs Power + Volume Down by hand.
+- **`adb shell 'dd ...' > file` corrupts binaries on Windows** (CRLF). Use
+  `adb exec-out` for every pull; `adb push` for writes.
+- Recovery is in `vendor_boot`, so a broken `boot_a` does not cost recovery:
+  `fastboot reboot recovery` still works, and `fastboot flash boot_a
+  backup/boot_a-stock.img` (trimmed) restores normal boot.
+- The device's own firmware package is at
+  `D:/am/matisse_images_OS2.0.2.0.ULKCNXM_20250401.0000.00_14.0_cn_7623fe2c93/`
+  (boot.img, vendor_boot.img, dtbo.img, lk.img, preloader, scatter).
+- The TWRP/OrangeFox device tree at `D:/twrp/` has the MTK bootctrl layout
+  (`bootctrl/boot_control_definition.h`: BCB at misc block 0, magic
+  `0x42414342` in `slot_suffix`) and the working vendor_boot repack scripts.
+
+
 ## Agent handoff / active work (2026-10-15, latest)
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
