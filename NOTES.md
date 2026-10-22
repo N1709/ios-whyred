@@ -13,7 +13,8 @@ fork `smiluredev/ios-sweet`; `origin` (dipa-studio) untouched, **no PR opened**.
 headers so `git apply` accepts them) -> `dc77426` (0083 = `ARM64_NON_APPLE_BRINGUP`
 umbrella, crypto pilot) -> `91c0694` (HAS_GIC_V3 off) -> `a1eed06` (staging gate)
 -> `be106b0` (these notes) -> `9d9c0d7` (patch-header hygiene) -> `97d54ea` (0084,
-bundled libpthread for a05s).
+bundled libpthread for a05s) -> `dc660c5` (these notes again) -> `2fe8685` (0085,
+the two link stubs).
 
 **CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
 - `39817165380` failure. *Observed:* 1063 compiles carry
@@ -85,9 +86,51 @@ promoted:* `bsd/dev/sweet_ufs.c` (0028/0060/0072 SM7150 UFS host), 0062
 only some of them compiles cleanly and silently builds an empty provider,
 which is what a05s had before it.
 
-**Not validated by CI yet:** `9d9c0d7` and `97d54ea` are pushed, but the run
-that would cover them (`39824908819`) could not acquire a runner. The next
-attempt tests `97d54ea`.
+**🎉 ARMv8.0 GATE PASSED AT COMPILE TIME - `39832571893` (head `97d54ea`,
+12 steps, ~13 min of build): 0 compile errors, measured object by object.
+`-march=armv8-a+crypto -DARM64_BOARD_CONFIG_A05S -DARM64_NON_APPLE_BRINGUP`
+appears on 965 `CC` lines - 951 distinct objects, and the shared sources the
+umbrella is supposed to bring are all in the list: the 15 BearSSL crypto files
+(`sweet_aes*`, `sweet_{md5,sha1,sha2big,dec32*,enc32*,enc64*,dec64*}`) next to
+the `corecrypto_*` wrappers that call them, the 3 staged libpthread provider
+files (`sweet_pthread_{init,support,synch}.o`), and 24 built-in HFS objects
+(`hfs_{vfsops,catalog,cnode,journal,...}.o`). Log lines confirm it upstream of
+the compiler: all 84 project patches were `Applying patch`-ed, none skipped (the
+4 `Skipping patch` warnings are blacktop's own `TrustCache`,
+`iobuffermemd_monterey`, `skywalk_sonoma` and `syntax_checker_sonoma`, which the
+sweet builds skip too), plus `Staged ... for A05S` x3.
+The only failure is `ld`:
+
+    Undefined symbols for architecture arm64:
+      "_ml_enable_monitor", referenced from: _arm_vm_init in arm_vm_init.o
+      "_sweet_sample_task", referenced from: _sweet_sample_proc in sweet_sample.o
+
+Both are gates that switch a DEFINITION off while leaving the CALLER on - the
+signature failure mode of a bring-up macro, and invisible until the link:
+- `osfmk/arm64/machine_routines.c`, 0008's short `#if defined(SWEET)`:
+  `ml_enable_monitor()` is the empty stub replacing Apple's closed per-SoC
+  definition; `arm_vm_init()` is common code and calls it unconditionally.
+- `osfmk/kern/exception.c`, 0043's `#if defined(ARM64_BOARD_CONFIG_SWEET)`:
+  0054 later put the `sweet_sample_task()` implementation *inside* that region,
+  while its caller `bsd/dev/sweet_sample.c` is `standard` in bsd/conf/files and
+  has no gate at all.
+
+Fixed by `0085-a05s-link-fixes.patch` (both sites -> `ARM64_NON_APPLE_BRINGUP`).
+Checked before pushing that the promoted exception.c region (220 lines) needs
+nothing sweet-only: `sr_slide` and `mach_header_vm_address` are upstream fields
+(`osfmk/vm/vm_shared_region.h:223`, `osfmk/kern/task.h`), and the two includes it
+relies on travel inside the same region. Also checked the other direction, that
+promoting the caller does not manufacture new undefined symbols: every function
+the region calls is upstream code (`kalloc_data`, the `vm_map_*` family,
+`vm_shared_region_get`, `copyin`, `PE_parse_boot_argn`, `printf`) and its three
+`sweet_*` helpers - `sweet_crash_log`, `sweet_crash_strings`, `sweet_sample_task` -
+are *defined inside the same region*, not imported from another SWEET-gated file. The other two short-`SWEET` sites in
+machine_routines.c (957 firehose console, 1090 deep sleep) stay as they are -
+the file links either way.
+
+Still not validated by CI: `2fe8685`'s `0085`. The header hygiene (`9d9c0d7`) and
+the pthread promotion (`97d54ea`) were both covered by 39832571893; the next
+attempt covers the link.
 
 **Do not blanket-promote the short-name gates** (`osfmk/arm64` 20: `proc_reg.h`,
 `sleh.c`, `start.s`, `machine_routines.c`, `sweet_early.c`, `arm_vm_init.c`,
@@ -97,6 +140,12 @@ turning them on for a05s silently changes what the kernel does (PSCI SMP, the
 firehose console, the PRNG entropy source), and because `SWEET` is a `#define`
 rather than a `-D`, promotion also depends on a per-file include audit. Do that
 audit against the `xnu-buildtree` artifact, not from the patches.
+
+**Measuring from the CI log:** `gh run view --log` writes the ESC of every colour
+code as the two literal characters `^` `[`, so a `\x1b\[...m` strip matches
+nothing and `CC` never lines up with its object name (it reported 13 objects here
+once). Strip with `perl -pe 's/\^\[\[[0-9;]*m//g'` first, then
+`grep -oE 'CC +[A-Za-z0-9_.+-]+\.o$'`.
 
 **Verification trap worth remembering:** blacktop's `build.sh` applies each patch
 with `git apply --check || warning "Skipping patch"` and **keeps building**, so a
