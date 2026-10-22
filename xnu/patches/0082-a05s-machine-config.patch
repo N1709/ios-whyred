@@ -1,4 +1,6 @@
 diff --git a/config/MASTER.arm64.a05s b/config/MASTER.arm64.a05s
+new file mode 100644
+--- /dev/null
 +++ b/config/MASTER.arm64.a05s
 @@ -0,0 +1,122 @@
 +#
@@ -125,6 +127,7 @@ diff --git a/config/MASTER.arm64.a05s b/config/MASTER.arm64.a05s
 +options   CONFIG_KERNEL_TBI		# <kernel_tbi>
 diff -urN PRE/makedefs/MakeInc.def POST/makedefs/MakeInc.def
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+--- a/makedefs/MakeInc.def
 +++ b/makedefs/MakeInc.def
 @@ -29,7 +29,7 @@
  else ifneq ($(findstring _host,$(RC_ProjectName)),)
@@ -156,6 +159,7 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
  endif
 diff -urN PRE/osfmk/arm64/proc_reg.h POST/osfmk/arm64/proc_reg.h
 diff --git a/osfmk/arm64/proc_reg.h b/osfmk/arm64/proc_reg.h
+--- a/osfmk/arm64/proc_reg.h
 +++ b/osfmk/arm64/proc_reg.h
 @@ -221,6 +221,15 @@
  /* D-Cache. */
@@ -175,6 +179,7 @@ diff --git a/osfmk/arm64/proc_reg.h b/osfmk/arm64/proc_reg.h
  /* I-Cache. */
 diff -urN PRE/osfmk/arm64/start.s POST/osfmk/arm64/start.s
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+--- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -781,7 +781,7 @@
  	MSR_SCTLR_EL1_X0
@@ -187,6 +192,8 @@ diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
  	bne		.
 diff -urN PRE/pexpert/pexpert/arm64/A05S.h POST/pexpert/pexpert/arm64/A05S.h
 diff --git a/pexpert/pexpert/arm64/A05S.h b/pexpert/pexpert/arm64/A05S.h
+new file mode 100644
+--- /dev/null
 +++ b/pexpert/pexpert/arm64/A05S.h
 @@ -0,0 +1,56 @@
 +/*
@@ -247,6 +254,7 @@ diff --git a/pexpert/pexpert/arm64/A05S.h b/pexpert/pexpert/arm64/A05S.h
 +#endif /* ! _PEXPERT_ARM64_A05S_H */
 diff -urN PRE/pexpert/pexpert/arm64/board_config.h POST/pexpert/pexpert/arm64/board_config.h
 diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+--- a/pexpert/pexpert/arm64/board_config.h
 +++ b/pexpert/pexpert/arm64/board_config.h
 @@ -108,6 +108,20 @@
  
@@ -271,6 +279,7 @@ diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_
  
 diff -urN PRE/pexpert/pexpert/arm64/Makefile POST/pexpert/pexpert/arm64/Makefile
 diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
+--- a/pexpert/pexpert/arm64/Makefile
 +++ b/pexpert/pexpert/arm64/Makefile
 @@ -18,7 +18,8 @@
  	H13.h \
