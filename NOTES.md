@@ -14,7 +14,8 @@ headers so `git apply` accepts them) -> `dc77426` (0083 = `ARM64_NON_APPLE_BRING
 umbrella, crypto pilot) -> `91c0694` (HAS_GIC_V3 off) -> `a1eed06` (staging gate)
 -> `be106b0` (these notes) -> `9d9c0d7` (patch-header hygiene) -> `97d54ea` (0084,
 bundled libpthread for a05s) -> `dc660c5` (these notes again) -> `2fe8685` (0085,
-the two link stubs).
+the two link stubs) -> `5cb0d59` (these notes: object-level proof of the compile
+gate).
 
 **CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
 - `39817165380` failure. *Observed:* 1063 compiles carry
@@ -128,9 +129,81 @@ are *defined inside the same region*, not imported from another SWEET-gated file
 machine_routines.c (957 firehose console, 1090 deep sleep) stay as they are -
 the file links either way.
 
-Still not validated by CI: `2fe8685`'s `0085`. The header hygiene (`9d9c0d7`) and
-the pthread promotion (`97d54ea`) were both covered by 39832571893; the next
-attempt covers the link.
+**🎉 THE A05S KERNEL LINKS - `39837924808` (head `5cb0d59`, i.e. everything
+through `0085`): conclusion `success`, `🎉 XNU Build
+Done!`. *Observed:* 0 compiler errors, **0 undefined symbols**, the same 951
+objects as the previous run, and the `xnu-kernel` artifact is 59 MB instead of
+the 178 KB a failed link produces: `kernel.development.a05s`, **17,010,168
+bytes**, SHA256 matches the artifact's own `SHA256SUMS`, `file` says
+`Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|PIE>`; the load commands read
+`MH_EXECUTE`, cputype `ARM64`, 26 commands, and the section map is the normal
+XNU one (`__TEXT_EXEC,__text` 8,645,900 bytes at `0xfffffe00072d4000`,
+`__BOOTDATA,__init`, `__KLD`, `__CTF`...). So: an iPhone X 16.7 userland kernel,
+configured as a Snapdragon 680 board, cross-assembled and linked to a bootable
+image format by the same CI that builds sweet. The only `Skipping patch` warnings
+remain blacktop's own 4.
+
+`0085` was the whole fix: `ml_enable_monitor()` and the `exception.c` region that
+holds `sweet_sample_task()`, both promoted to `ARM64_NON_APPLE_BRINGUP`.
+
+**The link is not the end of the story, and the difference is not visible to
+CI:** nothing has executed this image. Tasks #2/#3/#4/#6 (GIC/DT/framebuffer/
+MIDR) are what stand between "links" and "boots" - and so does the LSE finding
+below, which is currently a hard blocker for execution on A73/A53.
+
+**🚨 BLOCKER FOUND IN THE LINKED IMAGE: `-march=armv8-a+crypto` does NOT turn
+LSE off.** Measured on the CI's own `kernel.development.a05s.a` (the artifact
+ships every object that went into the link, 1096 members; `objs/` after `ar x`),
+disassembling **function by function** with capstone: 36,304 functions, 1,877,887
+instructions, and **~900 ARMv8.1 encodings** in real code - `ldadd` 395, `ldapr`
+165, `ldset` 82, `ldclr` 67, `cas/casal/casa` ~73, `stlr` 42, `ldaddh/ldaddlh` 18,
+`swp*`, `ldumax`... Spread over ~30 objects including hot paths:
+`ast.o:_ast_taken_user` (12), `pmap.o:_pmap_ro_zone_atomic_op_internal` (13),
+`kern_descrip.o:_sys_fcntl_nocancel` (10), `kernel_tests.o` (many).
+Sample (`ast.o`, and this is textbook `os_atomic_clear_bits`, not a mis-decode -
+the old value comes straight back in the `tbz`):
+
+    0x0022c add x8, x19, #0x458
+    0x00230 mov w9, #0x80
+    0x00234 ldclr w9, w8, [x8]        <- ARMv8.1 LSE, undefined on A73/A53
+    0x00238 mov x0, x19
+    0x00240 tbz w21, #9, #0x204
+
+*Observed:* the encodings are there, in objects built under
+`-march=armv8-a+crypto`. Meanwhile `machine_routines_asm.o` contains only
+`ldxr/ldaxr/stxr`, i.e. 0082's `__ARM_ARCH_8_2__` reasoning was right for the
+**preprocessor** - the source-level ll/sc selection works - but the **code
+generator and the assembler still have `lse` enabled**, almost certainly by
+Apple clang 15's Darwin defaults for `-target arm64-apple-macos14.0` (that last
+clause is an inference, not measured). Hand-written LSE confirms the assembler
+side: `osfmk/arm/commpage/commpage_asm.s` uses `casa`/`stlr` **unguarded** (lines
+276, 326) and assembled into `__commpage_text` without a diagnostic. There is no
+existing knob in `makedefs/` for this (grep for `target-feature`, `no-lse`,
+`outline-atomics`: nothing).
+
+Why CI cannot see it: it compiles, it links, `file` calls it a valid arm64
+Mach-O. It faults only when one of those instructions executes, i.e. at runtime,
+on the first atomic flag update.
+
+Two things to do, in order, as patch `0086`:
+1. force the feature off for the board - `MACHINE_FLAGS_ARM64_A05S` needs
+   `-Xclang -target-feature -Xclang -lse` (or the equivalent driver spelling), so
+   clang falls back to ll/sc for every `os_atomic_*`;
+2. that will make `commpage_asm.s` **fail to assemble**, which is the good
+   outcome: it names the remaining hand-written sites, and each one becomes a
+   ll/sc rewrite the way sweet already did for `machine_routines_asm.s`.
+
+Sweet must keep its `+lse`: A76/A55 are ARMv8.2 and the 900 instructions are
+faster there, so this flag belongs to `MACHINE_FLAGS_ARM64_A05S`, not to a common
+place.
+
+**SWEET DOES NOT REGRESS - `39861867773`, same head `5cb0d59`,
+`machine_config=SWEET`: `success` in ~8 min.** It built with
+`-march=armv8.2-a+crypto` (1109 compiles, exactly the same count the A05S run had,
+so the umbrella macro reached the same set of TUs on both boards), shipped a
+60 MB `xnu-kernel` artifact, and produced `kernel.development.sweet`. That is the
+evidence `0083`/`0084`/`0085` are behaviour-preserving for sweet rather than merely
+self-consistent for a05s - which is what makes the branch safe to propose.
 
 **Do not blanket-promote the short-name gates** (`osfmk/arm64` 20: `proc_reg.h`,
 `sleh.c`, `start.s`, `machine_routines.c`, `sweet_early.c`, `arm_vm_init.c`,
@@ -141,11 +214,43 @@ firehose console, the PRNG entropy source), and because `SWEET` is a `#define`
 rather than a `-D`, promotion also depends on a per-file include audit. Do that
 audit against the `xnu-buildtree` artifact, not from the patches.
 
+**That audit is now measured** (from `xnu-buildtree` of run 39832571893, whose
+`.d` files are the compiler's own transitive include lists): of 966 A05S
+translation units, **820 include the board header (`A05S.h`) and exactly 0
+include `SWEET.h`**. So on a05s every short-`SWEET` gate is dead code, in every
+file, whatever the include path. Of the 22 files carrying `defined(SWEET)` (50
+gate lines), the 13 that are actually compiled on A05S - `bsd/kern/kern_trustcache.c`
+6, `osfmk/arm64/{start.s 6, arm_vm_init.c 3, machine_routines.c 3, cpu.c 2,
+sleh.c 1, sweet_early.c 1, sweet_early.h 1}`, `osfmk/kern/debug.c` 1,
+`osfmk/prng/{entropy.c 6, prng_random.c 2}`, `osfmk/vm/vm_kern.c` 4,
+`pexpert/arm/pe_fiq.c` 5 - all sit in that 820, so promoting them changes nothing
+for sweet and switches them on for a05s. The other 8 are
+`iokit/Kernel/arm/Sweet*.cpp` (Framebuffer, CPU, KeyStore, PlatformExpert,
+Surface, Surface.h, Entitlements, Watchdog): no `.d` at all, i.e. the A05S build
+never compiles them, so their gate is a Makefile/`files` question, not a C one.
+The remaining hazard is semantic, not mechanical: `pe_fiq.c`'s 5 gates are the
+GICv3 path 0082 deliberately switched off, and `cpu.c`/`start.s` are PSCI SMP.
+
 **Measuring from the CI log:** `gh run view --log` writes the ESC of every colour
 code as the two literal characters `^` `[`, so a `\x1b\[...m` strip matches
 nothing and `CC` never lines up with its object name (it reported 13 objects here
 once). Strip with `perl -pe 's/\^\[\[[0-9;]*m//g'` first, then
 `grep -oE 'CC +[A-Za-z0-9_.+-]+\.o$'`.
+
+**Measuring the ISA from a Mach-O:** do **not** sweep `__text` linearly. Two traps
+hit here before the number was trustworthy. (1) In an *object* file the section's
+relocation entries are separate from its bytes and `section_64.nreloc` sits at
++60 (`reloff` +56) - reading +84 (`reserved2`) and adding `8*nreloc` to the file
+offset points the disassembler at the reloc table, which decodes as
+`udf`/`.byte`/SVE nonsense. (2) Even over real bytes, capstone's `skipdata`
+resynchronises **mid-instruction** after a data island and then invents
+`casa`/`ldadd` for pointer pairs; the first image sweep "found" 1046 v8.1
+encodings and 2 `fcmla ... z` (SVE - impossible here, so false) that way. The
+trustworthy method is `~/ios-sweet-work/scan_objs2.py`: per object, take the
+function symbols whose `n_sect` is `__text`, disassemble each symbol's own span,
+and read the enclosing instructions to confirm a hit is code (the `ast.o` sample
+above survived that check). Plain `disasm()` without skipdata also stops early -
+34,946 of 2.1M instructions - which is how the first pass under-counted.
 
 **Verification trap worth remembering:** blacktop's `build.sh` applies each patch
 with `git apply --check || warning "Skipping patch"` and **keeps building**, so a
