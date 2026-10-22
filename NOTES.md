@@ -2,6 +2,85 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-22 (read first): second board - a05s, Samsung Galaxy A05s (SM6225) <<<
+
+**Intent:** contribute a Samsung Galaxy A05s port (6 GB RAM variant; Qualcomm
+SM6225 / Snapdragon 680, Kryo 265 = 4x Cortex-A73 + 4x Cortex-A53, **ARMv8.0**)
+next to sweet's. Everything so far is on branch `a05s-machine-config` of the
+fork `smiluredev/ios-sweet`; `origin` (dipa-studio) untouched, **no PR opened**.
+
+**Commits:** `b3a3b09` (0082 = ARMv8.0 machine config) -> `c5b621c` (patch
+headers so `git apply` accepts them) -> `dc77426` (0083 = `ARM64_NON_APPLE_BRINGUP`
+umbrella, crypto pilot) -> `91c0694` (HAS_GIC_V3 off) -> `a1eed06` (staging gate).
+
+**CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
+- `39817165380` failure. *Observed:* 1063 compiles carry
+  `-march=armv8-a+crypto -DARM64_BOARD_CONFIG_A05S -DARM64_NON_APPLE_BRINGUP`;
+  309 `osfmk/` files built including `machine_routines_asm.s`, `start.s`,
+  `locore.s`, with **zero** architecture diagnostics and zero mentions of
+  `casa`/`ldadd`/`stadd`/`PAN` -> the ARMv8.0 ISA surface is fine at the
+  assembler level. Never linked (`make: *** [install] Error 2`); `sleh_irq.s`,
+  `pmap.s`, `arm_init.c`, `cpu_data.c` were never reached. 49 errors, two
+  families, both now fixed:
+  1. 17x undeclared `GICR_*`/`GICD_*`/`ICC_*` in `pexpert/arm/pe_fiq.c`. Cause:
+     0082 set `HAS_GIC_V3 1`, so pe_fiq.c's GICv3 branch compiles; the architected
+     offsets live inside `SWEET.h` (Apple's own precedent is to keep them in the
+     board header - `VMAPPLE.h` has them) and 0017's `#if defined(SWEET)` branch
+     is the one that uses them, so a05s fell into the *generic* branch, which
+     enables **PPI 27 as Group 0** - the numbering and security state 0017 had to
+     replace for Qualcomm (Group 0 = TrustZone, vtimer INTID 19 on sweet).
+     Fix `91c0694`: unset `HAS_GIC_V3` -> `pe_init_fiq()` compiles to its no-op,
+     which is exactly BCM2837's (GICv2) configuration upstream. No guessed
+     register values added.
+  2. 18x `'sweet_bearssl/...' file not found` / `'hfs.h' file not found`.
+     Cause: `0019/0020/0026-stage-*.sh` exit unless `MACHINE_CONFIG == SWEET`, so
+     the shared trees were never staged while 0083's gate compiles the sources
+     that `#include` them. Fix `a1eed06`: gate is `^(SWEET|A05S)$`.
+- `39824908819`: result to be recorded here.
+
+**Four distinct spellings for "board-specific" in this series** - any umbrella
+pass has to catch all four, and they do *not* have the same reach:
+1. `#if defined(ARM64_BOARD_CONFIG_SWEET)` (66 added lines / 41 files) - the
+   `-D` from `MACHINE_FLAGS_ARM64_SWEET`, visible in every translation unit.
+2. `#if defined(SWEET)` (58 lines / 22 files) - a `#define` in
+   `pexpert/pexpert/arm64/SWEET.h`, so only visible where that header is included.
+3. `ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)` in `libkern/conf/Makefile.template`.
+4. `[[ "${MACHINE_CONFIG:-}" == SWEET ]] || exit 0` in the three `*-stage-*.sh`.
+
+**0083 promoted only `libkern/crypto` (20 gates) as a pilot.** Remaining
+`ARM64_BOARD_CONFIG_SWEET` clusters: `iokit/Kernel` 10, `bsd/kern` 8, `bsd/dev` 6,
+`iokit/KernelConfigTables.cpp` 4, `bsd/pthread` 3, `bsd/sweet_hfs` 3,
+`pexpert/pexpert` 2, `bsd/vfs` 2, `osfmk/console` 2. `bsd/dev` = UFS
+(0028/0030/0034) and the other sweet SoC drivers: shared *plumbing* can be
+promoted, register-level stuff cannot.
+
+**Do not blanket-promote the short-name gates** (`osfmk/arm64` 20: `proc_reg.h`,
+`sleh.c`, `start.s`, `machine_routines.c`, `sweet_early.c`, `arm_vm_init.c`,
+`cpu.c` PSCI; `osfmk/prng` 8 = 0013/0014; `bsd/kern` 7; `iokit/Kernel` 6;
+`pexpert/arm` 5; `osfmk/vm` 4). They sit in files every config compiles, so
+turning them on for a05s silently changes what the kernel does (PSCI SMP, the
+firehose console, the PRNG entropy source), and because `SWEET` is a `#define`
+rather than a `-D`, promotion also depends on a per-file include audit. Do that
+audit against the `xnu-buildtree` artifact, not from the patches.
+
+**Verification trap worth remembering:** blacktop's `build.sh` applies each patch
+with `git apply --check || warning "Skipping patch"` and **keeps building**, so a
+malformed patch is invisible until a much later, unrelated failure (that is how
+`c5b621c` was found). GNU `patch --fuzz=0` accepts headers that `git apply`
+rejects, so every patch is now checked with both in a real git repo.
+Helpers (outside the repo, not committed): `~/ios-sweet-work/gen0082.py`,
+`gen0083.py` (generate + verify), `checkpatch.py` (dry-run against the real
+pre-state), `simulate-ci-apply.py` (replicates the apply loop; its own docstring
+says why it is *not* faithful - it never runs the staging `.sh`).
+
+**Unfinished / open hardware questions (guesses, not observations):** whether
+SM6225's interrupt controller exposes GICv3 redistributors at all, its PPI
+numbering and the trust-zone split; the DT MMIO map (GICD/GICR, UFS, display)
+has to come off the live device's DTB, not off sweet's; whether the Samsung
+bootloader hands over a linear framebuffer; `tools/mkadt.py` is still
+sweet-hardcoded, so there is no a05s ADT yet; MIDR/errata and MPIDR topology of
+A73+A53 unverified; `MAX_CPU_CLUSTERS 1` (4 A73s still unstarted).
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**
