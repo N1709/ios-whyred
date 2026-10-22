@@ -2,9 +2,11 @@
 # dxb runs patches/*.sh from the XNU source root before applying *.patch.
 set -euo pipefail
 
-[[ "${MACHINE_CONFIG:-}" == SWEET ]] || exit 0
+# The staged tree is shared by every non-Apple board: the C/Make gates that
+# select it are ARM64_NON_APPLE_BRINGUP and $(filter SWEET A05S,...), not SWEET.
+[[ "${MACHINE_CONFIG:-}" =~ ^(SWEET|A05S)$ ]] || exit 0
 [[ "${MACOS_VERSION:-}" == 13.5 ]] || {
-    echo 'SWEET libpthread integration requires xnu-8796.141.3 (macOS 13.5)' >&2
+    echo "${MACHINE_CONFIG} libpthread integration requires xnu-8796.141.3 (macOS 13.5)" >&2
     exit 1
 }
 [[ -f bsd/pthread/pthread_shims.c ]] || exit 1
@@ -62,4 +64,4 @@ PY
 # the provider so local compiles from the uploaded build tree work as well.
 pthread_sdk=$(xcrun --sdk macosx --show-sdk-path)
 cp "$pthread_sdk/usr/include/TargetConditionals.h" bsd/pthread/sweet_libpthread/
-echo "Staged libpthread-514.100.2 ($pthread_sha) for SWEET"
+echo "Staged libpthread-514.100.2 ($pthread_sha) for ${MACHINE_CONFIG}"
