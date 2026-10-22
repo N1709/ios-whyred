@@ -10,7 +10,6 @@ diff --git a/libkern/conf/Makefile.template b/libkern/conf/Makefile.template
  SWEET_AES_ROOT = $(SRCROOT)/libkern/crypto/sweet_bearssl
  SWEET_AES_INC = -I$(SWEET_AES_ROOT)/inc -I$(SWEET_AES_ROOT)/src
  sweet_aes.o_INCFLAGS = $(SWEET_AES_INC)
-diff -urN PRE/libkern/crypto/corecrypto_aes.c POST/libkern/crypto/corecrypto_aes.c
 diff --git a/libkern/crypto/corecrypto_aes.c b/libkern/crypto/corecrypto_aes.c
 --- a/libkern/crypto/corecrypto_aes.c
 +++ b/libkern/crypto/corecrypto_aes.c
@@ -23,7 +22,6 @@ diff --git a/libkern/crypto/corecrypto_aes.c b/libkern/crypto/corecrypto_aes.c
  /* SWEET has a built-in portable AES provider for the legacy CBC/ECB API. */
  extern const struct ccmode_cbc sweet_aes_cbc_encrypt;
  extern const struct ccmode_cbc sweet_aes_cbc_decrypt;
-diff -urN PRE/libkern/crypto/corecrypto_md5.c POST/libkern/crypto/corecrypto_md5.c
 diff --git a/libkern/crypto/corecrypto_md5.c b/libkern/crypto/corecrypto_md5.c
 --- a/libkern/crypto/corecrypto_md5.c
 +++ b/libkern/crypto/corecrypto_md5.c
@@ -51,7 +49,6 @@ diff --git a/libkern/crypto/corecrypto_md5.c b/libkern/crypto/corecrypto_md5.c
  
 -#endif /* !ARM64_BOARD_CONFIG_SWEET */
 +#endif /* !ARM64_NON_APPLE_BRINGUP */
-diff -urN PRE/libkern/crypto/corecrypto_sha1.c POST/libkern/crypto/corecrypto_sha1.c
 diff --git a/libkern/crypto/corecrypto_sha1.c b/libkern/crypto/corecrypto_sha1.c
 --- a/libkern/crypto/corecrypto_sha1.c
 +++ b/libkern/crypto/corecrypto_sha1.c
@@ -82,7 +79,6 @@ diff --git a/libkern/crypto/corecrypto_sha1.c b/libkern/crypto/corecrypto_sha1.c
  
  /* This is not publicised in header, but exported in libkern.exports */
  void SHA1Final_r(SHA1_CTX *context, void *digest);
-diff -urN PRE/libkern/crypto/corecrypto_sha2.c POST/libkern/crypto/corecrypto_sha2.c
 diff --git a/libkern/crypto/corecrypto_sha2.c b/libkern/crypto/corecrypto_sha2.c
 --- a/libkern/crypto/corecrypto_sha2.c
 +++ b/libkern/crypto/corecrypto_sha2.c
@@ -122,7 +118,6 @@ diff --git a/libkern/crypto/corecrypto_sha2.c b/libkern/crypto/corecrypto_sha2.c
  
  #else
  
-diff -urN PRE/libkern/crypto/sweet_aes.c POST/libkern/crypto/sweet_aes.c
 diff --git a/libkern/crypto/sweet_aes.c b/libkern/crypto/sweet_aes.c
 --- a/libkern/crypto/sweet_aes.c
 +++ b/libkern/crypto/sweet_aes.c
@@ -141,7 +136,6 @@ diff --git a/libkern/crypto/sweet_aes.c b/libkern/crypto/sweet_aes.c
  };
 -#endif /* ARM64_BOARD_CONFIG_SWEET */
 +#endif /* ARM64_NON_APPLE_BRINGUP */
-diff -urN PRE/libkern/crypto/sweet_aes_ct.c POST/libkern/crypto/sweet_aes_ct.c
 diff --git a/libkern/crypto/sweet_aes_ct.c b/libkern/crypto/sweet_aes_ct.c
 --- a/libkern/crypto/sweet_aes_ct.c
 +++ b/libkern/crypto/sweet_aes_ct.c
@@ -151,7 +145,6 @@ diff --git a/libkern/crypto/sweet_aes_ct.c b/libkern/crypto/sweet_aes_ct.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/symcipher/aes_ct.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_aes_ct_cbcdec.c POST/libkern/crypto/sweet_aes_ct_cbcdec.c
 diff --git a/libkern/crypto/sweet_aes_ct_cbcdec.c b/libkern/crypto/sweet_aes_ct_cbcdec.c
 --- a/libkern/crypto/sweet_aes_ct_cbcdec.c
 +++ b/libkern/crypto/sweet_aes_ct_cbcdec.c
@@ -161,7 +154,6 @@ diff --git a/libkern/crypto/sweet_aes_ct_cbcdec.c b/libkern/crypto/sweet_aes_ct_
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/symcipher/aes_ct_cbcdec.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_aes_ct_cbcenc.c POST/libkern/crypto/sweet_aes_ct_cbcenc.c
 diff --git a/libkern/crypto/sweet_aes_ct_cbcenc.c b/libkern/crypto/sweet_aes_ct_cbcenc.c
 --- a/libkern/crypto/sweet_aes_ct_cbcenc.c
 +++ b/libkern/crypto/sweet_aes_ct_cbcenc.c
@@ -171,7 +163,6 @@ diff --git a/libkern/crypto/sweet_aes_ct_cbcenc.c b/libkern/crypto/sweet_aes_ct_
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/symcipher/aes_ct_cbcenc.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_aes_ct_dec.c POST/libkern/crypto/sweet_aes_ct_dec.c
 diff --git a/libkern/crypto/sweet_aes_ct_dec.c b/libkern/crypto/sweet_aes_ct_dec.c
 --- a/libkern/crypto/sweet_aes_ct_dec.c
 +++ b/libkern/crypto/sweet_aes_ct_dec.c
@@ -181,7 +172,6 @@ diff --git a/libkern/crypto/sweet_aes_ct_dec.c b/libkern/crypto/sweet_aes_ct_dec
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/symcipher/aes_ct_dec.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_aes_ct_enc.c POST/libkern/crypto/sweet_aes_ct_enc.c
 diff --git a/libkern/crypto/sweet_aes_ct_enc.c b/libkern/crypto/sweet_aes_ct_enc.c
 --- a/libkern/crypto/sweet_aes_ct_enc.c
 +++ b/libkern/crypto/sweet_aes_ct_enc.c
@@ -191,7 +181,6 @@ diff --git a/libkern/crypto/sweet_aes_ct_enc.c b/libkern/crypto/sweet_aes_ct_enc
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/symcipher/aes_ct_enc.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_dec32be.c POST/libkern/crypto/sweet_dec32be.c
 diff --git a/libkern/crypto/sweet_dec32be.c b/libkern/crypto/sweet_dec32be.c
 --- a/libkern/crypto/sweet_dec32be.c
 +++ b/libkern/crypto/sweet_dec32be.c
@@ -201,7 +190,6 @@ diff --git a/libkern/crypto/sweet_dec32be.c b/libkern/crypto/sweet_dec32be.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/codec/dec32be.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_dec32le.c POST/libkern/crypto/sweet_dec32le.c
 diff --git a/libkern/crypto/sweet_dec32le.c b/libkern/crypto/sweet_dec32le.c
 --- a/libkern/crypto/sweet_dec32le.c
 +++ b/libkern/crypto/sweet_dec32le.c
@@ -211,7 +199,6 @@ diff --git a/libkern/crypto/sweet_dec32le.c b/libkern/crypto/sweet_dec32le.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/codec/dec32le.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_dec64be.c POST/libkern/crypto/sweet_dec64be.c
 diff --git a/libkern/crypto/sweet_dec64be.c b/libkern/crypto/sweet_dec64be.c
 --- a/libkern/crypto/sweet_dec64be.c
 +++ b/libkern/crypto/sweet_dec64be.c
@@ -221,7 +208,6 @@ diff --git a/libkern/crypto/sweet_dec64be.c b/libkern/crypto/sweet_dec64be.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/codec/dec64be.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_enc32be.c POST/libkern/crypto/sweet_enc32be.c
 diff --git a/libkern/crypto/sweet_enc32be.c b/libkern/crypto/sweet_enc32be.c
 --- a/libkern/crypto/sweet_enc32be.c
 +++ b/libkern/crypto/sweet_enc32be.c
@@ -231,7 +217,6 @@ diff --git a/libkern/crypto/sweet_enc32be.c b/libkern/crypto/sweet_enc32be.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/codec/enc32be.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_enc32le.c POST/libkern/crypto/sweet_enc32le.c
 diff --git a/libkern/crypto/sweet_enc32le.c b/libkern/crypto/sweet_enc32le.c
 --- a/libkern/crypto/sweet_enc32le.c
 +++ b/libkern/crypto/sweet_enc32le.c
@@ -241,7 +226,6 @@ diff --git a/libkern/crypto/sweet_enc32le.c b/libkern/crypto/sweet_enc32le.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/codec/enc32le.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_enc64be.c POST/libkern/crypto/sweet_enc64be.c
 diff --git a/libkern/crypto/sweet_enc64be.c b/libkern/crypto/sweet_enc64be.c
 --- a/libkern/crypto/sweet_enc64be.c
 +++ b/libkern/crypto/sweet_enc64be.c
@@ -251,7 +235,6 @@ diff --git a/libkern/crypto/sweet_enc64be.c b/libkern/crypto/sweet_enc64be.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/codec/enc64be.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_md5.c POST/libkern/crypto/sweet_md5.c
 diff --git a/libkern/crypto/sweet_md5.c b/libkern/crypto/sweet_md5.c
 --- a/libkern/crypto/sweet_md5.c
 +++ b/libkern/crypto/sweet_md5.c
@@ -261,7 +244,6 @@ diff --git a/libkern/crypto/sweet_md5.c b/libkern/crypto/sweet_md5.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/hash/md5.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_sha1.c POST/libkern/crypto/sweet_sha1.c
 diff --git a/libkern/crypto/sweet_sha1.c b/libkern/crypto/sweet_sha1.c
 --- a/libkern/crypto/sweet_sha1.c
 +++ b/libkern/crypto/sweet_sha1.c
@@ -271,7 +253,6 @@ diff --git a/libkern/crypto/sweet_sha1.c b/libkern/crypto/sweet_sha1.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/hash/sha1.c"
  #endif
-diff -urN PRE/libkern/crypto/sweet_sha2big.c POST/libkern/crypto/sweet_sha2big.c
 diff --git a/libkern/crypto/sweet_sha2big.c b/libkern/crypto/sweet_sha2big.c
 --- a/libkern/crypto/sweet_sha2big.c
 +++ b/libkern/crypto/sweet_sha2big.c
@@ -281,7 +262,6 @@ diff --git a/libkern/crypto/sweet_sha2big.c b/libkern/crypto/sweet_sha2big.c
 +#if defined(ARM64_NON_APPLE_BRINGUP)
  #include "sweet_bearssl/src/hash/sha2big.c"
  #endif
-diff -urN PRE/makedefs/MakeInc.def POST/makedefs/MakeInc.def
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 --- a/makedefs/MakeInc.def
 +++ b/makedefs/MakeInc.def

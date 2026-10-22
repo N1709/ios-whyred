@@ -126,7 +126,6 @@ new file mode 100644
 +
 +options   CONFIG_RESLIDE_SHARED_CACHE		# <reslide_shared_cache>
 +options   CONFIG_KERNEL_TBI		# <kernel_tbi>
-diff -urN PRE/makedefs/MakeInc.def POST/makedefs/MakeInc.def
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 --- a/makedefs/MakeInc.def
 +++ b/makedefs/MakeInc.def
@@ -158,7 +157,6 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
  export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
  endif
  endif
-diff -urN PRE/osfmk/arm64/proc_reg.h POST/osfmk/arm64/proc_reg.h
 diff --git a/osfmk/arm64/proc_reg.h b/osfmk/arm64/proc_reg.h
 --- a/osfmk/arm64/proc_reg.h
 +++ b/osfmk/arm64/proc_reg.h
@@ -178,7 +176,6 @@ diff --git a/osfmk/arm64/proc_reg.h b/osfmk/arm64/proc_reg.h
  #elif defined (VMAPPLE)
  
  /* I-Cache. */
-diff -urN PRE/osfmk/arm64/start.s POST/osfmk/arm64/start.s
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
@@ -191,7 +188,6 @@ diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
  	MOV64   x1, SCTLR_EL1_DEFAULT
  	cmp		x0, x1
  	bne		.
-diff -urN PRE/pexpert/pexpert/arm64/A05S.h POST/pexpert/pexpert/arm64/A05S.h
 diff --git a/pexpert/pexpert/arm64/A05S.h b/pexpert/pexpert/arm64/A05S.h
 new file mode 100644
 --- /dev/null
@@ -260,7 +256,6 @@ new file mode 100644
 +#endif /* ! ASSEMBLER */
 +
 +#endif /* ! _PEXPERT_ARM64_A05S_H */
-diff -urN PRE/pexpert/pexpert/arm64/board_config.h POST/pexpert/pexpert/arm64/board_config.h
 diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
 --- a/pexpert/pexpert/arm64/board_config.h
 +++ b/pexpert/pexpert/arm64/board_config.h
@@ -285,7 +280,6 @@ diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_
  #ifdef ARM64_BOARD_CONFIG_VMAPPLE
  #include <pexpert/arm64/VMAPPLE.h>
  
-diff -urN PRE/pexpert/pexpert/arm64/Makefile POST/pexpert/pexpert/arm64/Makefile
 diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
 --- a/pexpert/pexpert/arm64/Makefile
 +++ b/pexpert/pexpert/arm64/Makefile
