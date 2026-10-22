@@ -155,11 +155,17 @@ below, which is currently a hard blocker for execution on A73/A53.
 LSE off.** Measured on the CI's own `kernel.development.a05s.a` (the artifact
 ships every object that went into the link, 1096 members; `objs/` after `ar x`),
 disassembling **function by function** with capstone: 36,304 functions, 1,877,887
-instructions, and **~900 ARMv8.1 encodings** in real code - `ldadd` 395, `ldapr`
-165, `ldset` 82, `ldclr` 67, `cas/casal/casa` ~73, `stlr` 42, `ldaddh/ldaddlh` 18,
-`swp*`, `ldumax`... Spread over ~30 objects including hot paths:
+instructions, and **~900 post-ARMv8.0 encodings** in real code. The unambiguous
+LSE atomics are **~700** of them: `ldadd` 395, `ldset` 82, `ldclr` 67,
+`cas/casal/casa/casl` ~87, `ldaddl/ldadda/ldaddh/ldaddlh/ldaddalb/ldaddalh` ~42,
+`swp*` ~17, `ldumax` 8. Spread over ~30 objects including hot paths:
 `ast.o:_ast_taken_user` (12), `pmap.o:_pmap_ro_zone_atomic_op_internal` (13),
 `kern_descrip.o:_sys_fcntl_nocancel` (10), `kernel_tests.o` (many).
+The other ~200 need classifying before they are called fatal or fine, and my
+first pass mislabelled both groups: `stlr` (42) is **ARMv8.0 base ISA** - as are
+`ldxr/stxr/ldaxr`, which `machine_routines_asm.o` uses precisely because 0082's
+ll/sc selection worked - while `ldapr` (165) is FEAT_LRCPC, also newer than
+ARMv8.0, and each of those wants its own verdict.
 Sample (`ast.o`, and this is textbook `os_atomic_clear_bits`, not a mis-decode -
 the old value comes straight back in the `tbz`):
 
@@ -170,16 +176,17 @@ the old value comes straight back in the `tbz`):
     0x00240 tbz w21, #9, #0x204
 
 *Observed:* the encodings are there, in objects built under
-`-march=armv8-a+crypto`. Meanwhile `machine_routines_asm.o` contains only
-`ldxr/ldaxr/stxr`, i.e. 0082's `__ARM_ARCH_8_2__` reasoning was right for the
-**preprocessor** - the source-level ll/sc selection works - but the **code
-generator and the assembler still have `lse` enabled**, almost certainly by
-Apple clang 15's Darwin defaults for `-target arm64-apple-macos14.0` (that last
-clause is an inference, not measured). Hand-written LSE confirms the assembler
-side: `osfmk/arm/commpage/commpage_asm.s` uses `casa`/`stlr` **unguarded** (lines
-276, 326) and assembled into `__commpage_text` without a diagnostic. There is no
-existing knob in `makedefs/` for this (grep for `target-feature`, `no-lse`,
-`outline-atomics`: nothing).
+`-march=armv8-a+crypto`. Meanwhile `machine_routines_asm.o` contains `ldxr`,
+`ldaxr` and `stxr` and **not one** `casa`/`cas`/`ldadd`, i.e. 0082's
+`__ARM_ARCH_8_2__` reasoning was right for the **preprocessor** - the source-level
+ll/sc selection works - but the **code generator and the assembler still have
+`lse` enabled**, almost certainly by Apple clang 15's Darwin defaults for
+`-target arm64-apple-macos14.0` (that last clause is an inference, not measured).
+Hand-written LSE confirms the assembler side:
+`osfmk/arm/commpage/commpage_asm.s` uses `casa` **unguarded** (lines 276, 326,
+next to `stlr` which is fine) and assembled into `__commpage_text` without a
+diagnostic. There is no existing knob in `makedefs/` for this (grep for
+`target-feature`, `no-lse`, `outline-atomics`: nothing).
 
 Why CI cannot see it: it compiles, it links, `file` calls it a valid arm64
 Mach-O. It faults only when one of those instructions executes, i.e. at runtime,
