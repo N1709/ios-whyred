@@ -2,14 +2,15 @@ diff --git a/config/MASTER.arm64.a05s b/config/MASTER.arm64.a05s
 new file mode 100644
 --- /dev/null
 +++ b/config/MASTER.arm64.a05s
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,123 @@
 +#
-+# a05s (Samsung Galaxy A05s, SM6225): o master config do sweet, nomes de opcoes
-+# inclusive. mockfs / sweet_hfs / bindfs / kpc selecionam codigo de driver COMPARTILHADO,
-+# nao o hardware do sweet; renomea-los aqui derrubaria HFS+ ou o ramdisk root do kernel
-+# a05s. Gerado de MASTER.arm64.sweet DEPOIS dos patches 0007/0008/0021/0026/0037/0057 o
-+# editarem -- copiar a versao original do 0006 perde essas opcoes e o root nao monta.
-+# Regenerar com gen0082.py em vez de editar a mao quando a serie do sweet mudar.
++# a05s (Samsung Galaxy A05s, SM6225): sweet's master config, option
++# names included. mockfs / sweet_hfs / bindfs / kpc select COMPILED shared
++# driver code, not sweet hardware; renaming them here would drop HFS+ or
++# the kernel's ramdisk root. Derived from MASTER.arm64.sweet AFTER patches
++# 0007/0008/0021/0026/0037/0057 edit it -- patch 0006's original lacks those
++# options and the root does not mount. When sweet's series changes,
++# regenerate from the end-of-series MASTER.arm64.sweet instead of editing.
 +#
 +# sweet (Redmi Note 10 Pro, SM7150): MASTER.arm64.MacOSX plus the open-source
 +# arm64 assembly and pmap (nos_arm_asm, nos_arm_pmap). Apple's own SoC configs
@@ -195,7 +196,7 @@ diff --git a/pexpert/pexpert/arm64/A05S.h b/pexpert/pexpert/arm64/A05S.h
 new file mode 100644
 --- /dev/null
 +++ b/pexpert/pexpert/arm64/A05S.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,63 @@
 +/*
 + * Board config for the Samsung Galaxy A05s ("a05s", Qualcomm SM6225 /
 + * Snapdragon 680): Kryo 265 = 4x Cortex-A73 + 4x Cortex-A53, ARMv8.0, no PAC.
@@ -245,7 +246,14 @@ new file mode 100644
 +                                       * the iOS userland requires 16K pages --
 +                                       * unlike BCM2837, which is configured 4K */
 +
-+#define HAS_GIC_V3                1
++/* HAS_GIC_V3 intentionally absent at bring-up. Setting it compiles the GICv3
++ * path of pexpert/arm/pe_fiq.c, which needs the architected GICD/GICR/ICC
++ * register offsets that SWEET.h carries, and whose generic branch enables
++ * PPI 27 as a Group 0 interrupt -- the numbering and security state patch 0017
++ * had to replace for Qualcomm (Group 0 belongs to TrustZone, the virtual timer
++ * is a Group 1 PPI). Enabling it is a board change of its own, once the
++ * DT-verified GICD/GICR map and the SM6225 PPI INTIDs are known. Unset,
++ * pe_init_fiq() compiles to its no-op, as on Apple's BCM2837 (a GICv2 board). */
 +
 +#ifndef ASSEMBLER
 +#define PLATFORM_PANIC_LOG_DISABLED
