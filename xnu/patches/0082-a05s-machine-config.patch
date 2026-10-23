@@ -192,7 +192,7 @@ diff --git a/pexpert/pexpert/arm64/A05S.h b/pexpert/pexpert/arm64/A05S.h
 new file mode 100644
 --- /dev/null
 +++ b/pexpert/pexpert/arm64/A05S.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,88 @@
 +/*
 + * Board config for the Samsung Galaxy A05s ("a05s", Qualcomm SM6225 /
 + * Snapdragon 680): Kryo 265 = 4x Cortex-A73 + 4x Cortex-A53, ARMv8.0, no PAC.
@@ -202,9 +202,16 @@ new file mode 100644
 + * silicon: __ARM_PAN_AVAILABLE__ (PAN is v8.1, so MSR PAN traps) and the
 + * -march=armv8.2-a in makedefs/MakeInc.def (it lets the compiler choose LSE
 + * atomics, also v8.1). The ARMv8.0-safe precedent is Apple's own BCM2837
-+ * config (Raspberry Pi 3, Cortex-A53), which omits __ARM_PAN_AVAILABLE__;
-+ * without a v8.2 march __ARM_ARCH_8_2__ stays undefined and
-+ * osfmk/arm64/machine_routines_asm.s selects its ll/sc path (ldaxr/stxr).
++ * config (Raspberry Pi 3, Cortex-A53), which omits __ARM_PAN_AVAILABLE__.
++ *
++ * Note on the ISA macros: __ARM_ARCH_8_2__ is NOT how a board tells the kernel
++ * that LSE is absent. clang does not define the __ARM_ARCH_8_x__ macros when it
++ * preprocesses assembly, so an `#if defined(__ARM_ARCH_8_2__)` inside a .s file
++ * selects its ll/sc branch on every board - measured by disassembling sweet's
++ * own machine_routines_asm.o (ldaxr/stxr, casa=0, on a -march=armv8.2-a build).
++ * Those macros are only reliable in C. For assembly the signal is the
++ * -DNO_LSE_ATOMICS that MACHINE_FLAGS_ARM64_A05S passes (see 0086), which
++ * reaches the assembler, and osfmk/arm/commpage/commpage_asm.s gates on it.
 + *
 + * Board MMIO bases (GICD/GICR, UFS host, framebuffer) are NOT in this header:
 + * they reach the kernel at runtime through the Apple Device Tree built by
@@ -247,9 +254,27 @@ new file mode 100644
 + * register offsets that SWEET.h carries, and whose generic branch enables
 + * PPI 27 as a Group 0 interrupt -- the numbering and security state patch 0017
 + * had to replace for Qualcomm (Group 0 belongs to TrustZone, the virtual timer
-+ * is a Group 1 PPI). Enabling it is a board change of its own, once the
-+ * DT-verified GICD/GICR map and the SM6225 PPI INTIDs are known. Unset,
-+ * pe_init_fiq() compiles to its no-op, as on Apple's BCM2837 (a GICv2 board). */
++ * is a Group 1 PPI). Unset, pe_init_fiq() compiles to its no-op, as on Apple's
++ * BCM2837 (a GICv2 board).
++ *
++ * The hardware side of that decision is now measured, off the stock AP
++ * firmware's vendor_boot DTB for qcom,khaje / soc_id 518 (dtc-decoded, then
++ * cross-checked against /sys/devices/platform/soc): SM6225 does have GICv3,
++ * with #redistributor-regions = 1 and redistributor-stride = 0x20000, GICD at
++ * 0x0f200000 (64 KiB) and eight GICRs at 0x0f300000. Its timer node is
++ * compatible = "arm,armv8-timer" with interrupts = <0x01 0x01 0xf08>,
++ * <0x01 0x02 0xf08>, <0x01 0x03 0xf08>, <0x01 0x00 0xf08> -- PPI 1/2/3/0 for
++ * secure-phys/phys/virt/hyp, i.e. Qualcomm's renumbering, so the CNTV that XNU
++ * uses is INTID 16+3 = 19, the same value SWEET_VTIMER_INTID carries. CPU
++ * bring-up is PSCI 1.0 with method = "smc" on all eight cpus.
++ *
++ * So enabling this is no longer blocked on the hardware: it is blocked on
++ * pe_init_fiq() finding /arm-io/gic in an ADT, and tools/mkadt.py is still
++ * sweet-hardcoded. The remaining unknown that does need the device is the DRAM
++ * base+size -- the platform DTBs carry no memory@ node because the bootloader
++ * injects it into the DTB it hands to the kernel, and reading that back
++ * (/proc/iomem, the live /sys/firmware/fdt) requires root, which a user OS15
++ * build does not give. */
 +
 +#ifndef ASSEMBLER
 +#define PLATFORM_PANIC_LOG_DISABLED

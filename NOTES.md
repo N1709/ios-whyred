@@ -19,8 +19,12 @@ gate) -> `2581b1e` + `b68e68c` (these notes: link success, sweet no-regression,
 the LSE blocker and its classification) -> `b248631` (0086, no-LSE for a05s,
 built green by `39876050634`) -> `f1fda77` (these notes) -> `2816960` (0086 v2,
 the ll/sc path guarded so sweet keeps its `casa`) -> `7fd0cd2` (these notes: the
-measured clean a05s image). **CI verdict on that head: A05S `39878176532` =
-`success` and the image scans clean; SWEET `39880178623` in flight.**
+measured clean a05s image) -> `ddb57d8` (these notes: the a05s SoC map off the
+stock AP firmware). **CI verdicts on `7fd0cd2`: A05S `39878176532` `success` with
+the image still clean; SWEET `39880178623` `success` - and that green run is the
+one that proved `2816960`'s guard did not work** (sweet's commpage came out ll/sc
+too, see the block above). `0086` v3 (`-DNO_LSE_ATOMICS`) and the matching `0082`
+comment fix are the answer; **not yet run through CI.**
 
 **CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
 - `39817165380` failure. *Observed:* 1063 compiles carry
@@ -260,47 +264,101 @@ Measured, in this order:
 **Second question - "does any other assembly file hand-write LSE?" - is now
 answered from the source, not from CI:** a scan of every `.s`/`.S` in the
 `xnu-buildtree` artifact, reporting each hit with the `#if` that encloses it,
-finds exactly three post-v8.0 atomics in arm64 assembly and **all three are
- accounted for**: `commpage_asm.s:276` and `:326` were unguarded (now handled),
-`machine_routines_asm.s:770` is already inside `#if defined(__ARM_ARCH_8_2__)`.
+finds exactly three post-v8.0 atomics in arm64 assembly. At the time I read that
+as "**all three are accounted for**": `commpage_asm.s:276` and `:326` unguarded
+(now handled), and `machine_routines_asm.s:770` already inside
+`#if defined(__ARM_ARCH_8_2__)`. **The second half of that reading was wrong**, and
+the sweet object above is the proof: a `.s` guard on an ISA macro selects the
+ARMv8.0 path on *every* board, because that macro is never defined during assembly
+preprocessing.
 The three `swp` hits in `libsyscall/custom/__{vfork,getpid}.s` are inside
 `#elif defined(__arm__)`/`#elif defined(__x86_64__)` - 32-bit ARM and x86 - so
 they are not compiled here at all. So there was no assembler error waiting to
 happen, and the `-lse`-off naming experiment is moot: 0086 v1 removed the two
 unguarded sites before the assembler ever saw them. *Unverified:* whether the
 integrated assembler would have rejected `casa` under `-target-feature -lse` at
-all - nothing in this session tests that, and the guard makes the question
+all - nothing in this session tests that, and v3's `-D` makes the question
 irrelevant, because a05s never hands `casa` to the assembler and sweet never
 compiles with `-lse`.
 
-**`2816960` rewrites that second layer as a guard.** 0086 v1 (`b248631`) replaced
-both `casa` sites with the ll/sc loop *unconditionally*, which fixed a05s and
-quietly took LSE away from sweet as well - sweet is ARMv8.2 and its commpage
-preemption-free-zone locks are better off with the single-instruction CAS. Both
-sites are now `#if defined(__ARM_ARCH_8_2__)` around the `casa` and `#else`
-around the `ldaxr`/`stxr` loop, which is the shape 0082 already uses in
-`machine_routines_asm.s`. `gen0086.py` now simulates the preprocessor on the
-produced file for both boards: with the macro defined the expansion has `casa`
-and no `ldaxr`, without it the expansion has `ldaxr`/`stxr` and no LSE mnemonic
-(any other `#if` in the file is passed through, and there are none).
+**`2816960` rewrote that second layer as a guard - and the guard was WRONG.** 0086
+v1 (`b248631`) replaced both `casa` sites with the ll/sc loop *unconditionally*,
+which fixed a05s and quietly took LSE away from sweet as well. v2 tried to keep
+`sweet`'s CAS by writing `#if defined(__ARM_ARCH_8_2__)` around the `casa` and
+`#else` around the `ldaxr`/`stxr` pair, copying what looks like the precedent in
+`osfmk/arm64/machine_routines_asm.s`. The SWEET artifact killed that:
 
-**Both gates are now measured on head `7fd0cd2`.** A05S run `39878176532`:
-`success`. Its `xnu-kernel` artifact (sha256 `9c8fd8d0...f9e8`, `kernel.development.a05s`,
-17,026,560 bytes; objects re-extracted from the 132 MB
+```
+objs/commpage_asm.o       (pre-0086, sweet)   casa=2 ldaxr=0 stxr=0   177 instr
+objs0086v2/commpage_asm.o (v2, A05S run)      casa=0 ldaxr=2 stxr=2   181 instr
+objssweet/commpage_asm.o  (v2, SWEET run)     casa=0 ldaxr=2 stxr=2   181 instr
+```
+
+sweet and a05s produced **the same `__commpage_text`**: the `#else` was taken on an
+ARMv8.2 board, so v2 regressed sweet instead of sparing it.
+
+**The rule, measured twice.** `clang` does not define the `__ARM_ARCH_8_x__`
+feature macros when it preprocesses assembly. Run `39880178623`'s log has the
+actual command line:
+
+```
+clang -c -D__ASSEMBLER__ -DASSEMBLER -DARM64_BOARD_CONFIG_SWEET -DARM64_NON_APPLE_BRINGUP \
+      -march=armv8.2-a+crypto -arch arm64 ... osfmk/arm/commpage/commpage_asm.s
+```
+
+`-march=armv8.2-a+crypto` is right there and `__ARM_ARCH_8_2__` is still not
+defined at the `#if`. The second, independent proof is Apple's own code:
+disassembling `_hw_lck_ticket_reserve_orig_allow_invalid` from **sweet's**
+`machine_routines_asm.o` by symbol span gives `ldaxr=1 stxr=1 clrex=1, casa=0` -
+the `#if defined(__ARM_ARCH_8_2__) && !KASAN_TBI` LSE branch at
+`machine_routines_asm.s:759` is dead on every board, including the Apple ones.
+That is upstream's business, not ours (we never touched it, and it is not a
+regression from any patch in this series), but it means 0082's `A05S.h` comment -
+"without a v8.2 march `__ARM_ARCH_8_2__` stays undefined and
+`machine_routines_asm.s` selects its ll/sc path" - states the right outcome for
+the wrong reason: the macro is undefined there regardless of the march. Fixed in
+`0082` alongside the guard, since a wrong justification in a board header is
+exactly what a reviewer will pick up.
+
+**Two consequences for how gates get written from here.** (1) In `.s` files the
+only reliable board signal is a `-D` from `MACHINE_FLAGS_*` (the log shows those
+`-D`s on the assembler command line, and `start.o` differs between the two boards,
+10968 vs 10608 bytes, while `locore.o` is byte-identical - board-dependent content
+does reach `.s`). A *board-header* macro would not: `commpage_asm.s` includes only
+`<machine/asm.h>`, never `<pexpert/arm64/board_config.h>`. (2) Any C-side gate on
+`__ARM_ARCH_8_x__` is still fine - `cc1` does define those - so 0083/0084/0085 do
+not need revisiting; the a05s image scan below is the evidence.
+
+**0086 v3: `-DNO_LSE_ATOMICS`.** `MACHINE_FLAGS_ARM64_A05S` gains
+`-DNO_LSE_ATOMICS` next to its other `-D`s, and the two sites become
+`#if !defined(NO_LSE_ATOMICS)` (`casa`, untouched) / `#else` (ll/sc). The polarity
+is deliberate: only A05S defines the macro, so sweet **and every Apple config**
+keep today's bytes by construction, without anyone having to enumerate which
+boards have LSE. The ll/sc branch also gains `clrex` on the busy exit, the way the
+same file's PFZ backoff loops already do (those three `clrex` sites are
+pre-existing - which is why `gen0086.py` now counts *deltas* against the PRE
+tree instead of absolute totals). `gen0086.py`'s preprocessor simulation was
+rewritten for the new macro and now also asserts the sweet expansion contains none
+of `ldaxr`, `stxr` or the `Lpfz_*_trylock`/`_busy` labels. Regenerated: 77 lines,
+6 hunks, 2 files, 3 changes; `patch --fuzz=0` and `git apply --check` both clean,
+post-apply content identical to the generated POST.
+
+**What the A05S half of `7fd0cd2` did earn.** A05S run `39878176532`:
+`success`. Its `xnu-kernel` artifact (sha256 `9c8fd8d0...f9e8`,
+`kernel.development.a05s`, 17,026,560 bytes; objects re-extracted from the 132 MB
 `kernel.development.a05s.a` into `~/ios-sweet-work/objs0086v2`, 964 `.o`) scans to
 **`functions: 36304, instructions decoded: 1880012, post-v8.0 encodings: NONE`** -
-the same verdict v1 gave, so the guard did not weaken the a05s side.
-`commpage_asm.o` there decodes to 181 instructions with `casa=0 ldaxr=2 stxr=2`,
-and its `__commpage_text` bytes are **identical to the v1 object** - the `#if`
-resolves exactly as the generator predicted. (That object lives in segment
-`__TEXT_EXEC`, section `__commpage_text`, 724 bytes at file offset 392, and its
-`__TEXT,__text` is empty, so `scan_objs2.py`'s symbol-span walk legitimately sees
-0 functions there; the commpage numbers above come from a separate linear decode
-of that one section.)
-Still open on that head: a **SWEET** run - green *and* the sweet image must contain
-`casa` again in `commpage_asm.o`. That is the byte-identity claim for the shipping
-board, and it is only verifiable from the artifact. Dispatched solo (the pairs
-dispatched seconds apart are the ones the runners cancel) as `39880178623`.
+the same verdict v1 gave, so the (wrong) guard did not weaken the a05s side: that
+side is correct for the reason 0086 v1 was, namely the `-target-feature -lse`
+flags plus an ll/sc commpage. (The `commpage_asm.o` numbers above come from a
+linear decode of its one code section - segment `__TEXT_EXEC`, section
+`__commpage_text`, 724 bytes at file offset 392; its `__TEXT,__text` is empty, so
+`scan_objs2.py`'s symbol-span walk legitimately sees 0 functions there.)
+**The sweet run is green too** (`39880178623`, `success`, 964 objects extracted to
+`~/ios-sweet-work/objssweet`), which is what exposed the regression above - so the
+byte-identity claim for the shipping board is still unearned, and v3 has to be
+verified from its artifact: sweet's `commpage_asm.o` must decode back to `casa=2
+ldaxr=0`, a05s's to `casa=0 ldaxr=2` **and** the full-image scan must stay clean.
 
 **SWEET DOES NOT REGRESS - `39861867773`, same head `5cb0d59`,
 `machine_config=SWEET`: `success` in ~8 min.** It built with
