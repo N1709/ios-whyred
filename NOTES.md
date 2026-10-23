@@ -18,8 +18,9 @@ the two link stubs) -> `5cb0d59` (these notes: object-level proof of the compile
 gate) -> `2581b1e` + `b68e68c` (these notes: link success, sweet no-regression,
 the LSE blocker and its classification) -> `b248631` (0086, no-LSE for a05s,
 built green by `39876050634`) -> `f1fda77` (these notes) -> `2816960` (0086 v2,
-the ll/sc path guarded so sweet keeps its `casa`). **Not yet run through CI:
-`2816960`.**
+the ll/sc path guarded so sweet keeps its `casa`) -> `7fd0cd2` (these notes: the
+measured clean a05s image). **CI verdict on that head: A05S `39878176532` =
+`success` and the image scans clean; SWEET `39880178623` in flight.**
 
 **CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
 - `39817165380` failure. *Observed:* 1063 compiles carry
@@ -283,11 +284,23 @@ produced file for both boards: with the macro defined the expansion has `casa`
 and no `ldaxr`, without it the expansion has `ldaxr`/`stxr` and no LSE mnemonic
 (any other `#if` in the file is passed through, and there are none).
 
-Still to be earned on that head (`2816960`), and this is the honest list:
-- an A05S run: the guarded `#else` must produce the same clean image as v1 did;
-- a **SWEET** run: green *and* the sweet image must contain `casa` again in
-  `commpage_asm.o` (that is the byte-identity claim for the shipping board, and
-  it is only verifiable from the artifact).
+**Both gates are now measured on head `7fd0cd2`.** A05S run `39878176532`:
+`success`. Its `xnu-kernel` artifact (sha256 `9c8fd8d0...f9e8`, `kernel.development.a05s`,
+17,026,560 bytes; objects re-extracted from the 132 MB
+`kernel.development.a05s.a` into `~/ios-sweet-work/objs0086v2`, 964 `.o`) scans to
+**`functions: 36304, instructions decoded: 1880012, post-v8.0 encodings: NONE`** -
+the same verdict v1 gave, so the guard did not weaken the a05s side.
+`commpage_asm.o` there decodes to 181 instructions with `casa=0 ldaxr=2 stxr=2`,
+and its `__commpage_text` bytes are **identical to the v1 object** - the `#if`
+resolves exactly as the generator predicted. (That object lives in segment
+`__TEXT_EXEC`, section `__commpage_text`, 724 bytes at file offset 392, and its
+`__TEXT,__text` is empty, so `scan_objs2.py`'s symbol-span walk legitimately sees
+0 functions there; the commpage numbers above come from a separate linear decode
+of that one section.)
+Still open on that head: a **SWEET** run - green *and* the sweet image must contain
+`casa` again in `commpage_asm.o`. That is the byte-identity claim for the shipping
+board, and it is only verifiable from the artifact. Dispatched solo (the pairs
+dispatched seconds apart are the ones the runners cancel) as `39880178623`.
 
 **SWEET DOES NOT REGRESS - `39861867773`, same head `5cb0d59`,
 `machine_config=SWEET`: `success` in ~8 min.** It built with
@@ -362,13 +375,74 @@ diff syntax, so `assemble()` now drops `diff -urN` lines and all three patches
 were regenerated and re-verified (`patch --fuzz=0` + `git apply` in a real repo,
 byte-compare against the generated tree).
 
-**Unfinished / open hardware questions (guesses, not observations):** whether
-SM6225's interrupt controller exposes GICv3 redistributors at all, its PPI
-numbering and the trust-zone split; the DT MMIO map (GICD/GICR, UFS, display)
-has to come off the live device's DTB, not off sweet's; whether the Samsung
+**🎉 THE A05S SoC MAP IS MEASURED NOW, NOT GUESSED.** The live DT turned out to be
+unreadable without root: `/sys/firmware/devicetree/base` is traversable but every
+property file is mode `0400` (so `adb pull -a` produced 0 files - and sysfs
+attribute files stat size 0 anyway), `find` on `soc`/`cpus` gets `Permission
+denied`, and `/proc/iomem`, `/proc/cmdline`, `/sys/firmware/fdt`, `dmesg`
+(`klogctl: Permission denied`) and `card0-DSI-1/modes` are all denied on a user
+OS15 build. So the map came from the **stock AP firmware** the user provided
+(`/media/miguelthedrmr/HD/SM-A057M_A057MUBSFDZE2_ZTA/AP_A057MUBSFDZE2_..._MQB110319099_REV00_user_low_ship_MULTI_CERT_meta_OS15`):
+four base DTBs carved out of `vendor_boot.img` (magic `VNDRBOOT`, FDTs at
+`0x918000`/`0x95bde0`/`0x99b4a5`/`0x9cd593`) and two overlays out of `dtbo.img`
+(header `d7b7ab1e`, big-endian FDTs at `0x60` and `0x15f08`), each decoded with
+`dtc 1.7.0 -I dtb -O dts` into `~/a05s-dump/dt/` (`vb-0..3.dtb/.dts`,
+`dtbo-*.dtb`). **`vb-0` is the A05s's own DTB**: `compatible = "qcom,khaje"`,
+`qcom,msm-id = <0x24a 0x10000 0x206 0x10000>`, and `/sys/devices/soc0` on the
+phone reads `soc_id 518` (= `0x206`) / `machine KHAJE`. The overlays declare
+`model = "Samsung A05S PROJECT"`, `qcom,khaje-idp`. What that DT answers, per node
+(all of it observation, none of it inferred from sweet):
+
+- **GICv3 is present, with redistributors.** `interrupt-controller@f200000`,
+  `compatible = "arm,gic-v3"`, `#interrupt-cells = <3>`,
+  `#redistributor-regions = <1>`, `redistributor-stride = <0x0 0x20000>`,
+  `reg = <0xf200000 0x10000 0xf300000 0x100000>` - GICD at `0x0f200000` (64 KiB),
+  8 GICRs at `0x0f300000` stride `0x20000`. `91c0694` had switched `HAS_GIC_V3`
+  off for *compile* reasons; that decision now has real hardware evidence against
+  it and has to be revisited. Secondary: `interrupt-controller@45f01b8`
+  `qcom,mpm-khaje` (`reg = <0x45f01b8 0x1000 0xf111008 0x4 0xf121000 0x1000>`) is
+  the sleep-mode MPM, not the primary controller.
+- **CPU bring-up is PSCI 1.0 over SMC.** `cpus` = 8 x `cpu`,
+  `compatible = "arm,armv8"`, `reg = <0x00 0x00>` .. `<0x00 0x07>`,
+  `enable-method = "psci"`; `psci { compatible = "arm,psci-1.0"; method = "smc"; }`.
+  Not HVC, not spin-table. So the `cpu.c`/`start.s` PSCI gates - deliberately left
+  out of the umbrella in `0082` - are the *correct* thing to promote for a05s.
+- **Which silicon, from `/proc/cpuinfo` MIDRs**: cpu0-3 `0x51af8014` (implementer
+  `0x51` Qualcomm, part `0x801` - Kryo 265 as Cortex-A53 r4p0), cpu4-7
+  `0x411fd090` (implementer `0x41` Arm, part `0xd09` = **Cortex-A73 r1p0**).
+  `Features` = `fp asimd evtstrm aes pmull sha1 sha2 crc32 cpuid` - **no `lse`**,
+  which is the observation `0083`/`0086` rest on. The errata list to write is the
+  Arm A73 r1p0 + A53 r4p0 one, not Apple's.
+- **Console is a Qualcomm GENI UART at `0x04a8c000`.** `chosen/bootargs`
+  contains `console=ttyMSM0,115200n8` (plus `kpti=off ssbd=force-off
+  rcu_nocbs=0-7 panic=5`); the node is `qcom,qup_uart@4a8c000` under
+  `qcom,qupv3_0_geni_se@4ac0000`, and sysfs agrees (`ttyHS0`). So
+  `0x04a8c000 @ 115200` for a05s.
+- **Display**: `qcom,mdss_dsi_ctrl0@5e94000` (`qcom,dsi-ctrl-hw-v2.4`),
+  `qcom,mdss_dsi_phy0@5e94400`, `qcom,mdss_mdp`.
+- **Capture set** (`~/a05s-dump/`, outside git per AGENTS.md): `cpuinfo.txt`,
+  `proc-interrupts.txt` (GICv3 IPI numbering, 8 CPUs online), `soc-devices.txt`
+  (330 `soc/*` units - the node names carry the DT unit addresses quoted above),
+  `sysfs-dev.txt`, `sysfs-memmap.txt`, `dt-top.txt`, `soc0.txt`, `dt/`.
+
+**The one number this session could not measure is DRAM base+size**, and it is
+worth being explicit about why: there is **no `memory@` node in any of the four
+base DTBs** - the Qualcomm platform DTs are boot-injected, the bootloader writes
+the DRAM bank into the DTB it passes to the kernel - and the two places that would
+show the result (`/proc/iomem`, `/memory@` in the live `/sys/firmware/fdt`) are
+root-only. The bounds we *do* have: `MemTotal` 5,724,820 kB, and `/proc/zoneinfo`
+`Node 0, zone DMA32 present 0` / `Normal present 1559552, managed 1431205` at
+`start_pfn 262144` - so usable RAM starts at `0x40000000` (1 GiB) and the low
+1 GiB is device space plus carveouts. That is enough to plan, not enough to put in
+an ADT. Getting it needs either a root path (not available on a user OS15 build)
+or a `dd` of the *live* dtb from a recovery we control.
+
+**Unfinished / open hardware questions:** the trust-zone/secure split of the GIC
+PPIs; whether the Samsung
 bootloader hands over a linear framebuffer; `tools/mkadt.py` is still
-sweet-hardcoded, so there is no a05s ADT yet; MIDR/errata and MPIDR topology of
-A73+A53 unverified; `MAX_CPU_CLUSTERS 1` (4 A73s still unstarted).
+sweet-hardcoded, so there is no a05s ADT yet; A73 r1p0 / A53 r4p0 **errata list**
+not yet written up (the MIDRs themselves are measured now); DRAM base+size (above);
+`MAX_CPU_CLUSTERS 1` (4 A73s still unstarted).
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
