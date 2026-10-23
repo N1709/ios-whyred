@@ -13,21 +13,23 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 diff --git a/osfmk/arm/commpage/commpage_asm.s b/osfmk/arm/commpage/commpage_asm.s
 --- a/osfmk/arm/commpage/commpage_asm.s
 +++ b/osfmk/arm/commpage/commpage_asm.s
-@@ -269,12 +269,20 @@
+@@ -269,12 +269,26 @@
  	ARM64_STACK_PROLOG
  	PUSH_FRAME
  
 -	mov		w10, wzr		 // unlock value = w10 = 0
  	mov		w11, #1			 // locked value = w11 = 1
  
--	// Try to grab the lock
--	casa	w10, w11, [x3]	 // Atomic CAS with acquire barrier
--	cbz		w10, Ltrylock_enqueue_success
-+	// Try to grab the lock. casa is an ARMv8.1 LSE atomic; this board is
-+	// ARMv8.0, so the lock is taken with the same ll/sc pair the rest of the
-+	// kernel uses. ldaxr carries casa's acquire semantics, and w10 still ends
-+	// the sequence holding the value the lock had before us, which is what the
-+	// fail test below reads.
++#if defined(__ARM_ARCH_8_2__)
++	mov		w10, wzr		 // unlock value = w10 = 0
+ 	// Try to grab the lock
+ 	casa	w10, w11, [x3]	 // Atomic CAS with acquire barrier
+ 	cbz		w10, Ltrylock_enqueue_success
++#else /* !__ARM_ARCH_8_2__ */
++	// casa is ARMv8.1 LSE and this board is ARMv8.0, so the lock goes through
++	// the same ll/sc pair 0082 selected in machine_routines_asm.s. ldaxr carries
++	// casa's acquire semantics and w10 still ends the sequence holding the value
++	// the lock word had before us, which is what the fail test below reads.
 +Lpfz_enqueue_trylock:
 +	ldaxr	w10, [x3]		 // acquire-exclusive read of the lock word
 +	cbnz	w10, Lpfz_enqueue_busy	 // already held: no swap, report failure
@@ -35,21 +37,25 @@ diff --git a/osfmk/arm/commpage/commpage_asm.s b/osfmk/arm/commpage/commpage_asm
 +	cbnz	w12, Lpfz_enqueue_trylock	 // reservation lost, retry
 +	b	Ltrylock_enqueue_success
 +Lpfz_enqueue_busy:
++#endif
  
  	mov		x0, #-1			// Failed
  	b Ltrylock_enqueue_exit
-@@ -319,12 +327,16 @@
+@@ -319,12 +333,23 @@
  	ARM64_STACK_PROLOG
  	PUSH_FRAME
  
 -	// Try to grab the lock
 -	mov		w10, wzr		 // unlock value = w10 = 0
-+	// Try to grab the lock. ll/sc for the same reason as above: casa needs
-+	// ARMv8.1. w10 comes back holding the previous lock value.
  	mov		w11, #1			 // locked value = w11 = 1
--
--	casa	w10, w11, [x2]	 // Atomic CAS with acquire barrier
--	cbz		w10, Ltrylock_dequeue_success
+ 
++#if defined(__ARM_ARCH_8_2__)
++	// Try to grab the lock
++	mov		w10, wzr		 // unlock value = w10 = 0
+ 	casa	w10, w11, [x2]	 // Atomic CAS with acquire barrier
+ 	cbz		w10, Ltrylock_dequeue_success
++#else /* !__ARM_ARCH_8_2__ */
++	// ll/sc for the same reason as the enqueue lock above.
 +Lpfz_dequeue_trylock:
 +	ldaxr	w10, [x2]		 // acquire-exclusive read of the lock word
 +	cbnz	w10, Lpfz_dequeue_busy	 // already held: no swap, report failure
@@ -57,6 +63,7 @@ diff --git a/osfmk/arm/commpage/commpage_asm.s b/osfmk/arm/commpage/commpage_asm
 +	cbnz	w12, Lpfz_dequeue_trylock	 // reservation lost, retry
 +	b	Ltrylock_dequeue_success
 +Lpfz_dequeue_busy:
++#endif
  
  	mov		x0, #-1			// Failed
  	b Ltrylock_dequeue_exit
