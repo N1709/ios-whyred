@@ -1,0 +1,136 @@
+From: emerald port
+Subject: [PATCH] emerald: ARM64_BOARD_CONFIG_EMERALD alongside SWEET
+
+Adds EMERALD machine config for Redmi Note 13 Pro 4G (MT6789).
+Must apply after the sweet series (<0082) on xnu-8796.141.3 (macOS 13.5).
+
+---
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 92f3e26..161165e 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -34,7 +34,7 @@
+ 
+ const char * gIOKernelConfigTables =
+     "("
+-#if defined(ARM64_BOARD_CONFIG_SWEET)
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_EMERALD)
+     "   {"
+     "     'IOClass'         = SweetPlatformExpert;"
+     "     'IOProviderClass' = IOPlatformExpertDevice;"
+@@ -82,6 +82,14 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetBattery;"
+     "   },"
++#if defined(ARM64_BOARD_CONFIG_EMERALD)
++    "   {"
++    "     'IOClass'         = SweetPlatformExpert;"
++    "     'IOProviderClass' = IOPlatformExpertDevice;"
++    "     'IONameMatch'     = 'xiaomi,emerald';"
++    "     'IOProbeScore'    = 10000:32;"
++    "   },"
++#endif
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+index 9a748ea..c57ff0d 100644
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -29,7 +29,7 @@ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else ifneq ($(findstring _host,$(RC_ProjectName)),)
+ SUPPORTED_ARM64_MACHINE_CONFIGS = NONE
+ else
+-SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 T8103 VMAPPLE SWEET
++SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 T8103 VMAPPLE SWEET EMERALD
+ 
+ endif
+ 
+@@ -62,6 +62,7 @@ MACHINE_FLAGS_ARM64_T6000 = -DARM64_BOARD_CONFIG_T6000 		-mcpu=apple-a14
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
+ MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
+ MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
++MACHINE_FLAGS_ARM64_EMERALD = -DARM64_BOARD_CONFIG_EMERALD            -march=armv8.2-a+crypto
+ 
+ 
+ #
+@@ -260,8 +261,8 @@ ifeq ($(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG),)
+ # Without embdedded device map, use a default arch string
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
+ ifneq ($(filter arm64,$(ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG)),)
+-# sweet's Cortex-A76/A55 have no pointer authentication: stay plain arm64
+-ifneq ($(CURRENT_MACHINE_CONFIG),SWEET)
++# sweet/emerald Cortex-A76/A55 have no pointer authentication: stay plain arm64
++ifeq ($(filter $(CURRENT_MACHINE_CONFIG),SWEET EMERALD),)
+ export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e
+ endif
+ endif
+diff --git a/pexpert/pexpert/arm64/EMERALD.h b/pexpert/pexpert/arm64/EMERALD.h
+new file mode 100644
+index 0000000..e008320
+--- /dev/null
++++ b/pexpert/pexpert/arm64/EMERALD.h
+@@ -0,0 +1,26 @@
++/*
++ * Board config for Redmi Note 13 Pro 4G ("emerald", MediaTek MT6789 /
++ * Helio G99 Ultra class): 2x Cortex-A76 + 6x Cortex-A55, ARMv8.2, no PAC.
++ *
++ * Reuses the generic-ARM SWEET bring-up (GICv3 Group 1, 16K pages, no
++ * APPLE_ARM64_ARCH_FAMILY). Timer INTID differs from Qualcomm sweet:
++ * G0-R-2 DT arm,armv8-timer PPI 11 -> INTID 27 (not sweet's INTID 19).
++ */
++
++#ifndef _PEXPERT_ARM64_EMERALD_H
++#define _PEXPERT_ARM64_EMERALD_H
++
++#define EMERALD                   1
++
++/* Activate existing #if defined(SWEET) paths without deleting SWEET board. */
++#define SWEET                     1
++
++#include <pexpert/arm64/SWEET.h>
++
++/* Override sweet Qualcomm PPI numbering with emerald G0-R-2 values. */
++#undef SWEET_VTIMER_INTID
++#define SWEET_VTIMER_INTID        27
++#define EMERALD_VTIMER_INTID      27
++#define EMERALD_PTIMER_INTID      30
++
++#endif /* ! _PEXPERT_ARM64_EMERALD_H */
+diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
+index c7d274f..7646f7c 100644
+--- a/pexpert/pexpert/arm64/Makefile
++++ b/pexpert/pexpert/arm64/Makefile
+@@ -18,7 +18,8 @@ PRIVATE_KERNELFILES = \
+ 	H13.h \
+ 	VMAPPLE.h \
+ 	BCM2837.h \
+-	SWEET.h
++	SWEET.h \
++	EMERALD.h
+ 
+ 
+ # Headers installed into System.framework/PrivateHeaders (userspace internal SDK only).
+diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
+index 88e524a..47029b5 100644
+--- a/pexpert/pexpert/arm64/board_config.h
++++ b/pexpert/pexpert/arm64/board_config.h
+@@ -108,6 +108,18 @@
+ 
+ #endif  /* ARM64_BOARD_CONFIG_SWEET */
+ 
++#ifdef ARM64_BOARD_CONFIG_EMERALD
++#include <pexpert/arm64/EMERALD.h>
++
++#define MAX_L2_CLINE                   6
++#define MAX_CPUS                       8
++#define MAX_CPU_CLUSTERS               1
++
++#define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
++
++#endif  /* ARM64_BOARD_CONFIG_EMERALD */
++
++
+ #ifdef ARM64_BOARD_CONFIG_VMAPPLE
+ #include <pexpert/arm64/VMAPPLE.h>
+ 

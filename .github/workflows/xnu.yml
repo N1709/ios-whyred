@@ -1,5 +1,11 @@
 name: xnu
 
+# Builds real Apple open-source XNU (APSL) via blacktop/darwin-xnu-build (MIT).
+# Expected artifact: kernel.<kernel_config_lc>.<machine_config_lc>
+#   e.g. MACHINE_CONFIG=EMERALD KERNEL_CONFIG=DEVELOPMENT
+#        -> kernel.development.emerald
+# shim/out/Image is NOT an XNU kernel (freestanding loader only).
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,19 +16,28 @@ on:
         description: RELEASE / DEVELOPMENT / DEBUG
         default: DEVELOPMENT
       machine_config:
-        description: xnu MACHINE_CONFIG
-        default: SWEET
+        description: "xnu MACHINE_CONFIG — use EMERALD for MT6789 (requires 0082 patch)"
+        default: EMERALD
+        type: choice
+        options:
+          - EMERALD
+          - SWEET
+          - VMAPPLE
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
   push:
-    branches: [main]
+    branches: [main, emerald]
     paths:
       - "xnu/patches/**"
       - ".github/workflows/xnu.yml"
 
 concurrency:
-  group: xnu-${{ github.ref }}
+  group: xnu-${{ github.ref }}-${{ inputs.machine_config || 'EMERALD' }}
   cancel-in-progress: true
 
 env:
@@ -30,7 +45,8 @@ env:
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
-  MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
+  ARCH_CONFIG: ARM64
+  MACHINE_CONFIG: ${{ inputs.machine_config || 'EMERALD' }}
 
 jobs:
   build:
@@ -41,6 +57,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Require EMERALD machine-config patch
+        if: env.MACHINE_CONFIG == 'EMERALD'
+        run: |
+          test -f xnu/patches/0082-emerald-machine-config.patch
+          grep -q 'SUPPORTED_ARM64_MACHINE_CONFIGS.*EMERALD' xnu/patches/0082-emerald-machine-config.patch
+          grep -q 'ARM64_BOARD_CONFIG_EMERALD' xnu/patches/0082-emerald-machine-config.patch
+          echo "0082 EMERALD patch present"
+
       - name: Fetch build script
         run: |
           git init -q dxb
@@ -48,10 +72,11 @@ jobs:
           git -C dxb checkout -q FETCH_HEAD
           # 12.5-14.3 use the top-level patches dir; ours go next to blacktop's
           cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
-          # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
+          # libfirehose_kernel is built arm64e-only; SWEET/EMERALD kernels are plain arm64
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
-          ls dxb/patches
+          ls dxb/patches/0082-emerald-machine-config.patch
+          ls dxb/patches/0004-sweet-machine-config.patch
 
       - name: Deps
         run: |
@@ -72,13 +97,63 @@ jobs:
         env:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
-        run: bash build.sh
+          KERNEL_CONFIG: ${{ env.KERNEL_CONFIG }}
+          ARCH_CONFIG: ${{ env.ARCH_CONFIG }}
+          MACHINE_CONFIG: ${{ env.MACHINE_CONFIG }}
+          MACOS_VERSION: ${{ env.MACOS_VERSION }}
+        run: |
+          set -euo pipefail
+          echo "BUILD_CMD: KERNEL_CONFIG=$KERNEL_CONFIG ARCH_CONFIG=$ARCH_CONFIG MACHINE_CONFIG=$MACHINE_CONFIG MACOS_VERSION=$MACOS_VERSION bash build.sh"
+          bash build.sh
+
+      - name: Verify real XNU kernel artifact
+        if: always()
+        run: |
+          set -euo pipefail
+          KC=$(echo "$KERNEL_CONFIG" | tr '[:upper:]' '[:lower:]')
+          MC=$(echo "$MACHINE_CONFIG" | tr '[:upper:]' '[:lower:]')
+          EXPECT="kernel.${KC}.${MC}"
+          mkdir -p out
+          # Prefer fakeroot install path; also accept objroot name
+          if [ -f "dxb/fakeroot/System/Library/Kernels/$EXPECT" ]; then
+            cp "dxb/fakeroot/System/Library/Kernels/$EXPECT" "out/$EXPECT"
+          elif [ -f "dxb/build/xnu.obj/$EXPECT" ]; then
+            cp "dxb/build/xnu.obj/$EXPECT" "out/$EXPECT"
+          else
+            echo "FAIL: missing real XNU kernel $EXPECT"
+            echo "--- dxb/fakeroot/System/Library/Kernels ---"
+            ls -la dxb/fakeroot/System/Library/Kernels/ 2>/dev/null || true
+            echo "--- dxb/build/xnu.obj/kernel* ---"
+            ls -la dxb/build/xnu.obj/kernel* 2>/dev/null || true
+            exit 1
+          fi
+          # Reject confusing freestanding shim Image if ever copied here
+          if [ -f out/Image ]; then
+            echo "FAIL: out/Image present — shim Image must not be labeled as XNU"
+            exit 1
+          fi
+          SIZE=$(stat -f%z "out/$EXPECT")
+          SHA=$(shasum -a 256 "out/$EXPECT" | awk '{print $1}')
+          # ARM64 Mach-O magic: MH_MAGIC_64 = 0xfeedfacf (LE ff fa ed fe) or CIGAM
+          HEX=$(xxd -p -l 4 "out/$EXPECT")
+          echo "EXPECT=$EXPECT"
+          echo "SIZE=$SIZE"
+          echo "SHA256=$SHA"
+          echo "MAGIC_HEX=$HEX"
+          case "$HEX" in
+            cffaedfe|feedfacf|cafebabe|bebafeca) echo "Mach-O magic OK" ;;
+            *)
+              echo "FAIL: not a Mach-O kernel (got $HEX) — refusing shim/raw Image mislabel"
+              exit 1
+              ;;
+          esac
+          test "$SIZE" -gt 1000000
+          (cd out && shasum -a 256 "$EXPECT" > SHA256SUMS)
+          echo "XNU_KERNEL_OK=$EXPECT"
 
       - name: Package build tree for local compiles
         if: always()
         run: |
-          # Generated headers, config option headers, mig output and the patched
-          # source: enough to re-run any single compile command from the log locally.
           SDK=$(xcrun --sdk macosx --show-sdk-path)
           mkdir -p sdk-kernel-platform
           cp -R "$SDK/System/Library/Frameworks/Kernel.framework/Versions/A/PrivateHeaders/platform" sdk-kernel-platform/ || true
@@ -106,19 +181,17 @@ jobs:
             nm -m "$lib" > "out/kdk-libs/$b.nm.txt" 2>&1 || true
             lipo -info "$lib" >> out/kdk-libs/arch.txt 2>&1 || true
           done
-          ls -la out/kdk-libs
+          ls -la out/kdk-libs || true
 
-      - name: Collect
+      - name: Collect listing
         if: always()
         run: |
-          mkdir -p out
-          cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
-          ls -la out
-          (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
+          ls -la out || true
+          cat out/SHA256SUMS 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: xnu-kernel
+          name: xnu-kernel-${{ env.MACHINE_CONFIG }}
           path: out/
-          if-no-files-found: warn
+          if-no-files-found: error
