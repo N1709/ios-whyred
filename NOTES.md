@@ -16,8 +16,10 @@ umbrella, crypto pilot) -> `91c0694` (HAS_GIC_V3 off) -> `a1eed06` (staging gate
 bundled libpthread for a05s) -> `dc660c5` (these notes again) -> `2fe8685` (0085,
 the two link stubs) -> `5cb0d59` (these notes: object-level proof of the compile
 gate) -> `2581b1e` + `b68e68c` (these notes: link success, sweet no-regression,
-the LSE blocker and its classification) -> `b248631` (0086, no-LSE for a05s).
-**Not yet run through CI: `b248631`.**
+the LSE blocker and its classification) -> `b248631` (0086, no-LSE for a05s,
+built green by `39876050634`) -> `f1fda77` (these notes) -> `2816960` (0086 v2,
+the ll/sc path guarded so sweet keeps its `casa`). **Not yet run through CI:
+`2816960`.**
 
 **CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
 - `39817165380` failure. *Observed:* 1063 compiles carry
@@ -221,20 +223,71 @@ patches applied): `patch --fuzz=0` clean, `git apply --check` clean, post-apply
 bytes identical to the generated POST, the flag present on A05S only, and exactly
 two `ldaxr` + two `stxr` left in that file with no hand-written LSE anywhere.
 
-What the next A05S run has to answer, in order:
-- Does the flag actually reach the compile lines (`grep` it out of the log) and
-  does the image still link (the stubs from 0085 are unaffected)?
-- **Does any other assembly file hand-write LSE?** With `-lse` off, the
-  integrated assembler must reject it, and with `keep_going=true` that shows up
-  as a per-file error rather than a dead build - that is the naming step above.
-- Then re-run `~/ios-sweet-work/scan_objs2.py` on the new `xnu-kernel` artifact
-  (`ar x` the `.a` first). The expected result is the ~700 LSE count collapsing
-  to 0 and the ll/sc replacements showing up as `ldxr/stxr/ldaxr` growth. The
-  165 `ldapr` (FEAT_LRCPC) are still **unclassified** - a05s is ARMv8.0 and
-  FEAT_LRCPC is ARMv8.3, so if `-target-feature -lse` does not also silence
-  `ldapr`, that needs its own flag in `0087`.
-And the sweet run must stay green on the same head (the flag is board-scoped, but
-that is the regression gate this project has been using).
+**🎉 THE LSE BLOCKER IS CLOSED AT THE INSTRUCTION LEVEL - `39876050634`
+(machine_config=A05S, head `f1fda77`): `success`, and the image is clean.**
+Measured, in this order:
+- **The flag reaches every TU**: `-Xclang -target-feature -Xclang -lse` appears
+  on **1109** compile lines, exactly the same 1109 that carry
+  `-march=armv8-a+crypto`, so nothing on the board silently kept `lse`. (`-lse`
+  is what `TargetParser` calls the feature; there is no `lse` string in any
+  command line to grep for, which is why this had to be checked as a pair of
+  `-Xclang` arguments.)
+- **It still links** (0085's stubs are unaffected, as expected: `MACHINE_FLAGS`
+  feeds `CFLAGS` at `makedefs/MakeInc.def:559` and `SFLAGS` at `:611`, and
+  nothing in `MakeInc.cmd`/`MakeInc.rules`/`LDFLAGS_KERNEL_*`, so the flag is
+  compile-and-assemble only and cannot perturb the link).
+- **`scan_objs2.py` on the new artifact** (`ar x` of
+  `kernel.development.a05s.a`, 964 objects, 36,304 functions, 1,880,012
+  instructions): **zero post-ARMv8.0 encodings.** The blockers, all gone:
+  `ldadd` 395 → 0, and the 165 `ldapr` → 0 too - turning `lse` off also silenced
+  FEAT_LRCPC, so **no `0087` is needed for `ldapr`** (that was the open question
+  in the previous version of this note; answered by measurement).
+- **ll/sc really is what replaced it** (same scanner, explicit mnemonic list):
+  `ldxr` 100 → 752, `stxr` 83 → 721, `ldaxr` 36 → 117, `casa` 18 → 0. Total
+  decoded instructions went *up* by 2,125, which is what a one-instruction LSE
+  atomic becoming a load/modify/store loop looks like.
+- One correction to the earlier classification, applied in `scan_objs2.py`: the
+  42 `stlr` I had counted as "v8.1 LR/acquire" are **ARMv8.0 base ISA**, so they
+  were never violations; with them reclassified the report reads `NONE`.
+  (For the record, so these numbers are reproducible: the artifact is
+  `xnu-kernel` id 12467964873 from that run, unpacked to
+  `~/ios-sweet-work/k0086/`, `ar x`'d into `~/ios-sweet-work/objs0086/` - 964
+  members - and the scanner now takes the directory as `argv[1]` and an optional
+  comma-separated mnemonic list as `argv[2]`. Baseline and post-0086 output:
+  `objs2.txt`, `objs-0086-clean.txt`, `llsc-base.txt`, `llsc-0086.txt`.)
+
+**Second question - "does any other assembly file hand-write LSE?" - is now
+answered from the source, not from CI:** a scan of every `.s`/`.S` in the
+`xnu-buildtree` artifact, reporting each hit with the `#if` that encloses it,
+finds exactly three post-v8.0 atomics in arm64 assembly and **all three are
+ accounted for**: `commpage_asm.s:276` and `:326` were unguarded (now handled),
+`machine_routines_asm.s:770` is already inside `#if defined(__ARM_ARCH_8_2__)`.
+The three `swp` hits in `libsyscall/custom/__{vfork,getpid}.s` are inside
+`#elif defined(__arm__)`/`#elif defined(__x86_64__)` - 32-bit ARM and x86 - so
+they are not compiled here at all. So there was no assembler error waiting to
+happen, and the `-lse`-off naming experiment is moot: 0086 v1 removed the two
+unguarded sites before the assembler ever saw them. *Unverified:* whether the
+integrated assembler would have rejected `casa` under `-target-feature -lse` at
+all - nothing in this session tests that, and the guard makes the question
+irrelevant, because a05s never hands `casa` to the assembler and sweet never
+compiles with `-lse`.
+
+**`2816960` rewrites that second layer as a guard.** 0086 v1 (`b248631`) replaced
+both `casa` sites with the ll/sc loop *unconditionally*, which fixed a05s and
+quietly took LSE away from sweet as well - sweet is ARMv8.2 and its commpage
+preemption-free-zone locks are better off with the single-instruction CAS. Both
+sites are now `#if defined(__ARM_ARCH_8_2__)` around the `casa` and `#else`
+around the `ldaxr`/`stxr` loop, which is the shape 0082 already uses in
+`machine_routines_asm.s`. `gen0086.py` now simulates the preprocessor on the
+produced file for both boards: with the macro defined the expansion has `casa`
+and no `ldaxr`, without it the expansion has `ldaxr`/`stxr` and no LSE mnemonic
+(any other `#if` in the file is passed through, and there are none).
+
+Still to be earned on that head (`2816960`), and this is the honest list:
+- an A05S run: the guarded `#else` must produce the same clean image as v1 did;
+- a **SWEET** run: green *and* the sweet image must contain `casa` again in
+  `commpage_asm.o` (that is the byte-identity claim for the shipping board, and
+  it is only verifiable from the artifact).
 
 **SWEET DOES NOT REGRESS - `39861867773`, same head `5cb0d59`,
 `machine_config=SWEET`: `success` in ~8 min.** It built with
