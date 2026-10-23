@@ -15,7 +15,9 @@ umbrella, crypto pilot) -> `91c0694` (HAS_GIC_V3 off) -> `a1eed06` (staging gate
 -> `be106b0` (these notes) -> `9d9c0d7` (patch-header hygiene) -> `97d54ea` (0084,
 bundled libpthread for a05s) -> `dc660c5` (these notes again) -> `2fe8685` (0085,
 the two link stubs) -> `5cb0d59` (these notes: object-level proof of the compile
-gate).
+gate) -> `2581b1e` + `b68e68c` (these notes: link success, sweet no-regression,
+the LSE blocker and its classification) -> `b248631` (0086, no-LSE for a05s).
+**Not yet run through CI: `b248631`.**
 
 **CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
 - `39817165380` failure. *Observed:* 1063 compiles carry
@@ -149,7 +151,8 @@ holds `sweet_sample_task()`, both promoted to `ARM64_NON_APPLE_BRINGUP`.
 **The link is not the end of the story, and the difference is not visible to
 CI:** nothing has executed this image. Tasks #2/#3/#4/#6 (GIC/DT/framebuffer/
 MIDR) are what stand between "links" and "boots" - and so does the LSE finding
-below, which is currently a hard blocker for execution on A73/A53.
+below, a hard blocker for execution on A73/A53 that `0086` fixes at the source
+level and that still needs a CI image to prove.
 
 **🚨 BLOCKER FOUND IN THE LINKED IMAGE: `-march=armv8-a+crypto` does NOT turn
 LSE off.** Measured on the CI's own `kernel.development.a05s.a` (the artifact
@@ -203,6 +206,35 @@ Two things to do, in order, as patch `0086`:
 Sweet must keep its `+lse`: A76/A55 are ARMv8.2 and the 900 instructions are
 faster there, so this flag belongs to `MACHINE_FLAGS_ARM64_A05S`, not to a common
 place.
+
+**`0086-a05s-no-lse.patch` (`b248631`) does exactly those two things - generated
+and verified locally, NOT yet built by CI.** 62 lines, 6 hunks, 2 files:
+`makedefs/MakeInc.def`'s `MACHINE_FLAGS_ARM64_A05S` line gains
+`-Xclang -target-feature -Xclang -lse` (the sweet line is untouched), and both
+hand-written `casa` sites in `osfmk/arm/commpage/commpage_asm.s`
+(`Lpfz_enqueue_*`, `Lpfz_dequeue_*`) become `ldaxr`/`stxr` loops. The ll/sc form
+keeps the original contract: `w10` still ends the sequence holding the value the
+lock word had before us, so the existing fail test reads the same register, and
+the dead `mov w10, wzr` goes away with the compare operand. Verified with
+`~/ios-sweet-work/gen0086.py` against a fresh `tree0086/PRE` (all 85 earlier
+patches applied): `patch --fuzz=0` clean, `git apply --check` clean, post-apply
+bytes identical to the generated POST, the flag present on A05S only, and exactly
+two `ldaxr` + two `stxr` left in that file with no hand-written LSE anywhere.
+
+What the next A05S run has to answer, in order:
+- Does the flag actually reach the compile lines (`grep` it out of the log) and
+  does the image still link (the stubs from 0085 are unaffected)?
+- **Does any other assembly file hand-write LSE?** With `-lse` off, the
+  integrated assembler must reject it, and with `keep_going=true` that shows up
+  as a per-file error rather than a dead build - that is the naming step above.
+- Then re-run `~/ios-sweet-work/scan_objs2.py` on the new `xnu-kernel` artifact
+  (`ar x` the `.a` first). The expected result is the ~700 LSE count collapsing
+  to 0 and the ll/sc replacements showing up as `ldxr/stxr/ldaxr` growth. The
+  165 `ldapr` (FEAT_LRCPC) are still **unclassified** - a05s is ARMv8.0 and
+  FEAT_LRCPC is ARMv8.3, so if `-target-feature -lse` does not also silence
+  `ldapr`, that needs its own flag in `0087`.
+And the sweet run must stay green on the same head (the flag is board-scoped, but
+that is the regression gate this project has been using).
 
 **SWEET DOES NOT REGRESS - `39861867773`, same head `5cb0d59`,
 `machine_config=SWEET`: `success` in ~8 min.** It built with
