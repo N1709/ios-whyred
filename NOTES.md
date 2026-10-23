@@ -24,7 +24,12 @@ stock AP firmware). **CI verdicts on `7fd0cd2`: A05S `39878176532` `success` wit
 the image still clean; SWEET `39880178623` `success` - and that green run is the
 one that proved `2816960`'s guard did not work** (sweet's commpage came out ll/sc
 too, see the block above). `0086` v3 (`-DNO_LSE_ATOMICS`) and the matching `0082`
-comment fix are the answer; **not yet run through CI.**
+comment fix are the answer, committed as `149eec3`. **CI verdicts on `149eec3`:
+both boards green and both verified from their own artifact** - A05S `39883074436`
+and SWEET `39884226578`, see the "v3 verified" block below. Verifying that artifact
+is what surfaced the `mov`-reorder above, so `0086` is now **v4** (same gate,
+upstream block verbatim inside the `#if`); the a05s side of v4 is the instruction
+sequence CI already approved, the sweet side is proven identical without CI.
 
 **CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
 - `39817165380` failure. *Observed:* 1063 compiles carry
@@ -359,6 +364,52 @@ linear decode of its one code section - segment `__TEXT_EXEC`, section
 byte-identity claim for the shipping board is still unearned, and v3 has to be
 verified from its artifact: sweet's `commpage_asm.o` must decode back to `casa=2
 ldaxr=0`, a05s's to `casa=0 ldaxr=2` **and** the full-image scan must stay clean.
+
+**V3 IS VERIFIED - `149eec3`, both runs, from their own artifacts (2026-10-22).**
+- A05S `39883074436`: `success`. `kernel.development.a05s.a` (132 MB) re-extracted
+  to `~/ios-sweet-work/objs0086v3a05s` - **1096 Mach-O members, 964 `.o` + 132
+  `.cpo`**. Its `commpage_asm.o` `__commpage_text` is 732 bytes (the v1/v2 724 +
+  the two `clrex` we now emit on the busy path) and decodes to `casa=0, ldaxr=2,
+  stxr=2` in exactly the two trylock loops.
+- SWEET `39884226578`: `success`. `~/ios-sweet-work/objsweetv3/commpage_asm.o`
+  `__commpage_text` is 708 bytes and decodes to `casa=2, ldaxr=0, stxr=0`, i.e.
+  the shipping board kept LSE. **But it is not bit-identical to the pre-0086
+  baseline, and v3 was the reason:** diffing the two sections instruction by
+  instruction gives 177 instructions in both and exactly four lines different -
+  `0x88/0x8c` and `0xd4/0xd8`, where `mov w10, wzr` and `mov w11, #1` appear in
+  the opposite order. Cause: 0086 v3 left `mov w11, #1` outside the `#if` and
+  moved `mov w10, wzr` inside it, so sweet's assembler saw a reordered (still
+  correct - the two defs are independent) instruction stream. **Fixed as 0086 v4:**
+  the upstream block now goes *verbatim* inside `#if !defined(NO_LSE_ATOMICS)` and
+  the ll/sc arm carries its own `mov w11, #1`, so the preprocessed text for any
+  board that does not define the macro is upstream's, byte for byte. The generator
+  asserts it statically (`expand(new, no_lse=False) == upstream text` for both
+  sites, plus `old in pre_a`), which proves sweet's assembler input is unchanged
+  without needing a CI run to say so; the a05s instruction sequence is the same
+  one v3 shipped (`mov w11,#1` then the loop), only its position in the source
+  moved.
+- Full-image scan of both boards, with the `scan_all.py` that closes the two gaps
+  `scan_objs2.py` had (it read only `__text`, and only `*.o`, so it had never seen
+  the 132 `.cpo` members or `__commpage_text`/`__init`/`__hib_text`): a05s
+  **44,679 symbolicated functions, 2,162,162 instructions decoded, post-v8.0
+  encodings: NONE.** So the ARMv8.0 verdict is now made on ~28% more instructions
+  and 100% of the archive members than the `7fd0cd2` number it replaces.
+- **Regression and its fix, measured in the linked kernels** (only sweet's artifact
+  ships the linked `kernel.development.sweet`, 17,206,064 bytes, so this is a
+  sweet-side measurement; `isa_check.py` on each): pre-0086 baseline `ksw/` =
+  2,206,952 instructions / `casa=21`; 0086 **v2** `artsweet/` = 2,206,956 /
+  **`casa=19`** (the two commpage `casa` silently became ll/sc, 4 instructions
+  longer); 0086 **v3** `artsweetv3/` = 2,206,952 / `casa=21` and the whole
+  post-v8.0 mnemonic histogram matches the baseline exactly (41 kinds, same counts,
+  including the 188 `ldapr` and 24 `msr/mrs PAN` that a05s must never emit).
+  Byte-identity of the *linked* kernel across runs is not attainable and was not
+  claimed: the CI workdir is baked into the objects (1053 of 1096 sweet objects
+  differ between `objs/` and `objsweetv3/`), so the defensible statement is the
+  one above - identical instruction count and identical per-mnemonic histogram.
+  What v4 does claim, and proves statically rather than from an artifact, is the
+  stronger and more useful thing: **sweet's assembler input for the patched file is
+  upstream's text, unchanged**, so any future difference in sweet's objects can only
+  come from something other than 0086.
 
 **SWEET DOES NOT REGRESS - `39861867773`, same head `5cb0d59`,
 `machine_config=SWEET`: `success` in ~8 min.** It built with

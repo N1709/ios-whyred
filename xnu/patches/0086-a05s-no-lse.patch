@@ -13,15 +13,14 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 diff --git a/osfmk/arm/commpage/commpage_asm.s b/osfmk/arm/commpage/commpage_asm.s
 --- a/osfmk/arm/commpage/commpage_asm.s
 +++ b/osfmk/arm/commpage/commpage_asm.s
-@@ -269,12 +269,33 @@
+@@ -269,12 +269,34 @@
  	ARM64_STACK_PROLOG
  	PUSH_FRAME
  
--	mov		w10, wzr		 // unlock value = w10 = 0
++#if !defined(NO_LSE_ATOMICS)
+ 	mov		w10, wzr		 // unlock value = w10 = 0
  	mov		w11, #1			 // locked value = w11 = 1
  
-+#if !defined(NO_LSE_ATOMICS)
-+	mov		w10, wzr		 // unlock value = w10 = 0
  	// Try to grab the lock
  	casa	w10, w11, [x3]	 // Atomic CAS with acquire barrier
  	cbz		w10, Ltrylock_enqueue_success
@@ -36,6 +35,7 @@ diff --git a/osfmk/arm/commpage/commpage_asm.s b/osfmk/arm/commpage/commpage_asm
 +	// ldaxr carries casa's acquire semantics, and w10 still ends the sequence
 +	// holding the value the lock word had before us, which is what the cbnz
 +	// fail test reads (the caller only gets 0/-1 back either way).
++	mov		w11, #1			 // locked value = w11 = 1
 +Lpfz_enqueue_trylock:
 +	ldaxr	w10, [x3]		 // acquire-exclusive read of the lock word
 +	cbnz	w10, Lpfz_enqueue_busy	 // already held: no swap, report failure
@@ -48,21 +48,20 @@ diff --git a/osfmk/arm/commpage/commpage_asm.s b/osfmk/arm/commpage/commpage_asm
  
  	mov		x0, #-1			// Failed
  	b Ltrylock_enqueue_exit
-@@ -319,12 +340,24 @@
+@@ -319,12 +341,25 @@
  	ARM64_STACK_PROLOG
  	PUSH_FRAME
  
--	// Try to grab the lock
--	mov		w10, wzr		 // unlock value = w10 = 0
++#if !defined(NO_LSE_ATOMICS)
+ 	// Try to grab the lock
+ 	mov		w10, wzr		 // unlock value = w10 = 0
  	mov		w11, #1			 // locked value = w11 = 1
  
-+#if !defined(NO_LSE_ATOMICS)
-+	// Try to grab the lock
-+	mov		w10, wzr		 // unlock value = w10 = 0
  	casa	w10, w11, [x2]	 // Atomic CAS with acquire barrier
  	cbz		w10, Ltrylock_dequeue_success
 +#else /* NO_LSE_ATOMICS */
 +	// ll/sc for the same reason as the enqueue lock above.
++	mov		w11, #1			 // locked value = w11 = 1
 +Lpfz_dequeue_trylock:
 +	ldaxr	w10, [x2]		 // acquire-exclusive read of the lock word
 +	cbnz	w10, Lpfz_dequeue_busy	 // already held: no swap, report failure
