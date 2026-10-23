@@ -1,0 +1,405 @@
+diff --git a/bsd/dev/fleur_gpu.c b/bsd/dev/fleur_gpu.c
+index 844982a..f1027d2 100644
+--- a/bsd/dev/fleur_gpu.c
++++ b/bsd/dev/fleur_gpu.c
+@@ -12,12 +12,21 @@
+  *      q-channel setup; then read GPU_ID, features and *_PRESENT.
+  *   3  2 + GPU soft reset, L2/tiler/shader power-up and *_READY readback
+  *      (proves the GPU clock runs).
++ *   4  3 + first job: 32 KiB of contiguous wired memory (kept forever)
++ *      holds AArch64 4K page tables (L0-L3) and two GPU pages at VA
++ *      0x1000000 (job descriptor) and 0x1001000 (result). AS0 is set up
++ *      as Panfrost does for Valhall (TRANSTAB, MEMATTR, TRANSCFG, UPDATE),
++ *      one WRITE_VALUE job (Immediate 64) is started on job slot
++ *      sweetgpujs (default 0), JOB/MMU raw status is polled, and the CPU
++ *      reads the result back after a cache clean+invalidate.
+  * sweetgpudelay=N  seconds before starting (default 30, so the persistent
+  *                  log has flushed the boot so far).
+  * sweetgpupause=N  seconds to sleep before each risky step (default 12,
+  *                  > ufslogsecs) so the last line before a bus hang is on
+  *                  disk; 0 = no pauses.
+- * The GPU is left powered after 2/3. Every poll has a timeout.
++ * The GPU is left powered after 2/3/4 (AS0 stays configured after 4; its
++ * page tables are never freed). Every poll has a timeout; JOB/MMU/GPU IRQs
++ * stay masked.
+  *
+  * Sequence from MiCode/Xiaomi_Kernel_OpenSource fleur-s-oss:
+  * clk-mt6781-pg.c spm_mtcmos_ctrl_mfg0..3, gpufreq_v1/mt6781/
+@@ -26,6 +35,10 @@
+  * MT6358 registers.h (MT6366 = same map), mtk-pmic-wrap.c (pwrap_write16
+  * without ARB_V3), platform/mt6781/mali_kbase_config_mt6781.c. Mali
+  * register offsets: kbase mali_kbase_gpu_regmap.h / panfrost_regs.h.
++ * Mode 4: Linux panfrost_mmu.c (mmu_cfg_init_aarch64_4k, mair_to_memattr,
++ * lock_region, panfrost_mmu_enable), panfrost_job.c (panfrost_job_hw_submit),
++ * Mesa src/panfrost/genxml/v9.xml (Job Header, Write Value Job), kbase
++ * mmu_mode_aarch64.c (ATE bits).
+  * See research/gpu/REPORT.md.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+@@ -34,10 +47,18 @@
+ #include <kern/clock.h>
+ #include <kern/thread.h>
+ #include <kern/sched_prim.h>
++#include <mach/vm_param.h>
+ #include <machine/machine_routines.h>
++#include <arm/caches_internal.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
+ #include <pexpert/pexpert.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++/* As sweet_ufs.c (its DMA area uses the same allocation). */
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++/* MACH_KERNEL_PRIVATE in arm/caches_internal.h (sweet_ufs.c uses it too). */
++extern void flush_dcache64(addr64_t addr, unsigned count, int phys);
+ /* Mach MIG declaration is not included by BSD's exported thread.h (as sweet_touch.c). */
+ extern kern_return_t thread_terminate(thread_t);
+ void fleur_gpu_probe(void);
+@@ -162,13 +183,91 @@ void fleur_gpu_probe(void);
+ #define GPU_CMD_SOFT_RESET 0x01u
+ #define GPU_IRQ_RESET_COMPLETED (1u << 8)
+ #define GPU_IRQ_POWER_CHANGED_ALL (1u << 10)
++#define GPU_CMD_CLEAN_INV_CACHES 0x08u
++#define GPU_LATEST_FLUSH 0x038u
++#define GPU_COHERENCY_ENABLE 0x304u
++#define GPU_COHERENCY_NONE 31u
++#define JOB_IRQ_RAWSTAT  0x1000u
++#define JOB_IRQ_CLEAR    0x1004u
+ #define JOB_IRQ_MASK     0x1008u
++#define JOB_IRQ_JS_STATE 0x1010u
++#define JS_REG(n, off)   (0x1800u + 0x80u * (n) + (off))
++#define JS_HEAD_LO       0x00u
++#define JS_HEAD_HI       0x04u
++#define JS_TAIL_LO       0x08u
++#define JS_TAIL_HI       0x0cu
++#define JS_CONFIG        0x18u
++#define JS_COMMAND       0x20u
++#define JS_STATUS        0x24u
++#define JS_HEAD_NEXT_LO  0x40u
++#define JS_HEAD_NEXT_HI  0x44u
++#define JS_AFFINITY_NEXT_LO 0x50u
++#define JS_AFFINITY_NEXT_HI 0x54u
++#define JS_CONFIG_NEXT   0x58u
++#define JS_COMMAND_NEXT  0x60u
++#define JS_CMD_START     0x01u
++#define JS_CMD_HARD_STOP 0x03u
++#define JS_CFG_START_FLUSH_CLEAN_INV (3u << 8)
++#define JS_CFG_END_FLUSH_CLEAN_INV (3u << 12)
++#define JS_CFG_THREAD_PRI(n) ((n) << 16)
++#define JS_FEATURE_SET_VALUE (1u << 2)
++#define MMU_IRQ_RAWSTAT  0x2000u
++#define MMU_IRQ_CLEAR    0x2004u
+ #define MMU_IRQ_MASK     0x2008u
++#define AS_REG(as, off)  (0x2400u + 0x40u * (as) + (off))
++#define AS_TRANSTAB_LO   0x00u
++#define AS_TRANSTAB_HI   0x04u
++#define AS_MEMATTR_LO    0x08u
++#define AS_MEMATTR_HI    0x0cu
++#define AS_LOCKADDR_LO   0x10u
++#define AS_LOCKADDR_HI   0x14u
++#define AS_COMMAND       0x18u
++#define AS_FAULTSTATUS   0x1cu
++#define AS_FAULTADDRESS_LO 0x20u
++#define AS_FAULTADDRESS_HI 0x24u
++#define AS_STATUS        0x28u
++#define AS_TRANSCFG_LO   0x30u
++#define AS_TRANSCFG_HI   0x34u
++#define AS_CMD_UPDATE    0x01u
++#define AS_CMD_LOCK      0x02u
++#define AS_CMD_FLUSH_MEM 0x05u
++#define AS_STATUS_ACTIVE 0x01u
++/*
++ * AS_TRANSCFG: ADRMODE_AARCH64_4K, INA_BITS(55 - 48) (MMU_FEATURES 0x2830:
++ * 48-bit VA, 40-bit PA), page-table walks non-cacheable (Panfrost uses
++ * PTW_MEMATTR_WB|PTW_RA; NC avoids depending on GPU L2 state for the
++ * tables the CPU just wrote; the GPU is not coherent).
++ */
++#define AS_TRANSCFG_VAL  (6u | (7u << 6) | (1u << 24))
++/* AS_MEMATTR: every index = INNER_OUTER_NC | SH_MIDGARD_INNER | ALLOC_EXPL(0,0). */
++#define AS_MEMATTR_NC    0x4cu
++/* AArch64 stage-1 descriptors as kbase mmu_mode_aarch64.c / io-pgtable. */
++#define PTE_TABLE        0x3ull
++#define PTE_PAGE         0x3ull      /* level 3 */
++#define PTE_ATTR(i)      ((uint64_t)(i) << 2)
++#define PTE_RW           (1ull << 6) /* ENTRY_ACCESS_RW */
++#define PTE_AF           (1ull << 10)
++#define PTE_NX           (1ull << 54)
++/* Job memory: 4 KiB tables L0..L3, then the job and result pages. */
++#define JOBMEM_SIZE      0x8000u
++#define JOBMEM_L0        0x0000u
++#define JOBMEM_L1        0x1000u
++#define JOBMEM_L2        0x2000u
++#define JOBMEM_L3        0x3000u
++#define JOBMEM_JOB       0x4000u
++#define JOBMEM_RESULT    0x5000u
++#define JOB_VA           0x1000000ull
++#define RESULT_VA        0x1001000ull
++#define RESULT_SENTINEL  0xdeaddeaddeaddeadull
++#define RESULT_MAGIC     0xf1e0c0de5ee79004ull
++/* v9 Job Header (32 bytes) + Write Value payload, job aligned to 128. */
++#define JOB_TYPE_WRITE_VALUE 2u
++#define WRITE_VALUE_IMM64 7u
+ 
+ static struct {
+ 	vm_offset_t gpu, mfg, top, infra, spm, apmixed, pwrap;
+ 	int mode;
+-	unsigned delay_s, pause_s;
++	unsigned delay_s, pause_s, js;
+ 	uint32_t pwrap_status;
+ 	bool pmic_ok;
+ } fg;
+@@ -517,7 +616,7 @@ fg_gpu_pwron(const char *name, uint32_t pwron, uint32_t ready, uint32_t mask)
+ 	    ok ? "" : " (timeout)");
+ }
+ 
+-static void
++static bool
+ fg_gpu_bringup(void)
+ {
+ 	fg_checkpoint("GPU soft reset");
+@@ -529,7 +628,7 @@ fg_gpu_bringup(void)
+ 	if (!fg_poll(fg.gpu, GPU_IRQ_RAWSTAT, GPU_IRQ_RESET_COMPLETED, GPU_IRQ_RESET_COMPLETED, 100000)) {
+ 		printf("SWEET GPU: soft reset did not complete (rawstat %#x status %#x)\n",
+ 		    fg_rd(fg.gpu, GPU_IRQ_RAWSTAT), fg_rd(fg.gpu, GPU_STATUS));
+-		return;
++		return false;
+ 	}
+ 	fg_wr(fg.gpu, GPU_IRQ_CLEAR, 0xffffffffu);
+ 	printf("SWEET GPU: soft reset done\n");
+@@ -538,6 +637,212 @@ fg_gpu_bringup(void)
+ 	fg_gpu_pwron("tiler", GPU_TILER_PWRON, GPU_TILER_READY, fg_rd(fg.gpu, GPU_TILER_PRESENT));
+ 	fg_gpu_pwron("shader", GPU_SHADER_PWRON, GPU_SHADER_READY, fg_rd(fg.gpu, GPU_SHADER_PRESENT));
+ 	fg_dump_gpu();
++	uint32_t l2 = fg_rd(fg.gpu, GPU_L2_PRESENT);
++	return l2 != 0 && (fg_rd(fg.gpu, GPU_L2_READY) & l2) == l2;
++}
++
++/*
++ * Mode 4: one WRITE_VALUE job through AS0.
++ */
++static struct {
++	vm_offset_t va;         /* JOBMEM_SIZE, contiguous, wired, never freed */
++	uint64_t pa;
++} fj;
++
++static uint64_t
++fg_rd64(vm_offset_t base, uint32_t lo)
++{
++	uint64_t l = fg_rd(base, lo);
++	return l | ((uint64_t)fg_rd(base, lo + 4) << 32);
++}
++
++static void
++fg_wr64(vm_offset_t base, uint32_t lo, uint64_t v)
++{
++	fg_wr(base, lo, (uint32_t)v);
++	fg_wr(base, lo + 4, (uint32_t)(v >> 32));
++}
++
++static volatile uint64_t *
++fj_u64(uint32_t off)
++{
++	return (volatile uint64_t *)(fj.va + off);
++}
++
++/* Clean + invalidate the CPU caches for [off, off + len) of the job memory. */
++static void
++fj_sync(uint32_t off, uint32_t len)
++{
++	__asm__ volatile("dsb sy" ::: "memory");
++	flush_dcache64((addr64_t)(fj.pa + off), len, TRUE);
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++static void
++fg_dump_job_state(const char *when)
++{
++	uint32_t js = fg.js;
++	printf("SWEET GPU: [%s] job rawstat %#x js_state %#x js%u status %#x head %#llx tail %#llx config %#x\n",
++	    when, fg_rd(fg.gpu, JOB_IRQ_RAWSTAT), fg_rd(fg.gpu, JOB_IRQ_JS_STATE), js,
++	    fg_rd(fg.gpu, JS_REG(js, JS_STATUS)), fg_rd64(fg.gpu, JS_REG(js, JS_HEAD_LO)),
++	    fg_rd64(fg.gpu, JS_REG(js, JS_TAIL_LO)), fg_rd(fg.gpu, JS_REG(js, JS_CONFIG)));
++	printf("SWEET GPU: [%s] mmu rawstat %#x as0 status %#x faultstatus %#x faultaddr %#llx; gpu rawstat %#x faultstatus %#x status %#x\n",
++	    when, fg_rd(fg.gpu, MMU_IRQ_RAWSTAT), fg_rd(fg.gpu, AS_REG(0, AS_STATUS)),
++	    fg_rd(fg.gpu, AS_REG(0, AS_FAULTSTATUS)), fg_rd64(fg.gpu, AS_REG(0, AS_FAULTADDRESS_LO)),
++	    fg_rd(fg.gpu, GPU_IRQ_RAWSTAT), fg_rd(fg.gpu, GPU_FAULTSTATUS), fg_rd(fg.gpu, GPU_STATUS));
++}
++
++/* wait_ready() + write_cmd() of panfrost_mmu.c, 100 ms bound. */
++static bool
++fg_as_cmd(uint32_t cmd)
++{
++	if (!fg_poll(fg.gpu, AS_REG(0, AS_STATUS), AS_STATUS_ACTIVE, 0, 100000)) {
++		printf("SWEET GPU: AS0 stuck active before cmd %u\n", cmd);
++		return false;
++	}
++	fg_wr(fg.gpu, AS_REG(0, AS_COMMAND), cmd);
++	if (!fg_poll(fg.gpu, AS_REG(0, AS_STATUS), AS_STATUS_ACTIVE, 0, 100000)) {
++		printf("SWEET GPU: AS0 cmd %u did not complete\n", cmd);
++		return false;
++	}
++	return true;
++}
++
++/* Page tables, job and sentinel in the CPU view; all written back to RAM. */
++static bool
++fg_job_build(void)
++{
++	if (fj.va == 0) {
++		if (kmem_alloc_contig(kernel_map, &fj.va, JOBMEM_SIZE, PAGE_MASK, 0, 0,
++		    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			printf("SWEET GPU: no contiguous memory for the job\n");
++			fj.va = 0;
++			return false;
++		}
++		ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)fj.va);
++		if (pn == 0) {
++			printf("SWEET GPU: job memory has no physical page\n");
++			return false;
++		}
++		fj.pa = ptoa_64(pn);
++	}
++	bzero((void *)fj.va, JOBMEM_SIZE);
++
++	/* VA 0x1000000: L0[0] -> L1[0] -> L2[8] -> L3[0] (job), L3[1] (result). */
++	uint64_t ate = PTE_PAGE | PTE_ATTR(0) | PTE_RW | PTE_AF | PTE_NX;
++	*fj_u64(JOBMEM_L0 + 8 * ((JOB_VA >> 39) & 0x1ffu)) = (fj.pa + JOBMEM_L1) | PTE_TABLE;
++	*fj_u64(JOBMEM_L1 + 8 * ((JOB_VA >> 30) & 0x1ffu)) = (fj.pa + JOBMEM_L2) | PTE_TABLE;
++	*fj_u64(JOBMEM_L2 + 8 * ((JOB_VA >> 21) & 0x1ffu)) = (fj.pa + JOBMEM_L3) | PTE_TABLE;
++	*fj_u64(JOBMEM_L3 + 8 * ((JOB_VA >> 12) & 0x1ffu)) = (fj.pa + JOBMEM_JOB) | ate;
++	*fj_u64(JOBMEM_L3 + 8 * ((RESULT_VA >> 12) & 0x1ffu)) = (fj.pa + JOBMEM_RESULT) | ate;
++
++	/*
++	 * Job Header: w0 exception status, w1 first incomplete task, w2-3 fault
++	 * pointer, w4 [7:1] type, [31:16] index, w5 dependencies, w6-7 next.
++	 * Write Value payload at +32: address, +40 type, +48 immediate.
++	 */
++	volatile uint32_t *job = (volatile uint32_t *)(fj.va + JOBMEM_JOB);
++	job[4] = (JOB_TYPE_WRITE_VALUE << 1) | (1u << 16);
++	*fj_u64(JOBMEM_JOB + 32) = RESULT_VA;
++	job[10] = WRITE_VALUE_IMM64;
++	*fj_u64(JOBMEM_JOB + 48) = RESULT_MAGIC;
++	*fj_u64(JOBMEM_RESULT) = RESULT_SENTINEL;
++	fj_sync(0, JOBMEM_SIZE);
++	printf("SWEET GPU: job memory va %#lx pa %#llx; job VA %#llx result VA %#llx\n",
++	    (unsigned long)fj.va, fj.pa, JOB_VA, RESULT_VA);
++	return true;
++}
++
++/* panfrost_mmu_enable() for AS0 with the AArch64 4K format. */
++static bool
++fg_as0_enable(void)
++{
++	printf("SWEET GPU: coherency features %#x enable %#x -> none\n",
++	    fg_rd(fg.gpu, GPU_COHERENCY_FEATURES), fg_rd(fg.gpu, GPU_COHERENCY_ENABLE));
++	fg_wr(fg.gpu, GPU_COHERENCY_ENABLE, GPU_COHERENCY_NONE);
++	fg_wr(fg.gpu, MMU_IRQ_CLEAR, 0xffffffffu);
++	/* lock_region(0, ~0): width 63, start 0; then FLUSH_MEM. */
++	fg_wr64(fg.gpu, AS_REG(0, AS_LOCKADDR_LO), 63);
++	if (!fg_as_cmd(AS_CMD_LOCK) || !fg_as_cmd(AS_CMD_FLUSH_MEM)) {
++		return false;
++	}
++	uint64_t memattr = 0;
++	for (unsigned i = 0; i < 8; i++) {
++		memattr |= (uint64_t)AS_MEMATTR_NC << (8 * i);
++	}
++	fg_wr64(fg.gpu, AS_REG(0, AS_TRANSTAB_LO), fj.pa + JOBMEM_L0);
++	fg_wr64(fg.gpu, AS_REG(0, AS_MEMATTR_LO), memattr);
++	fg_wr64(fg.gpu, AS_REG(0, AS_TRANSCFG_LO), AS_TRANSCFG_VAL);
++	if (!fg_as_cmd(AS_CMD_UPDATE)) {
++		return false;
++	}
++	printf("SWEET GPU: AS0 transtab %#llx memattr %#llx transcfg %#llx status %#x\n",
++	    fg_rd64(fg.gpu, AS_REG(0, AS_TRANSTAB_LO)), fg_rd64(fg.gpu, AS_REG(0, AS_MEMATTR_LO)),
++	    fg_rd64(fg.gpu, AS_REG(0, AS_TRANSCFG_LO)), fg_rd(fg.gpu, AS_REG(0, AS_STATUS)));
++	return true;
++}
++
++/* panfrost_job_hw_submit() for one chain, then bounded polling (IRQs masked). */
++static void
++fg_first_job(void)
++{
++	uint32_t js = fg.js;
++	uint32_t done = 1u << js, fail = 1u << (16 + js);
++	if (js > 2 || !(fg_rd(fg.gpu, GPU_JS_PRESENT) & (1u << js)) ||
++	    !(fg_rd(fg.gpu, GPU_JS_FEATURES(js)) & JS_FEATURE_SET_VALUE)) {
++		printf("SWEET GPU: job slot %u absent or without WRITE_VALUE\n", js);
++		return;
++	}
++	if (!fg_job_build()) {
++		return;
++	}
++	fg_checkpoint("AS0 setup (MMU)");
++	if (!fg_as0_enable()) {
++		fg_dump_job_state("as0");
++		return;
++	}
++	if (fg_rd(fg.gpu, JS_REG(js, JS_COMMAND_NEXT)) != 0) {
++		printf("SWEET GPU: js%u COMMAND_NEXT busy\n", js);
++		return;
++	}
++	fg_wr(fg.gpu, JOB_IRQ_CLEAR, 0xffffffffu);
++	fg_dump_job_state("before");
++	fg_checkpoint("WRITE_VALUE job start");
++	uint64_t affinity = fg_rd64(fg.gpu, GPU_SHADER_PRESENT);
++	fg_wr64(fg.gpu, JS_REG(js, JS_HEAD_NEXT_LO), JOB_VA);
++	fg_wr64(fg.gpu, JS_REG(js, JS_AFFINITY_NEXT_LO), affinity);
++	fg_wr(fg.gpu, JS_REG(js, JS_CONFIG_NEXT), 0u /* AS0 */ | JS_CFG_THREAD_PRI(8) |
++	    JS_CFG_START_FLUSH_CLEAN_INV | JS_CFG_END_FLUSH_CLEAN_INV);
++	fg_wr(fg.gpu, JS_REG(js, JS_COMMAND_NEXT), JS_CMD_START);
++
++	uint32_t raw = 0;
++	bool finished = false;
++	for (unsigned i = 0; i <= 100000 && !finished; ++i) {
++		raw = fg_rd(fg.gpu, JOB_IRQ_RAWSTAT);
++		finished = (raw & (done | fail)) != 0;
++		if (!finished) {
++			delay(1);
++		}
++	}
++	fg_dump_job_state(finished ? "after" : "timeout");
++	if (!finished) {
++		fg_wr(fg.gpu, JS_REG(js, JS_COMMAND), JS_CMD_HARD_STOP);
++		(void)fg_poll(fg.gpu, JOB_IRQ_RAWSTAT, done | fail, done | fail, 10000);
++		fg_dump_job_state("hard-stop");
++	}
++	fg_wr(fg.gpu, JOB_IRQ_CLEAR, 0xffffffffu);
++	fg_wr(fg.gpu, MMU_IRQ_CLEAR, 0xffffffffu);
++
++	/* The job's END flush cleaned the GPU L2; drop any stale CPU lines. */
++	fj_sync(JOBMEM_JOB, 0x2000);
++	volatile uint32_t *job = (volatile uint32_t *)(fj.va + JOBMEM_JOB);
++	uint64_t result = *fj_u64(JOBMEM_RESULT);
++	printf("SWEET GPU: job header exception %#x first_incomplete %#x fault_ptr %#llx\n",
++	    job[0], job[1], *fj_u64(JOBMEM_JOB + 8));
++	printf("SWEET GPU: result %#llx (%s; sentinel %#llx, expected %#llx)\n", result,
++	    result == RESULT_MAGIC ? "WRITE_VALUE OK" :
++	    result == RESULT_SENTINEL ? "not written" : "unexpected",
++	    RESULT_SENTINEL, RESULT_MAGIC);
+ }
+ 
+ static void
+@@ -586,7 +891,14 @@ fg_thread(void *arg, wait_result_t result)
+ 	fg_checkpoint("read GPU registers");
+ 	fg_dump_gpu();
+ 	if (fg.mode >= 3) {
+-		fg_gpu_bringup();
++		bool up = fg_gpu_bringup();
++		if (fg.mode >= 4) {
++			if (up) {
++				fg_first_job();
++			} else {
++				printf("SWEET GPU: L2 not ready, no job\n");
++			}
++		}
+ 	}
+ 	printf("SWEET GPU: probe done\n");
+ out:
+@@ -612,6 +924,7 @@ fleur_gpu_probe(void)
+ 	}
+ 	(void)PE_parse_boot_argn("sweetgpudelay", &fg.delay_s, sizeof(fg.delay_s));
+ 	(void)PE_parse_boot_argn("sweetgpupause", &fg.pause_s, sizeof(fg.pause_s));
++	(void)PE_parse_boot_argn("sweetgpujs", &fg.js, sizeof(fg.js));
+ 	fg.gpu = ml_io_map(GPU_PA, GPU_SIZE);
+ 	fg.mfg = ml_io_map(MFGCFG_PA, 0x1000);
+ 	fg.top = ml_io_map(TOP_PA, 0x1000);

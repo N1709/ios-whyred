@@ -1,0 +1,150 @@
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+index 0631685..df8e192 100644
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -10,6 +10,8 @@
+ #include <IOKit/IODeviceTreeSupport.h>
+ #include <IOKit/IOLib.h>
+ 
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
+ class SweetPlatformExpert : public IODTPlatformExpert {
+ 	OSDeclareDefaultStructors(SweetPlatformExpert);
+ 
+@@ -18,8 +20,126 @@ public:
+ 	void processTopLevel(IORegistryEntry *root) APPLE_KEXT_OVERRIDE;
+ 	const char *deleteList(void) APPLE_KEXT_OVERRIDE;
+ 	const char *excludeList(void) APPLE_KEXT_OVERRIDE;
++	long getGMTTimeOfDay(void) APPLE_KEXT_OVERRIDE;
+ };
+ 
++/*
++ * fleur: wall-clock time from the MT6366 (MT6358-compatible) PMIC RTC, read
++ * through the PMIC wrapper's AP channel WACS2 (as sweet_keys.c). Read only:
++ * nothing is written to the RTC. Android keeps the RTC in UTC. Registers
++ * (Linux rtc-mt6397, MT6358 base 0x0580): TC_SEC 0x58a, MIN 0x58c, HOU
++ * 0x58e, DOM 0x590, MTH 0x594 (1-12), YEA 0x596 (years since 1968).
++ * Called by clock_initialize_calendar() early in bsd_init, before the
++ * keys/GPU drivers start polling WACS2, so the channel is not shared yet.
++ */
++#define FLEUR_PWRAP_PA          0x1000d000u
++#define FLEUR_PWRAP_WACS2_EN    0x09cu
++#define FLEUR_PWRAP_WACS2_CMD   0xc20u
++#define FLEUR_PWRAP_WACS2_RDATA 0xc24u
++#define FLEUR_PWRAP_WACS2_VLDCLR 0xc28u
++#define FLEUR_PWRAP_FSM(x)      (((x) >> 16) & 7u)
++
++static uint32_t
++fleur_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile ("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++fleur_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile ("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile ("dsb osh" ::: "memory");
++}
++
++static bool
++fleur_pwrap_wait(vm_offset_t pw, unsigned fsm, uint32_t *status)
++{
++	for (unsigned i = 0; i < 10000; ++i) {
++		*status = fleur_rd(pw, FLEUR_PWRAP_WACS2_RDATA);
++		if (FLEUR_PWRAP_FSM(*status) == fsm) {
++			return true;
++		}
++		IODelay(1);
++	}
++	return false;
++}
++
++static bool
++fleur_pmic_read(vm_offset_t pw, uint16_t addr, uint16_t *out)
++{
++	uint32_t st;
++	if (!fleur_pwrap_wait(pw, 0, &st)) {
++		if (FLEUR_PWRAP_FSM(st) == 6) {
++			fleur_wr(pw, FLEUR_PWRAP_WACS2_VLDCLR, 1);
++		}
++		return false;
++	}
++	fleur_wr(pw, FLEUR_PWRAP_WACS2_CMD, ((uint32_t)addr >> 1) << 16);
++	if (!fleur_pwrap_wait(pw, 6, &st)) {
++		return false;
++	}
++	*out = (uint16_t)st;
++	fleur_wr(pw, FLEUR_PWRAP_WACS2_VLDCLR, 1);
++	return true;
++}
++
++/* Days since 1970-01-01 for a proleptic Gregorian date (H. Hinnant). */
++static long
++fleur_days_from_civil(long y, unsigned m, unsigned d)
++{
++	y -= m <= 2;
++	long era = (y >= 0 ? y : y - 399) / 400;
++	unsigned yoe = (unsigned)(y - era * 400);
++	unsigned doy = (153 * (m + (m > 2 ? (unsigned)-3 : 9)) + 2) / 5 + d - 1;
++	unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++	return era * 146097 + (long)doe - 719468;
++}
++
++long
++SweetPlatformExpert::getGMTTimeOfDay(void)
++{
++	static vm_offset_t pw;
++	static const uint16_t regs[6] = { 0x58a, 0x58c, 0x58e, 0x590, 0x594, 0x596 };
++	uint16_t v[6], again;
++	if (pw == 0) {
++		pw = ml_io_map(FLEUR_PWRAP_PA, 0x1000);
++	}
++	if (pw == 0 || !(fleur_rd(pw, FLEUR_PWRAP_WACS2_EN) & 1u)) {
++		IOLog("SWEET RTC: PMIC wrapper unavailable\n");
++		return 0;
++	}
++	for (int tries = 0; tries < 2; ++tries) {
++		for (int i = 0; i < 6; ++i) {
++			if (!fleur_pmic_read(pw, regs[i], &v[i])) {
++				IOLog("SWEET RTC: PMIC read %#x failed\n", regs[i]);
++				return 0;
++			}
++		}
++		/* Seconds carried during the read: read the set once more. */
++		if (fleur_pmic_read(pw, regs[0], &again) && (again & 0x3f) >= (v[0] & 0x3f)) {
++			break;
++		}
++	}
++	unsigned sec = v[0] & 0x3f, min = v[1] & 0x3f, hour = v[2] & 0x1f;
++	unsigned dom = v[3] & 0x1f, mon = v[4] & 0x0f;
++	long year = 1968 + (v[5] & 0x7f);
++	if (year < 2020 || year > 2099 || mon < 1 || mon > 12 || dom < 1 || dom > 31 ||
++	    hour > 23 || min > 59 || sec > 59) {
++		IOLog("SWEET RTC: implausible raw %#x %#x %#x %#x %#x %#x; no wall clock\n",
++		    v[0], v[1], v[2], v[3], v[4], v[5]);
++		return 0;
++	}
++	long t = fleur_days_from_civil(year, mon, dom) * 86400L +
++	    (long)(hour * 3600 + min * 60 + sec);
++	IOLog("SWEET RTC: %04ld-%02u-%02u %02u:%02u:%02u UTC (%ld)\n",
++	    year, mon, dom, hour, min, sec, t);
++	return t;
++}
++
+ OSDefineMetaClassAndStructors(SweetPlatformExpert, IODTPlatformExpert);
+ 
+ bool
+@@ -30,6 +150,9 @@ SweetPlatformExpert::start(IOService *provider)
+ 		return false;
+ 	}
+ 	registerService();
++	/* getGMTTimeOfDay() reads the PMIC RTC: let IOKitInitializeTime stop
++	 * waiting 30 s for an "IORTC" resource that would never appear. */
++	publishResource("IORTC", this);
+ 	IOLog("SWEET: platform expert registered\n");
+ 	return true;
+ }

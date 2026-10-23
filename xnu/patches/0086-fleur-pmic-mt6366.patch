@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+index 2064187..bac623e 100644
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -184,9 +184,13 @@ sweet_keys_init(void)
+ 	}
+ 	printf("SWEET KEYS: pwrap wacs2 en=%#x init=%#x rdata=%#x hwcid=%#x/%d topstatus=%#x/%d\n",
+ 	    en, done, rdata, hwcid, hok, top, tok);
+-	keys_pmic_ok = hok && tok && (hwcid >> 8) == 0x58u;
++	/*
++	 * fleur's PMIC reads HWCID 0x6610: MT6366, the MT6358-compatible part
++	 * MT6781 boards use (same TOPSTATUS/PWRKEY/HOMEKEY registers).
++	 */
++	keys_pmic_ok = hok && tok && ((hwcid >> 8) == 0x58u || (hwcid >> 8) == 0x66u);
+ 	if (!keys_pmic_ok) {
+-		printf("SWEET KEYS: MT6358 not confirmed; power/volume-up withheld\n");
++		printf("SWEET KEYS: MT6358/MT6366 not confirmed; power/volume-up withheld\n");
+ 	}
+ 	if (!keys_pmic_ok && !keys_kp_ok) {
+ 		printf("SWEET KEYS: no readable keys; not polling\n");

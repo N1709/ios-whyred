@@ -1,0 +1,65 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 7f94965..1f7011a 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -104,6 +104,7 @@ static struct {
+ 	bool started, dead, power;
+ 	int irq_hint;
+ 	int log;                /* boot-arg sweettouchlog: raw frames + HID down/up, first N */
++	int int_gate;           /* boot-arg sweettouchint (default 1): INT level gates reports */
+ 	uint8_t last_raw[16];
+ 	unsigned khz, src_khz;
+ 	uint16_t timing, ltiming, hw_timeout, ext_conf;
+@@ -556,9 +557,41 @@ touch_thread(void *arg, wait_result_t result)
+ 		printf("SWEET TOUCH: no FT3418 (54:52; 54:5c = bootloader, no firmware); stopping\n");
+ 		goto out;
+ 	}
+-	printf("SWEET TOUCH: FT3418 fleur, 1080x2400, poll=10ms irq-hint=%d\n", st.irq_hint);
+-	unsigned errors = 0, ticks = 0;
++	/*
++	 * Polled without an interrupt, the FT3418 never shows a lift-off in its
++	 * report registers: the last contact frame stays there (seen on the
++	 * phone with sweettouchlog). G_MODE 0xa4 = 0 makes INT a level that is
++	 * low while any finger is down, so INT high means "no finger".
++	 */
++	if (st.int_gate) {
++		static const uint8_t gmode[2] = { 0xa4, 0x00 };
++		uint8_t back = 0xff;
++		int ew = touch_xfer(TOUCH_ADDR, gmode, 2, NULL, 0);
++		int er = touch_read(0xa4, &back, 1);
++		printf("SWEET TOUCH: G_MODE=0 (INT level) write=%d read=%d back=%#x int=%d\n",
++		    ew, er, back, touch_gpio_in(GPIO_IRQ));
++	}
++	printf("SWEET TOUCH: FT3418 fleur, 1080x2400, poll=10ms irq-hint=%d int-gate=%d\n",
++	    st.irq_hint, st.int_gate);
++	unsigned errors = 0, ticks = 0, idle = 0;
++	bool int_low_was = false;
+ 	while (!st.dead) {
++		if (st.int_gate) {
++			bool int_low = !touch_gpio_in(GPIO_IRQ);
++			if (st.log > 0 && int_low != int_low_was) {
++				printf("SWEET TOUCH: int %s\n", int_low ? "low" : "high");
++			}
++			int_low_was = int_low;
++			if (!int_low) {
++				/* No finger for 3 polls (30 ms): release, skip the stale registers. */
++				if (st.active && ++idle >= 3u) {
++					touch_report(0, st.x, st.y);
++				}
++				touch_wait(10);
++				continue;
++			}
++			idle = 0;
++		}
+ 		/* Optional IRQ hint (INT is active low) still reads every 100ms. */
+ 		if (!st.irq_hint || st.active || !touch_gpio_in(GPIO_IRQ) ||
+ 		    (++ticks % 10u) == 0) {
+@@ -597,6 +630,8 @@ sweet_touch_init(void)
+ 	(void)PE_parse_boot_argn("sweettouchpower", &power, sizeof(power));
+ 	(void)PE_parse_boot_argn("sweettouchkhz", &st.khz, sizeof(st.khz));
+ 	(void)PE_parse_boot_argn("sweettouchlog", &st.log, sizeof(st.log));
++	st.int_gate = 1;
++	(void)PE_parse_boot_argn("sweettouchint", &st.int_gate, sizeof(st.int_gate));
+ 	st.power = power != 0;
+ 	if (!enabled) {
+ 		printf("SWEET TOUCH: disabled (sweettouch=0)\n");

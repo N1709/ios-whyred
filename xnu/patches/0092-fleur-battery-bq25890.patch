@@ -1,0 +1,532 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 6630131..10c7f95 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -108,6 +108,7 @@ bsd/dev/sweet_ufs.c			standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
++bsd/dev/fleur_battery.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
+diff --git a/bsd/dev/fleur_battery.c b/bsd/dev/fleur_battery.c
+new file mode 100644
+index 0000000..06878de
+--- /dev/null
++++ b/bsd/dev/fleur_battery.c
+@@ -0,0 +1,429 @@
++/*
++ * fleur (Redmi Note 11S, MT6781) battery: TI BQ25890 charger at 0x6a on
++ * MediaTek I2C5 (0x11016000), polled FIFO mode, for SweetBattery.
++ *
++ * The BQ25890 measures battery voltage (ADC, one-shot per sample), charge
++ * current and charger/charge state; it does not see discharge current, so
++ * SweetBattery estimates state of charge from voltage with the fleur 25 C
++ * battery profile (DT battery0_profile_t1, 0 % at the 3.4 V shutdown level).
++ * The only chip write is CONV_START (REG02 bit 7, read-modify-write).
++ *
++ * The I2C engine is a copy of bsd/dev/sweet_touch.c's (tested on the phone
++ * for i2c0), pointed at i2c5: clock gate imp_iic_wrap bit 5, DT clock-div 5,
++ * 400 kHz. LK drives the charger over this bus, so it is normally clocked.
++ * Register facts: MiCode fleur-s-oss i2c-mtk.c, clk-mt6781.c, bq2589x.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++
++int fleur_battery_init(void);
++int fleur_battery_sample(unsigned *mv, unsigned *ichg_ma, int *external,
++    int *charging, int *full, unsigned *fault);
++unsigned fleur_battery_percent(unsigned ocv_mv);
++
++#define BAT_I2C_PA       0x11016000u /* i2c5 */
++#define BAT_TOP_PA       0x10000000u /* topckgen */
++#define BAT_INFRA_PA     0x10001000u /* infracfg_ao */
++#define BAT_IMP_PA       0x11017000u /* imp_iic_wrap */
++#define BAT_ADDR         0x6au       /* DT bq2589x-charger@6A */
++#define BAT_CLK_DIV      5u          /* DT i2c5 clock-div */
++#define BAT_KHZ          400u        /* DT i2c5 clock-frequency */
++
++#define TOP_CK_CFG_6     0x0a0u      /* i2c_sel mux, bits 25:24 */
++#define INFRA1_CLR       0x08cu
++#define INFRA1_STA       0x094u
++#define INFRA1_IMP_IIC   (1u << 29)
++#define IMP_CLR          0xe04u
++#define IMP_STA          0xe00u
++#define IMP_I2C5         (1u << 5)   /* clk-mt6781 imp_ap_i2c5 */
++
++#define I2C_DATA         0x00u
++#define I2C_SLAVE_ADDR   0x04u
++#define I2C_INTR_MASK    0x08u
++#define I2C_INTR_STAT    0x0cu
++#define I2C_CONTROL      0x10u
++#define I2C_TRANSFER_LEN 0x14u
++#define I2C_TRANSAC_LEN  0x18u
++#define I2C_DELAY_LEN    0x1cu
++#define I2C_TIMING       0x20u
++#define I2C_START        0x24u
++#define I2C_EXT_CONF     0x28u
++#define I2C_LTIMING      0x2cu
++#define I2C_HS           0x30u
++#define I2C_IO_CONFIG    0x34u
++#define I2C_FIFO_CLR     0x38u
++#define I2C_MCU_INTR     0x40u
++#define I2C_AUX_LEN      0x44u
++#define I2C_CLOCK_DIV    0x48u
++#define I2C_HW_TIMEOUT   0x4cu
++#define I2C_SOFTRESET    0x50u
++#define I2C_DEBUGSTAT    0xe4u
++
++#define I2C_BUS_ERR      (1u << 8)
++#define I2C_IBI          (1u << 7)
++#define I2C_TIMEOUT      (1u << 5)
++#define I2C_ARB_LOST     (1u << 3)
++#define I2C_HS_NACKERR   (1u << 2)
++#define I2C_ACKERR       (1u << 1)
++#define I2C_COMP         (1u << 0)
++#define I2C_INTR_ALL     0x1ffu
++#define I2C_INTR_USED    (I2C_BUS_ERR | I2C_TIMEOUT | I2C_ARB_LOST | \
++                          I2C_HS_NACKERR | I2C_ACKERR | I2C_COMP)
++#define I2C_INTR_ERRORS  (I2C_BUS_ERR | I2C_IBI | I2C_TIMEOUT | I2C_ARB_LOST | \
++                          I2C_HS_NACKERR | I2C_ACKERR)
++#define I2C_CTL_RS       (1u << 1)
++#define I2C_CTL_CLK_EXT  (1u << 3)
++#define I2C_CTL_DIR_CHG  (1u << 4)
++#define I2C_CTL_ACKERR   (1u << 5)
++
++/* BQ25890 registers. */
++#define BQ_REG02         0x02u       /* bit7 CONV_START, bit6 CONV_RATE */
++#define BQ_REG0B         0x0bu       /* VBUS_STAT[7:5] CHRG_STAT[4:3] PG_STAT[2] */
++#define BQ_REG0C         0x0cu       /* faults */
++#define BQ_REG0E         0x0eu       /* THERM_STAT[7] BATV[6:0]: 2304 mV + 20 mV/LSB */
++#define BQ_REG11         0x11u       /* VBUS_GD[7] VBUSV[6:0]: 2600 mV + 100 mV/LSB */
++#define BQ_REG12         0x12u       /* ICHGR[6:0]: 50 mA/LSB */
++#define BQ_REG14         0x14u       /* REG_RST[7] ICO[6] PN[5:3] TS_PROFILE[2] DEV_REV[1:0] */
++#define BQ_PN_25890      0x03u
++
++static struct {
++	vm_offset_t i2c, top, infra, imp;
++	bool ready;
++	unsigned src_khz;
++	uint16_t timing, ltiming, hw_timeout, ext_conf;
++} bat;
++
++static uint32_t
++bat_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++bat_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++static uint16_t
++i2c_rd(uint32_t off)
++{
++	uint16_t v = *(volatile uint16_t *)(bat.i2c + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++i2c_wr(uint32_t off, uint16_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint16_t *)(bat.i2c + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++/* Ungate infra_imp_iic and imp_ap_i2c5 if needed; returns the source kHz or 0. */
++static unsigned
++bat_clocks(void)
++{
++	static const unsigned sel_khz[4] = {26000, 62400, 104000, 124800};
++	uint32_t ck = bat_rd(bat.top, TOP_CK_CFG_6);
++	if (bat_rd(bat.infra, INFRA1_STA) & INFRA1_IMP_IIC) {
++		bat_wr(bat.infra, INFRA1_CLR, INFRA1_IMP_IIC);
++		if (bat_rd(bat.infra, INFRA1_STA) & INFRA1_IMP_IIC) {
++			printf("SWEET BATTERY: infra_imp_iic still gated\n");
++			return 0;
++		}
++	}
++	uint32_t imp = bat_rd(bat.imp, IMP_STA);
++	if (imp & IMP_I2C5) {
++		bat_wr(bat.imp, IMP_CLR, IMP_I2C5);
++		if (bat_rd(bat.imp, IMP_STA) & IMP_I2C5) {
++			printf("SWEET BATTERY: imp_ap_i2c5 still gated\n");
++			return 0;
++		}
++	}
++	printf("SWEET BATTERY: i2c5 ck_cfg_6=%#x imp-sta=%#x\n", ck, imp);
++	return sel_khz[(ck >> 24) & 3u] / BAT_CLK_DIV;
++}
++
++/* mtk_i2c_calculate_speed() with cnt_constraint = 1 (as sweet_touch.c). */
++static int
++bat_i2c_div(unsigned src_khz, unsigned hz, unsigned *step, unsigned *sample)
++{
++	unsigned khz = hz / 1000u;
++	unsigned min_div = ((src_khz >> 1) + khz - 1u) / khz;
++	unsigned best = 8u * 64u, bs = 8u, bt = 64u;
++	for (unsigned s = 1; s <= 8u; ++s) {
++		unsigned t = (min_div + s - 1u) / s;
++		if (t > 64u) {
++			continue;
++		}
++		if (t * s < best) {
++			best = t * s;
++			bs = s;
++			bt = t;
++			if (best == min_div) {
++				break;
++			}
++		}
++	}
++	if (src_khz / (2u * bs * bt) > khz) {
++		return ENOTSUP;
++	}
++	if (--bs) {
++		--bt;
++	}
++	*step = bt;
++	*sample = bs;
++	return 0;
++}
++
++static bool
++bat_i2c_speed(void)
++{
++	unsigned duty = 45u, step, sample, lstep, lsample;
++	if (bat_i2c_div(bat.src_khz, BAT_KHZ * 1000u * 50u / duty, &step, &sample) ||
++	    bat_i2c_div(bat.src_khz, BAT_KHZ * 1000u * 50u / (100u - duty), &lstep, &lsample)) {
++		return false;
++	}
++	bat.timing = (uint16_t)(((sample & 7u) << 8) | (step & 0x3fu));
++	bat.ltiming = (uint16_t)(((lsample & 7u) << 6) | (lstep & 0x3fu));
++	unsigned tv = (bat.src_khz * 2u + (lstep + 1u) * (lsample + 1u) - 1u) /
++	    ((lstep + 1u) * (lsample + 1u));
++	bat.hw_timeout = (uint16_t)(tv > 0xffffu ? 0xffffu : tv);
++	bat.ext_conf = 0x1801u;
++	return true;
++}
++
++static void
++bat_i2c_init_hw(void)
++{
++	i2c_wr(I2C_INTR_MASK, 0);
++	i2c_wr(I2C_INTR_STAT, i2c_rd(I2C_INTR_STAT));
++	i2c_wr(I2C_SOFTRESET, 1);
++	i2c_wr(I2C_IO_CONFIG, 3);
++	i2c_wr(I2C_TIMING, bat.timing | 1u);
++	i2c_wr(I2C_LTIMING, bat.ltiming);
++	i2c_wr(I2C_HS, 0);
++}
++
++/* One polled FIFO transaction (<= 8 bytes each way), as sweet_touch.c. */
++static int
++bat_xfer(const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr)
++{
++	bool wrrd = nt && nr;
++	if (nt > 8u || nr > 8u || (!nt && !nr)) {
++		return EINVAL;
++	}
++	if (i2c_rd(I2C_START) & 1u) {
++		bat_i2c_init_hw();
++		if (i2c_rd(I2C_START) & 1u) {
++			return EBUSY;   /* another master (none expected) holds the bus */
++		}
++	}
++	i2c_wr(I2C_HW_TIMEOUT, bat.hw_timeout);
++	i2c_wr(I2C_CLOCK_DIV, ((BAT_CLK_DIV - 1u) << 8) | (BAT_CLK_DIV - 1u));
++	i2c_wr(I2C_CONTROL, I2C_CTL_ACKERR | I2C_CTL_CLK_EXT |
++	    (wrrd ? I2C_CTL_DIR_CHG | I2C_CTL_RS : 0u));
++	i2c_wr(I2C_EXT_CONF, bat.ext_conf);
++	i2c_wr(I2C_DELAY_LEN, 0x0a);
++	i2c_wr(I2C_IO_CONFIG, 3);
++	i2c_wr(I2C_TIMING, bat.timing | 1u);
++	i2c_wr(I2C_LTIMING, bat.ltiming);
++	i2c_wr(I2C_HS, 0);
++	i2c_wr(I2C_SLAVE_ADDR, (uint16_t)((BAT_ADDR << 1) | (nt ? 0u : 1u)));
++	i2c_wr(I2C_INTR_STAT, I2C_INTR_ALL);
++	i2c_wr(I2C_FIFO_CLR, 1);
++	i2c_wr(I2C_INTR_MASK, I2C_INTR_USED);
++	i2c_wr(I2C_TRANSFER_LEN, (uint16_t)(nt ? nt : nr));
++	i2c_wr(I2C_AUX_LEN, (uint16_t)(wrrd ? nr : 0u));
++	i2c_wr(I2C_TRANSAC_LEN, wrrd ? 2u : 1u);
++	for (unsigned i = 0; i < nt; ++i) {
++		__asm__ volatile("dmb oshst" ::: "memory");
++		*(volatile uint8_t *)(bat.i2c + I2C_DATA) = tx[i];
++	}
++	i2c_wr(I2C_MCU_INTR, 1);
++	i2c_wr(I2C_START, 1);
++	uint16_t stat = 0;
++	for (unsigned i = 0; i < 20000; ++i) {
++		stat = i2c_rd(I2C_INTR_STAT);
++		if (stat & (I2C_COMP | I2C_INTR_ERRORS)) {
++			break;
++		}
++		delay(1);
++	}
++	i2c_wr(I2C_INTR_MASK, 0);
++	i2c_wr(I2C_INTR_STAT, I2C_INTR_ALL);
++	if (!(stat & (I2C_COMP | I2C_INTR_ERRORS))) {
++		i2c_wr(I2C_FIFO_CLR, 1);
++		bat_i2c_init_hw();
++		return ETIMEDOUT;
++	}
++	if (stat & I2C_INTR_ERRORS) {
++		i2c_wr(I2C_FIFO_CLR, 5);
++		if ((stat & I2C_INTR_USED) > 1u) {
++			bat_i2c_init_hw();
++		}
++		return (stat & (I2C_ACKERR | I2C_HS_NACKERR)) ? ENXIO : EIO;
++	}
++	for (unsigned i = 0; i < nr; ++i) {
++		rx[i] = *(volatile uint8_t *)(bat.i2c + I2C_DATA);
++		__asm__ volatile("dmb oshld" ::: "memory");
++	}
++	return 0;
++}
++
++static int bat_sleep_chan;
++
++/* Sleep the calling thread (the SweetBattery work loop), not spin. */
++static void
++bat_wait(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&bat_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static int
++bq_read(uint8_t reg, uint8_t *val)
++{
++	return bat_xfer(&reg, 1, val, 1);
++}
++
++static int
++bq_write(uint8_t reg, uint8_t val)
++{
++	const uint8_t tx[2] = { reg, val };
++	return bat_xfer(tx, 2, NULL, 0);
++}
++
++int
++fleur_battery_init(void)
++{
++	if (bat.ready) {
++		return 0;
++	}
++	bat.i2c = ml_io_map(BAT_I2C_PA, 0x1000);
++	bat.top = ml_io_map(BAT_TOP_PA, 0x1000);
++	bat.infra = ml_io_map(BAT_INFRA_PA, 0x1000);
++	bat.imp = ml_io_map(BAT_IMP_PA, 0x1000);
++	if (!bat.i2c || !bat.top || !bat.infra || !bat.imp) {
++		printf("SWEET BATTERY: MMIO mapping failed\n");
++		return ENOMEM;
++	}
++	bat.src_khz = bat_clocks();
++	if (!bat.src_khz || !bat_i2c_speed()) {
++		printf("SWEET BATTERY: i2c5 clock/divider unavailable (src %u kHz)\n", bat.src_khz);
++		return ENXIO;
++	}
++	bat_i2c_init_hw();
++	uint8_t id = 0, st = 0;
++	int e1 = bq_read(BQ_REG14, &id);
++	int e2 = bq_read(BQ_REG0B, &st);
++	printf("SWEET BATTERY: bq25890 probe err=%d/%d reg14=%#x reg0b=%#x src=%ukHz timing=%#x\n",
++	    e1, e2, id, st, bat.src_khz, bat.timing);
++	if (e1 || e2 || ((id >> 3) & 7u) != BQ_PN_25890) {
++		printf("SWEET BATTERY: no BQ25890 at i2c5 0x6a; static fallback\n");
++		return ENXIO;
++	}
++	bat.ready = true;
++	return 0;
++}
++
++/*
++ * One sample: start a one-shot ADC conversion, wait for it (<= 1 s), read
++ * battery voltage, charge current and status. Blocks the caller (the
++ * SweetBattery work loop) for the conversion time.
++ */
++int
++fleur_battery_sample(unsigned *mv, unsigned *ichg_ma, int *external,
++    int *charging, int *full, unsigned *fault)
++{
++	uint8_t r02, r0b, r0c, r0e, r11, r12;
++	int err;
++	if (!bat.ready) {
++		return ENXIO;
++	}
++	if ((err = bq_read(BQ_REG02, &r02)) ||
++	    (err = bq_write(BQ_REG02, (uint8_t)(r02 | 0x80u)))) {
++		return err;
++	}
++	for (unsigned i = 0; i < 100; ++i) {
++		bat_wait(10);
++		if ((err = bq_read(BQ_REG02, &r02))) {
++			return err;
++		}
++		if (!(r02 & 0x80u) || (r02 & 0x40u)) {
++			break;  /* one-shot done (or continuous mode already on) */
++		}
++	}
++	if ((err = bq_read(BQ_REG0B, &r0b)) || (err = bq_read(BQ_REG0C, &r0c)) ||
++	    (err = bq_read(BQ_REG0E, &r0e)) || (err = bq_read(BQ_REG11, &r11)) ||
++	    (err = bq_read(BQ_REG12, &r12))) {
++		return err;
++	}
++	unsigned vbus_stat = (r0b >> 5) & 7u, chrg = (r0b >> 3) & 3u;
++	*mv = 2304u + 20u * (r0e & 0x7fu);
++	*ichg_ma = 50u * (r12 & 0x7fu);
++	*external = vbus_stat != 0 || (r0b & 0x04u) || (r11 & 0x80u);
++	*charging = chrg == 1 || chrg == 2;
++	*full = chrg == 3;
++	*fault = r0c;
++	return 0;
++}
++
++/* fleur 25 C profile (DT battery0_profile_t1), 0 % at 3400 mV. {mV, %}, falling. */
++static const struct {
++	uint16_t mv;
++	uint8_t pct;
++} bat_ocv[] = {
++	{4422, 100}, {4409, 99}, {4397, 98}, {4386, 97}, {4376, 96}, {4365, 95},
++	{4354, 94}, {4343, 93}, {4332, 92}, {4321, 91}, {4309, 90}, {4297, 89},
++	{4284, 88}, {4272, 87}, {4259, 86}, {4247, 85}, {4235, 84}, {4222, 82},
++	{4210, 81}, {4198, 80}, {4186, 79}, {4173, 78}, {4162, 77}, {4150, 76},
++	{4138, 75}, {4126, 74}, {4115, 73}, {4104, 72}, {4093, 71}, {4082, 70},
++	{4071, 69}, {4060, 68}, {4050, 67}, {4039, 66}, {4029, 65}, {4020, 64},
++	{4010, 63}, {4000, 62}, {3991, 61}, {3980, 60}, {3970, 59}, {3959, 58},
++	{3947, 57}, {3934, 56}, {3921, 55}, {3909, 54}, {3899, 53}, {3891, 52},
++	{3883, 51}, {3876, 50}, {3870, 49}, {3864, 47}, {3858, 46}, {3853, 45},
++	{3847, 44}, {3842, 43}, {3837, 42}, {3833, 41}, {3828, 40}, {3823, 39},
++	{3819, 38}, {3815, 37}, {3812, 36}, {3808, 35}, {3805, 34}, {3802, 33},
++	{3799, 32}, {3795, 31}, {3792, 30}, {3788, 29}, {3784, 28}, {3779, 27},
++	{3775, 26}, {3771, 25}, {3766, 24}, {3761, 23}, {3756, 22}, {3752, 21},
++	{3749, 20}, {3745, 19}, {3740, 18}, {3734, 17}, {3728, 16}, {3723, 15},
++	{3716, 13}, {3709, 12}, {3701, 11}, {3696, 10}, {3694, 9}, {3693, 8},
++	{3692, 7}, {3690, 6}, {3685, 5}, {3674, 4}, {3637, 3}, {3585, 2},
++	{3516, 1}, {3416, 0},
++};
++
++unsigned
++fleur_battery_percent(unsigned ocv_mv)
++{
++	const unsigned n = sizeof(bat_ocv) / sizeof(bat_ocv[0]);
++	if (ocv_mv >= bat_ocv[0].mv) {
++		return 100;
++	}
++	for (unsigned i = 1; i < n; ++i) {
++		if (ocv_mv >= bat_ocv[i].mv) {
++			unsigned hi = bat_ocv[i - 1].mv, lo = bat_ocv[i].mv;
++			return bat_ocv[i].pct +
++			       (bat_ocv[i - 1].pct - bat_ocv[i].pct) * (ocv_mv - lo) / (hi - lo);
++		}
++	}
++	return 0;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 9969739..9a15768 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -12,6 +12,11 @@
+ #include <IOKit/pwr_mgt/IOPMPowerSource.h>
+ #include <libkern/c++/OSCollectionIterator.h>
+ #include <pexpert/pexpert.h>
++/* bsd/dev/fleur_battery.c (fleur, MT6781: BQ25890 on i2c5) */
++extern "C" int fleur_battery_init(void);
++extern "C" int fleur_battery_sample(unsigned *mv, unsigned *ichg_ma, int *external,
++    int *charging, int *full, unsigned *fault);
++extern "C" unsigned fleur_battery_percent(unsigned ocv_mv);
+ /* bsd/dev/sweet_spmi.c */
+ extern "C" int sweet_spmi_init(void);
+ extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
+@@ -27,6 +32,7 @@ private:
+ 	IOWorkLoop *fLoop;
+ 	IOTimerEventSource *fTimer;
+ 	bool fTimerAdded, fRunning, fReal;
++	int fPct;               /* smoothed fleur state of charge, -1 = none yet */
+ 	int fLastMode;
+ 	void putNumber(const char *key, UInt32 value);
+ 	void putBool(const char *key, bool value);
+@@ -52,6 +58,7 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	fLoop = NULL;
+ 	fTimer = NULL;
+ 	fTimerAdded = fRunning = fReal = false;
++	fPct = -1;
+ 	if (dictionary) {
+ 		OSCollectionIterator *it = OSCollectionIterator::withCollection(dictionary);
+ 		if (!it) {
+@@ -206,6 +213,39 @@ SweetBattery::estimatePercent(unsigned mv)
+ void
+ SweetBattery::poll(void)
+ {
++	if (fReal) {
++		unsigned mv, ichg, fault;
++		int external, charging, full;
++		int err = fleur_battery_sample(&mv, &ichg, &external, &charging, &full, &fault);
++		if (err || mv < 2800 || mv > 4600) {
++			IOLog("SWEET BATTERY: sample failed err=%d mv=%u\n", err, err ? 0 : mv);
++			publish(fPct < 0 ? 100 : (unsigned)fPct, 4200, 0, true, true, false, false, false, false);
++			return;
++		}
++		/* Rest voltage: remove the charge current's IR rise (~120 mOhm path). */
++		unsigned ocv = mv;
++		if (charging && ichg) {
++			unsigned rise = ichg * 120u / 1000u;
++			ocv = mv > rise ? mv - rise : mv;
++		}
++		int target = full ? 100 : (int)fleur_battery_percent(ocv);
++		if (fPct < 0) {
++			fPct = target;
++		} else if (charging || external) {
++			/* Never drop while powered; rise at most 2 % per 30 s sample. */
++			if (target > fPct) {
++				fPct += (target - fPct > 2) ? 2 : target - fPct;
++			}
++		} else if (target < fPct) {
++			/* Discharging: never rise (load sag recovers), fall at most 2 %. */
++			fPct -= (fPct - target > 2) ? 2 : fPct - target;
++		}
++		IOLog("SWEET BATTERY: %u mV ichg %u mA ext %d chg %d full %d fault %#x -> %d%% (target %d%%)\n",
++		    mv, ichg, external, charging, full, fault, fPct, target);
++		publish((unsigned)fPct, mv, charging ? (int)ichg : 0, external != 0, external != 0,
++		    charging != 0, full != 0, true, charging != 0);
++		return;
++	}
+ 	uint8_t type, present, usb, path, charger, error, temperature;
+ 	uint16_t rawVoltage;
+ 	bool valid = fReal &&
+@@ -262,9 +302,10 @@ SweetBattery::start(IOService *provider)
+ 	if (!IOPMPowerSource::start(provider)) {
+ 		return false;
+ 	}
+-	int real = 0;
++	/* fleur: BQ25890 charger by default; sweetbattery=0 keeps the static source. */
++	int real = 1;
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
+-	fReal = real == 1 && sweet_spmi_init() == 0;
++	fReal = real != 0 && fleur_battery_init() == 0;
+ 	/* Publish a complete source BEFORE registerService wakes powerd. */
+ 	poll();
+ 	if (fReal) {

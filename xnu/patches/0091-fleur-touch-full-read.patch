@@ -1,0 +1,19 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 4079bec..36ea0c6 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -406,7 +406,13 @@ touch_focaltech(void)
+ 	uint8_t buf[TOUCH_DATA_LEN];
+ 	int x[TOUCH_MAX] = {0}, y[TOUCH_MAX] = {0};
+ 	uint32_t mask = 0, seen = 0;
+-	unsigned have = 2u * TOUCH_FIFO, active = 0;
++	/*
++	 * Read the whole report (regs 0x00-0x3e) every poll, as Xiaomi's
++	 * ft3418 driver does: the FT3418 only publishes the next frame once
++	 * the host has read the current one to the end. Reading 16 bytes left
++	 * one frame per touch on the phone (no movement, no lift-off).
++	 */
++	unsigned have = TOUCH_DATA_LEN, active = 0;
+ 	int err = touch_read(0, buf, have);
+ 	if (err) {
+ 		return err;

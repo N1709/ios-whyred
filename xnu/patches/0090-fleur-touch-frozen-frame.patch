@@ -1,0 +1,56 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 1f7011a..4079bec 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -36,6 +36,7 @@ void sweet_touch_init(void);
+ #define TOUCH_MAX        10u
+ #define TOUCH_DATA_LEN   (3u + 6u * TOUCH_MAX)
+ #define TOUCH_FIFO       8u
++#define TOUCH_STALE_POLLS 15u   /* 150 ms of an unchanged report = no finger */
+ #define TOUCH_CLK_DIV    5u          /* DT i2c0 clock-div */
+ #define TOUCH_INTID      (32u + 0x69u) /* DT i2c0 SPI 105 */
+ 
+@@ -106,6 +107,8 @@ static struct {
+ 	int log;                /* boot-arg sweettouchlog: raw frames + HID down/up, first N */
+ 	int int_gate;           /* boot-arg sweettouchint (default 1): INT level gates reports */
+ 	uint8_t last_raw[16];
++	uint8_t prev[16];       /* last report bytes, to spot a frozen (lifted) frame */
++	unsigned same;          /* consecutive polls with an identical report */
+ 	unsigned khz, src_khz;
+ 	uint16_t timing, ltiming, hw_timeout, ext_conf;
+ 	uint32_t irq_last, active;
+@@ -408,6 +411,25 @@ touch_focaltech(void)
+ 	if (err) {
+ 		return err;
+ 	}
++	/*
++	 * Polled, the FT3418 often leaves the last contact frame in place after
++	 * lift-off (the UP frame is only caught sometimes) and its INT pulses
++	 * regardless of touch. A finger that is down changes the frame every
++	 * report (pressure/area at least), so a frame frozen for
++	 * TOUCH_STALE_POLLS means no finger: release, and never re-press from a
++	 * frozen frame (only a changed frame counts).
++	 */
++	if (memcmp(buf, st.prev, sizeof(st.prev)) == 0) {
++		if (st.active && ++st.same >= TOUCH_STALE_POLLS) {
++			if (st.log > 0) {
++				printf("SWEET TOUCH: frozen frame, release\n");
++			}
++			touch_report(0, x, y);
++		}
++		return 0;
++	}
++	memcpy(st.prev, buf, sizeof(st.prev));
++	st.same = 0;
+ 	if (st.log > 0 && memcmp(buf, st.last_raw, sizeof(st.last_raw)) != 0) {
+ 		memcpy(st.last_raw, buf, sizeof(st.last_raw));
+ 		st.log--;
+@@ -630,7 +652,7 @@ sweet_touch_init(void)
+ 	(void)PE_parse_boot_argn("sweettouchpower", &power, sizeof(power));
+ 	(void)PE_parse_boot_argn("sweettouchkhz", &st.khz, sizeof(st.khz));
+ 	(void)PE_parse_boot_argn("sweettouchlog", &st.log, sizeof(st.log));
+-	st.int_gate = 1;
++	st.int_gate = 0;        /* INT pulses even without touch on fleur */
+ 	(void)PE_parse_boot_argn("sweettouchint", &st.int_gate, sizeof(st.int_gate));
+ 	st.power = power != 0;
+ 	if (!enabled) {

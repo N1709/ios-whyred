@@ -1,0 +1,672 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 10c7f95..eb68fa2 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -109,6 +109,7 @@ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/fleur_battery.c			standard
++bsd/dev/fleur_gpu.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
+diff --git a/bsd/dev/fleur_gpu.c b/bsd/dev/fleur_gpu.c
+new file mode 100644
+index 0000000..844982a
+--- /dev/null
++++ b/bsd/dev/fleur_gpu.c
+@@ -0,0 +1,633 @@
++/*
++ * fleur (Redmi Note 11S, MT6781) GPU probe: ARM Mali-G57 MC2 (Valhall v9,
++ * job manager) at 0x13000000. Phase 1 of GPU acceleration: power the GPU
++ * the way MediaTek's driver does and log what the hardware reports. No
++ * jobs, no MMU, no interrupts (the GIC SPIs 274-278 stay disabled).
++ *
++ * Boot-arg sweetgpu (default 0 = nothing is mapped or touched):
++ *   1  read-only: PMIC VGPU/VSRAM_GPU, SPM MFG0-3 power state, mfg_sel mux,
++ *      MFGPLL, BG3D gate; GPU registers only if LK left all of it on.
++ *   2  1 + power-on: VSRAM_GPU/VGPU (only if off), ACP off, mfg_sel,
++ *      MTCMOS MFG0..MFG3 (+ MFG1 bus protection), BG3D CG, MFG async/
++ *      q-channel setup; then read GPU_ID, features and *_PRESENT.
++ *   3  2 + GPU soft reset, L2/tiler/shader power-up and *_READY readback
++ *      (proves the GPU clock runs).
++ * sweetgpudelay=N  seconds before starting (default 30, so the persistent
++ *                  log has flushed the boot so far).
++ * sweetgpupause=N  seconds to sleep before each risky step (default 12,
++ *                  > ufslogsecs) so the last line before a bus hang is on
++ *                  disk; 0 = no pauses.
++ * The GPU is left powered after 2/3. Every poll has a timeout.
++ *
++ * Sequence from MiCode/Xiaomi_Kernel_OpenSource fleur-s-oss:
++ * clk-mt6781-pg.c spm_mtcmos_ctrl_mfg0..3, gpufreq_v1/mt6781/
++ * mtk_gpufreq_plat.c (mt_gpufreq_power_control, _external_cg_control,
++ * _init_acp, _set_timestamp), clk-mt6781.c (mfg_sel, MFGPLL, mfg_cfg_bg3d),
++ * MT6358 registers.h (MT6366 = same map), mtk-pmic-wrap.c (pwrap_write16
++ * without ARB_V3), platform/mt6781/mali_kbase_config_mt6781.c. Mali
++ * register offsets: kbase mali_kbase_gpu_regmap.h / panfrost_regs.h.
++ * See research/gpu/REPORT.md.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++/* Mach MIG declaration is not included by BSD's exported thread.h (as sweet_touch.c). */
++extern kern_return_t thread_terminate(thread_t);
++void fleur_gpu_probe(void);
++
++#define GPU_PA           0x13000000u /* DT mali@13000000, 0x4000 */
++#define GPU_SIZE         0x4000u
++#define MFGCFG_PA        0x13fbf000u /* DT mfgcfg */
++#define TOP_PA           0x10000000u /* topckgen */
++#define INFRA_PA         0x10001000u /* infracfg_ao */
++#define SPM_PA           0x10006000u /* sleep (SPM) */
++#define APMIXED_PA       0x1000c000u
++#define PWRAP_PA         0x1000d000u
++
++/* topckgen: mfg_sel = CK_CFG_0[17:16] (clk26m, mfgpll, mainpll_d3, mainpll_d5) */
++#define TOP_CFG_UPDATE   0x004u
++#define TOP_UPD_MFG      (1u << 2)
++#define TOP_CK_CFG_0     0x040u
++#define TOP_CK_CFG_0_CLR 0x048u
++#define TOP_MFG_SEL(v)   (((v) >> 16) & 3u)
++#define TOP_MFG_PDN      (1u << 23)
++/* apmixedsys */
++#define MFGPLL_CON0      0x250u      /* bit 0 EN */
++#define MFGPLL_CON1      0x254u      /* [26:24] posdiv, [21:0] pcw */
++#define MFGPLL_PWR_CON0  0x25cu
++
++/* infracfg_ao */
++#define INFRA_PROT_SET   0x2a0u
++#define INFRA_PROT_CLR   0x2a4u
++#define INFRA_PROT_STA1  0x228u
++#define INFRA_PROT1_SET  0x2a8u
++#define INFRA_PROT1_CLR  0x2acu
++#define INFRA_PROT1_STA1 0x258u
++#define INFRA_ACP        0x290u      /* bit 9 = ACP off (__mt_gpufreq_init_acp) */
++#define MFG1_PROT1_STEP1 ((1u << 27) | (1u << 28))
++#define MFG1_PROT_STEP2  ((1u << 21) | (1u << 22))
++#define MFG1_PROT_STEP3  (1u << 25)
++#define MFG1_PROT1_STEP4 (1u << 29)
++
++/* SPM */
++#define SPM_POWERON_CONFIG_EN 0x000u
++#define SPM_PROJECT_CODE 0xb16u
++#define SPM_PWR_STATUS   0x16cu
++#define SPM_PWR_STATUS_2ND 0x170u
++#define SPM_MFG_PWR_CON(n) (0x308u + 4u * (n)) /* MFG0..MFG4 */
++#define SPM_MFG_STA(n)   (1u << (2 + (n)))
++#define PWR_RST_B        (1u << 0)
++#define PWR_ISO          (1u << 1)
++#define PWR_ON           (1u << 2)
++#define PWR_ON_2ND       (1u << 3)
++#define PWR_CLK_DIS      (1u << 4)
++#define PWR_SRAM_PDN     (1u << 8)
++#define PWR_SRAM_PDN_ACK (1u << 12)
++
++/* mfgcfg */
++#define MFG_CG_STA       0x000u      /* bit 0 BG3D, 1 = gated */
++#define MFG_CG_CLR       0x008u
++#define MFG_ASYNC_CON    0x020u
++#define MFG_ASYNC_CON_1  0x024u
++#define MFG_GLOBAL_CON   0x0b0u
++#define MFG_QCHANNEL_CON 0x0b4u
++#define MFG_TIMESTAMP    0x130u
++#define MFG_I2M_PROT_CFG_00 0xf60u
++
++/* PMIC wrapper (mt6781_regs) and MT6358/MT6366 regulators */
++#define PWRAP_WACS2_EN   0x09cu
++#define PWRAP_INIT_DONE2 0x0a0u
++#define PWRAP_WACS2_CMD  0xc20u
++#define PWRAP_WACS2_RDATA 0xc24u
++#define PWRAP_WACS2_VLDCLR 0xc28u
++#define PWRAP_FSM(x)     (((x) >> 16) & 7u)
++#define PWRAP_FSM_IDLE   0u
++#define PWRAP_FSM_WFVLDCLR 6u
++#define PWRAP_INIT_DONE0_V2 (1u << 22)
++#define PMIC_HWCID       0x0008u
++#define PMIC_VGPU_CON0   0x1508u     /* bit 0 RG_BUCK_VGPU_EN */
++#define PMIC_VGPU_DBG0   0x151eu     /* [6:0] DA_VGPU_VOSEL */
++#define PMIC_VGPU_DBG1   0x1520u     /* bit 0 DA_VGPU_EN */
++#define PMIC_VGPU_ELR0   0x1526u     /* [6:0] RG_BUCK_VGPU_VOSEL */
++#define PMIC_VSRAM_GPU_CON0 0x1bc8u  /* bit 0 RG_LDO_VSRAM_GPU_EN */
++#define PMIC_VSRAM_GPU_DBG0 0x1be2u  /* [14:8] DA_VSRAM_GPU_VOSEL */
++#define PMIC_VSRAM_GPU_DBG1 0x1be4u  /* bit 0 DA_VSRAM_GPU_EN */
++#define PMIC_VSRAM_CON3  0x1bf4u     /* [6:0] RG_LDO_VSRAM_GPU_VOSEL */
++#define PMIC_UV(sel)     (500000u + 6250u * (sel)) /* both rails */
++/* Lowest vendor OPP is 300 MHz at 0.600 V / 0.850 V; keep 100-250 mV apart. */
++#define GPU_VGPU_SEL     0x20u       /* 0.700 V */
++#define GPU_VSRAM_SEL    0x38u       /* 0.850 V */
++
++/* Mali GPU_CONTROL (job manager GPUs) */
++#define GPU_ID           0x000u
++#define GPU_L2_FEATURES  0x004u
++#define GPU_CORE_FEATURES 0x008u
++#define GPU_TILER_FEATURES 0x00cu
++#define GPU_MEM_FEATURES 0x010u
++#define GPU_MMU_FEATURES 0x014u
++#define GPU_AS_PRESENT   0x018u
++#define GPU_JS_PRESENT   0x01cu
++#define GPU_IRQ_RAWSTAT  0x020u
++#define GPU_IRQ_CLEAR    0x024u
++#define GPU_IRQ_MASK     0x028u
++#define GPU_COMMAND      0x030u
++#define GPU_STATUS       0x034u
++#define GPU_FAULTSTATUS  0x03cu
++#define GPU_THREAD_MAX_THREADS 0x0a0u
++#define GPU_THREAD_MAX_WORKGROUP 0x0a4u
++#define GPU_THREAD_MAX_BARRIER 0x0a8u
++#define GPU_THREAD_FEATURES 0x0acu
++#define GPU_TEXTURE_FEATURES(n) (0x0b0u + 4u * (n))
++#define GPU_JS_FEATURES(n) (0x0c0u + 4u * (n))
++#define GPU_SHADER_PRESENT 0x100u    /* _LO; _HI at +4 */
++#define GPU_TILER_PRESENT 0x110u
++#define GPU_L2_PRESENT   0x120u
++#define GPU_SHADER_READY 0x140u
++#define GPU_TILER_READY  0x150u
++#define GPU_L2_READY     0x160u
++#define GPU_SHADER_PWRON 0x180u
++#define GPU_TILER_PWRON  0x190u
++#define GPU_L2_PWRON     0x1a0u
++#define GPU_COHERENCY_FEATURES 0x300u
++#define GPU_THREAD_TLS_ALLOC 0x310u
++#define GPU_STACK_PRESENT 0xe00u
++#define GPU_STACK_READY  0xe10u
++#define GPU_CMD_SOFT_RESET 0x01u
++#define GPU_IRQ_RESET_COMPLETED (1u << 8)
++#define GPU_IRQ_POWER_CHANGED_ALL (1u << 10)
++#define JOB_IRQ_MASK     0x1008u
++#define MMU_IRQ_MASK     0x2008u
++
++static struct {
++	vm_offset_t gpu, mfg, top, infra, spm, apmixed, pwrap;
++	int mode;
++	unsigned delay_s, pause_s;
++	uint32_t pwrap_status;
++	bool pmic_ok;
++} fg;
++static int fg_sleep_chan;
++
++static uint32_t
++fg_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++fg_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++static void
++fg_set(vm_offset_t base, uint32_t off, uint32_t bits)
++{
++	fg_wr(base, off, fg_rd(base, off) | bits);
++}
++
++static void
++fg_clr(vm_offset_t base, uint32_t off, uint32_t bits)
++{
++	fg_wr(base, off, fg_rd(base, off) & ~bits);
++}
++
++/* Poll until (reg & mask) == want, up to timeout_us. */
++static bool
++fg_poll(vm_offset_t base, uint32_t off, uint32_t mask, uint32_t want, unsigned timeout_us)
++{
++	for (unsigned i = 0; i <= timeout_us; ++i) {
++		if ((fg_rd(base, off) & mask) == want) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++static void
++fg_sleep_s(unsigned s)
++{
++	uint64_t deadline;
++	if (s == 0) {
++		return;
++	}
++	clock_interval_to_deadline(s, NSEC_PER_SEC, &deadline);
++	(void)assert_wait_deadline(&fg_sleep_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++/* Log the next step, then give the persistent log time to reach the disk. */
++static void
++fg_checkpoint(const char *what)
++{
++	printf("SWEET GPU: next: %s\n", what);
++	fg_sleep_s(fg.pause_s);
++}
++
++/* PMIC access through pwrap WACS2, as sweet_keys.c (reads) + pwrap_write16. */
++static bool
++fg_pwrap_wait(unsigned fsm)
++{
++	for (unsigned i = 0; i < 10000; ++i) {
++		fg.pwrap_status = fg_rd(fg.pwrap, PWRAP_WACS2_RDATA);
++		if (PWRAP_FSM(fg.pwrap_status) == fsm) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++static bool
++fg_pwrap_idle(void)
++{
++	if (fg_pwrap_wait(PWRAP_FSM_IDLE)) {
++		return true;
++	}
++	if (PWRAP_FSM(fg.pwrap_status) == PWRAP_FSM_WFVLDCLR) {
++		fg_wr(fg.pwrap, PWRAP_WACS2_VLDCLR, 1);
++	}
++	return false;
++}
++
++static bool
++fg_pmic_read(uint16_t addr, uint16_t *out)
++{
++	if (!fg.pmic_ok || !fg_pwrap_idle()) {
++		return false;
++	}
++	fg_wr(fg.pwrap, PWRAP_WACS2_CMD, ((uint32_t)addr >> 1) << 16);
++	if (!fg_pwrap_wait(PWRAP_FSM_WFVLDCLR)) {
++		return false;
++	}
++	*out = (uint16_t)fg.pwrap_status;
++	fg_wr(fg.pwrap, PWRAP_WACS2_VLDCLR, 1);
++	return true;
++}
++
++static bool
++fg_pmic_write(uint16_t addr, uint16_t val)
++{
++	if (!fg.pmic_ok || !fg_pwrap_idle()) {
++		return false;
++	}
++	fg_wr(fg.pwrap, PWRAP_WACS2_CMD, (1u << 31) | (((uint32_t)addr >> 1) << 16) | val);
++	return fg_pwrap_wait(PWRAP_FSM_IDLE);
++}
++
++/* Read-modify-write of a 7-bit field at bit 0, then of bit 0 of en_addr. */
++static bool
++fg_pmic_rail_on(const char *name, uint16_t vosel_addr, uint16_t sel,
++    uint16_t en_addr, uint16_t da_en_addr)
++{
++	uint16_t v = 0, en = 0;
++	if (!fg_pmic_read(vosel_addr, &v) ||
++	    !fg_pmic_write(vosel_addr, (uint16_t)((v & ~0x7fu) | sel)) ||
++	    !fg_pmic_read(en_addr, &v) ||
++	    !fg_pmic_write(en_addr, (uint16_t)(v | 1u))) {
++		printf("SWEET GPU: %s: pwrap error wacs2=%#x\n", name, fg.pwrap_status);
++		return false;
++	}
++	delay(1000); /* DT ramp delay 200/240 us */
++	if (!fg_pmic_read(da_en_addr, &en) || !(en & 1u)) {
++		printf("SWEET GPU: %s did not turn on (da_en=%#x)\n", name, en);
++		return false;
++	}
++	printf("SWEET GPU: %s on at %u uV\n", name, PMIC_UV(sel));
++	return true;
++}
++
++static void
++fg_dump_pmic(bool *vgpu_on, bool *vsram_on)
++{
++	uint16_t ven = 0, vsel = 0, vrg = 0, sen = 0, ssel = 0, srg = 0;
++	*vgpu_on = *vsram_on = false;
++	if (!fg.pmic_ok) {
++		printf("SWEET GPU: pwrap not usable, PMIC state unknown\n");
++		return;
++	}
++	bool ok = fg_pmic_read(PMIC_VGPU_DBG1, &ven) && fg_pmic_read(PMIC_VGPU_DBG0, &vsel) &&
++	    fg_pmic_read(PMIC_VGPU_ELR0, &vrg) && fg_pmic_read(PMIC_VSRAM_GPU_DBG1, &sen) &&
++	    fg_pmic_read(PMIC_VSRAM_GPU_DBG0, &ssel) && fg_pmic_read(PMIC_VSRAM_CON3, &srg);
++	if (!ok) {
++		printf("SWEET GPU: PMIC read error wacs2=%#x\n", fg.pwrap_status);
++		return;
++	}
++	*vgpu_on = (ven & 1u) != 0;
++	*vsram_on = (sen & 1u) != 0;
++	printf("SWEET GPU: VGPU %s %u uV (rg %u uV), VSRAM_GPU %s %u uV (rg %u uV)\n",
++	    *vgpu_on ? "on" : "off", PMIC_UV(vsel & 0x7fu), PMIC_UV(vrg & 0x7fu),
++	    *vsram_on ? "on" : "off", PMIC_UV((ssel >> 8) & 0x7fu), PMIC_UV(srg & 0x7fu));
++}
++
++static bool
++fg_mfg_all_on(void)
++{
++	uint32_t want = SPM_MFG_STA(0) | SPM_MFG_STA(1) | SPM_MFG_STA(2) | SPM_MFG_STA(3);
++	return (fg_rd(fg.spm, SPM_PWR_STATUS) & want) == want &&
++	       (fg_rd(fg.spm, SPM_PWR_STATUS_2ND) & want) == want;
++}
++
++static void
++fg_dump_soc(void)
++{
++	uint32_t ck = fg_rd(fg.top, TOP_CK_CFG_0);
++	uint32_t pll0 = fg_rd(fg.apmixed, MFGPLL_CON0);
++	uint32_t pll1 = fg_rd(fg.apmixed, MFGPLL_CON1);
++	/* 26 MHz * pcw / 2^14 / 2^posdiv */
++	uint64_t pll_khz = ((uint64_t)26000u * (pll1 & 0x3fffffu) >> 14) >> ((pll1 >> 24) & 7u);
++	static const char *const sel[4] = {"clk26m", "mfgpll", "mainpll_d3", "mainpll_d5"};
++	printf("SWEET GPU: mfg_sel=%s%s (ck_cfg_0=%#x), MFGPLL con0=%#x con1=%#x pwr=%#x -> %llu kHz%s\n",
++	    sel[TOP_MFG_SEL(ck)], (ck & TOP_MFG_PDN) ? " PDN" : "", ck, pll0, pll1,
++	    fg_rd(fg.apmixed, MFGPLL_PWR_CON0), pll_khz, (pll0 & 1u) ? "" : " (off)");
++	printf("SWEET GPU: SPM pwr_status=%#x/%#x mfg0..4 pwr_con=%#x %#x %#x %#x %#x\n",
++	    fg_rd(fg.spm, SPM_PWR_STATUS), fg_rd(fg.spm, SPM_PWR_STATUS_2ND),
++	    fg_rd(fg.spm, SPM_MFG_PWR_CON(0)), fg_rd(fg.spm, SPM_MFG_PWR_CON(1)),
++	    fg_rd(fg.spm, SPM_MFG_PWR_CON(2)), fg_rd(fg.spm, SPM_MFG_PWR_CON(3)),
++	    fg_rd(fg.spm, SPM_MFG_PWR_CON(4)));
++	printf("SWEET GPU: infra prot=%#x prot_1=%#x sta1=%#x sta1_1=%#x acp=%#x\n",
++	    fg_rd(fg.infra, 0x220u), fg_rd(fg.infra, 0x250u), fg_rd(fg.infra, INFRA_PROT_STA1),
++	    fg_rd(fg.infra, INFRA_PROT1_STA1), fg_rd(fg.infra, INFRA_ACP));
++	/* mfgcfg is inside the MFG power domains: only read it with MFG0/1 on. */
++	uint32_t top = SPM_MFG_STA(0) | SPM_MFG_STA(1);
++	if ((fg_rd(fg.spm, SPM_PWR_STATUS) & top) == top) {
++		printf("SWEET GPU: mfgcfg cg=%#x async=%#x/%#x global=%#x qchannel=%#x\n",
++		    fg_rd(fg.mfg, MFG_CG_STA), fg_rd(fg.mfg, MFG_ASYNC_CON),
++		    fg_rd(fg.mfg, MFG_ASYNC_CON_1), fg_rd(fg.mfg, MFG_GLOBAL_CON),
++		    fg_rd(fg.mfg, MFG_QCHANNEL_CON));
++	}
++}
++
++/* spm_mtcmos_ctrl_mfgN(STA_POWER_ON), with timeouts. */
++static bool
++fg_mtcmos_on(unsigned n)
++{
++	uint32_t con = SPM_MFG_PWR_CON(n), sta = SPM_MFG_STA(n);
++	if ((fg_rd(fg.spm, SPM_PWR_STATUS) & sta) && (fg_rd(fg.spm, SPM_PWR_STATUS_2ND) & sta) &&
++	    (fg_rd(fg.spm, con) & (PWR_RST_B | PWR_ISO | PWR_CLK_DIS | PWR_SRAM_PDN)) == PWR_RST_B) {
++		printf("SWEET GPU: MFG%u already on\n", n);
++		return true;
++	}
++	fg_wr(fg.spm, SPM_POWERON_CONFIG_EN, (SPM_PROJECT_CODE << 16) | 1u);
++	fg_set(fg.spm, con, PWR_ON);
++	fg_set(fg.spm, con, PWR_ON_2ND);
++	if (!fg_poll(fg.spm, SPM_PWR_STATUS, sta, sta, 1000) ||
++	    !fg_poll(fg.spm, SPM_PWR_STATUS_2ND, sta, sta, 1000)) {
++		printf("SWEET GPU: MFG%u no power ack (status %#x/%#x con %#x)\n", n,
++		    fg_rd(fg.spm, SPM_PWR_STATUS), fg_rd(fg.spm, SPM_PWR_STATUS_2ND), fg_rd(fg.spm, con));
++		return false;
++	}
++	fg_clr(fg.spm, con, PWR_CLK_DIS);
++	fg_clr(fg.spm, con, PWR_ISO);
++	fg_set(fg.spm, con, PWR_RST_B);
++	fg_clr(fg.spm, con, PWR_SRAM_PDN);
++	/* The SRAM PDN delay IP runs on f_fmfg_core_ck: no clock, no ack. */
++	if (!fg_poll(fg.spm, con, PWR_SRAM_PDN_ACK, 0, 1000)) {
++		printf("SWEET GPU: MFG%u SRAM no ack (con %#x): no mfg clock?\n", n, fg_rd(fg.spm, con));
++		return false;
++	}
++	if (n == 1) {
++		/* Release bus protection, steps 4..1 (acks are not checked by vendor). */
++		fg_wr(fg.infra, INFRA_PROT1_CLR, MFG1_PROT1_STEP4);
++		fg_wr(fg.infra, INFRA_PROT_CLR, MFG1_PROT_STEP3);
++		fg_wr(fg.infra, INFRA_PROT_CLR, MFG1_PROT_STEP2);
++		fg_wr(fg.infra, INFRA_PROT1_CLR, MFG1_PROT1_STEP1);
++		delay(10);
++	}
++	printf("SWEET GPU: MFG%u on (con %#x)\n", n, fg_rd(fg.spm, con));
++	return true;
++}
++
++/* mt_gpufreq_cg_control(ON) + mt_gpufreq_external_cg_control() + timestamp. */
++static bool
++fg_mfg_cg_on(void)
++{
++	fg_wr(fg.mfg, MFG_CG_CLR, 1u);
++	if (!fg_poll(fg.mfg, MFG_CG_STA, 1u, 0, 100)) {
++		printf("SWEET GPU: BG3D still gated (cg %#x)\n", fg_rd(fg.mfg, MFG_CG_STA));
++		return false;
++	}
++	fg_set(fg.mfg, MFG_ASYNC_CON, (1u << 22) | (1u << 23) | (1u << 24) | (1u << 25));
++	fg_clr(fg.mfg, MFG_GLOBAL_CON, (1u << 10) | (1u << 9));
++	fg_set(fg.mfg, MFG_QCHANNEL_CON, 1u << 4);
++	fg_clr(fg.mfg, MFG_GLOBAL_CON, (1u << 19) | (1u << 8));
++	fg_set(fg.mfg, MFG_ASYNC_CON_1, 1u << 0);
++	fg_set(fg.mfg, MFG_I2M_PROT_CFG_00, 1u << 0);
++	fg_wr(fg.mfg, MFG_TIMESTAMP, 1u);
++	printf("SWEET GPU: BG3D on, mfgcfg async=%#x global=%#x qchannel=%#x\n",
++	    fg_rd(fg.mfg, MFG_ASYNC_CON), fg_rd(fg.mfg, MFG_GLOBAL_CON),
++	    fg_rd(fg.mfg, MFG_QCHANNEL_CON));
++	return true;
++}
++
++static bool
++fg_power_on(bool vgpu_on, bool vsram_on)
++{
++	/* mt_gpufreq_buck_control(ON): VSRAM_GPU first, then VGPU. */
++	if (!vsram_on || !vgpu_on) {
++		fg_checkpoint("PMIC VSRAM_GPU/VGPU on");
++		if (!vsram_on && !fg_pmic_rail_on("VSRAM_GPU", PMIC_VSRAM_CON3, GPU_VSRAM_SEL,
++		    PMIC_VSRAM_GPU_CON0, PMIC_VSRAM_GPU_DBG1)) {
++			return false;
++		}
++		if (!vgpu_on && !fg_pmic_rail_on("VGPU", PMIC_VGPU_ELR0, GPU_VGPU_SEL,
++		    PMIC_VGPU_CON0, PMIC_VGPU_DBG1)) {
++			return false;
++		}
++	}
++	fg_set(fg.infra, INFRA_ACP, 1u << 9);
++
++	/* mfg_sel feeds MFG0's SRAM delay IP: make sure it has a running parent. */
++	uint32_t ck = fg_rd(fg.top, TOP_CK_CFG_0);
++	bool pll_off = !(fg_rd(fg.apmixed, MFGPLL_CON0) & 1u);
++	if ((ck & TOP_MFG_PDN) || (TOP_MFG_SEL(ck) == 1u && pll_off)) {
++		fg_checkpoint("mfg_sel -> clk26m");
++		fg_wr(fg.top, TOP_CK_CFG_0_CLR, (3u << 16) | TOP_MFG_PDN);
++		fg_wr(fg.top, TOP_CFG_UPDATE, TOP_UPD_MFG);
++		delay(10);
++		printf("SWEET GPU: ck_cfg_0 %#x -> %#x\n", ck, fg_rd(fg.top, TOP_CK_CFG_0));
++	}
++
++	/* mt_gpufreq_mtcmos_control(ON): async (MFG0), top (MFG1), stacks 0/2. */
++	for (unsigned n = 0; n < 4; ++n) {
++		char what[32];
++		snprintf(what, sizeof(what), "MTCMOS MFG%u on", n);
++		fg_checkpoint(what);
++		if (!fg_mtcmos_on(n)) {
++			return false;
++		}
++	}
++	fg_checkpoint("BG3D clock + mfgcfg setup");
++	return fg_mfg_cg_on();
++}
++
++static void
++fg_dump_gpu(void)
++{
++	uint32_t id = fg_rd(fg.gpu, GPU_ID);
++	/* G57 (tNAX) is arch 9, product major 1: (GPU_ID >> 16) & 0xf00f == 0x9001. */
++	printf("SWEET GPU: GPU_ID=%#x arch %u.%u.%u product %#x version r%up%u status %u\n",
++	    id, id >> 28, (id >> 24) & 0xfu, (id >> 20) & 0xfu, id >> 16,
++	    (id >> 12) & 0xfu, (id >> 4) & 0xffu, id & 0xfu);
++	printf("SWEET GPU: l2 %#x core %#x tiler %#x mem %#x mmu %#x as %#x js %#x coherency %#x\n",
++	    fg_rd(fg.gpu, GPU_L2_FEATURES), fg_rd(fg.gpu, GPU_CORE_FEATURES),
++	    fg_rd(fg.gpu, GPU_TILER_FEATURES), fg_rd(fg.gpu, GPU_MEM_FEATURES),
++	    fg_rd(fg.gpu, GPU_MMU_FEATURES), fg_rd(fg.gpu, GPU_AS_PRESENT),
++	    fg_rd(fg.gpu, GPU_JS_PRESENT), fg_rd(fg.gpu, GPU_COHERENCY_FEATURES));
++	printf("SWEET GPU: threads max %u wg %u barrier %u features %#x tls %#x tex %#x %#x %#x %#x\n",
++	    fg_rd(fg.gpu, GPU_THREAD_MAX_THREADS), fg_rd(fg.gpu, GPU_THREAD_MAX_WORKGROUP),
++	    fg_rd(fg.gpu, GPU_THREAD_MAX_BARRIER), fg_rd(fg.gpu, GPU_THREAD_FEATURES),
++	    fg_rd(fg.gpu, GPU_THREAD_TLS_ALLOC), fg_rd(fg.gpu, GPU_TEXTURE_FEATURES(0)),
++	    fg_rd(fg.gpu, GPU_TEXTURE_FEATURES(1)), fg_rd(fg.gpu, GPU_TEXTURE_FEATURES(2)),
++	    fg_rd(fg.gpu, GPU_TEXTURE_FEATURES(3)));
++	printf("SWEET GPU: js0..2 features %#x %#x %#x\n", fg_rd(fg.gpu, GPU_JS_FEATURES(0)),
++	    fg_rd(fg.gpu, GPU_JS_FEATURES(1)), fg_rd(fg.gpu, GPU_JS_FEATURES(2)));
++	printf("SWEET GPU: present shader %#x:%#x tiler %#x l2 %#x stack %#x; ready shader %#x tiler %#x l2 %#x stack %#x\n",
++	    fg_rd(fg.gpu, GPU_SHADER_PRESENT + 4), fg_rd(fg.gpu, GPU_SHADER_PRESENT),
++	    fg_rd(fg.gpu, GPU_TILER_PRESENT), fg_rd(fg.gpu, GPU_L2_PRESENT),
++	    fg_rd(fg.gpu, GPU_STACK_PRESENT), fg_rd(fg.gpu, GPU_SHADER_READY),
++	    fg_rd(fg.gpu, GPU_TILER_READY), fg_rd(fg.gpu, GPU_L2_READY),
++	    fg_rd(fg.gpu, GPU_STACK_READY));
++	printf("SWEET GPU: status %#x faultstatus %#x irq_rawstat %#x\n",
++	    fg_rd(fg.gpu, GPU_STATUS), fg_rd(fg.gpu, GPU_FAULTSTATUS),
++	    fg_rd(fg.gpu, GPU_IRQ_RAWSTAT));
++}
++
++/* Power a domain (*_PWRON_LO) and wait for *_READY_LO, as kbase_pm. */
++static void
++fg_gpu_pwron(const char *name, uint32_t pwron, uint32_t ready, uint32_t mask)
++{
++	if (mask == 0) {
++		return;
++	}
++	fg_wr(fg.gpu, pwron, mask);
++	bool ok = fg_poll(fg.gpu, ready, mask, mask, 10000);
++	printf("SWEET GPU: %s pwron %#x -> ready %#x%s\n", name, mask, fg_rd(fg.gpu, ready),
++	    ok ? "" : " (timeout)");
++}
++
++static void
++fg_gpu_bringup(void)
++{
++	fg_checkpoint("GPU soft reset");
++	fg_wr(fg.gpu, GPU_IRQ_MASK, 0);
++	fg_wr(fg.gpu, JOB_IRQ_MASK, 0);
++	fg_wr(fg.gpu, MMU_IRQ_MASK, 0);
++	fg_wr(fg.gpu, GPU_IRQ_CLEAR, 0xffffffffu);
++	fg_wr(fg.gpu, GPU_COMMAND, GPU_CMD_SOFT_RESET);
++	if (!fg_poll(fg.gpu, GPU_IRQ_RAWSTAT, GPU_IRQ_RESET_COMPLETED, GPU_IRQ_RESET_COMPLETED, 100000)) {
++		printf("SWEET GPU: soft reset did not complete (rawstat %#x status %#x)\n",
++		    fg_rd(fg.gpu, GPU_IRQ_RAWSTAT), fg_rd(fg.gpu, GPU_STATUS));
++		return;
++	}
++	fg_wr(fg.gpu, GPU_IRQ_CLEAR, 0xffffffffu);
++	printf("SWEET GPU: soft reset done\n");
++	fg_checkpoint("GPU L2/tiler/shader power-up");
++	fg_gpu_pwron("l2", GPU_L2_PWRON, GPU_L2_READY, fg_rd(fg.gpu, GPU_L2_PRESENT));
++	fg_gpu_pwron("tiler", GPU_TILER_PWRON, GPU_TILER_READY, fg_rd(fg.gpu, GPU_TILER_PRESENT));
++	fg_gpu_pwron("shader", GPU_SHADER_PWRON, GPU_SHADER_READY, fg_rd(fg.gpu, GPU_SHADER_PRESENT));
++	fg_dump_gpu();
++}
++
++static void
++fg_thread(void *arg, wait_result_t result)
++{
++	bool vgpu_on, vsram_on;
++	(void)arg;
++	(void)result;
++	fg_sleep_s(fg.delay_s);
++
++	uint32_t en = fg_rd(fg.pwrap, PWRAP_WACS2_EN);
++	uint32_t done = fg_rd(fg.pwrap, PWRAP_INIT_DONE2);
++	uint32_t rdata = fg_rd(fg.pwrap, PWRAP_WACS2_RDATA);
++	fg.pmic_ok = (en & 1u) && (done & 1u) && (rdata & PWRAP_INIT_DONE0_V2);
++	uint16_t hwcid = 0;
++	if (fg.pmic_ok && (!fg_pmic_read(PMIC_HWCID, &hwcid) ||
++	    ((hwcid >> 8) != 0x66u && (hwcid >> 8) != 0x58u))) {
++		/* 0x66xx = MT6366 (FLEUR-PORT.md), same regulator map as MT6358. */
++		printf("SWEET GPU: unexpected PMIC hwcid %#x, no PMIC access\n", hwcid);
++		fg.pmic_ok = false;
++	}
++	printf("SWEET GPU: mode %d, pwrap en=%#x init=%#x rdata=%#x hwcid=%#x\n",
++	    fg.mode, en, done, rdata, hwcid);
++	fg_dump_pmic(&vgpu_on, &vsram_on);
++	fg_dump_soc();
++
++	if (fg.mode >= 2) {
++		if (!fg.pmic_ok) {
++			printf("SWEET GPU: no PMIC access, not powering on\n");
++			goto out;
++		}
++		if (!fg_power_on(vgpu_on, vsram_on)) {
++			printf("SWEET GPU: power-on failed\n");
++			fg_dump_soc();
++			goto out;
++		}
++		fg_dump_pmic(&vgpu_on, &vsram_on);
++		fg_dump_soc();
++	}
++	/* GPU registers hang the bus unless MFG0..3 are up and BG3D runs. */
++	if (!fg_mfg_all_on() || (fg_rd(fg.mfg, MFG_CG_STA) & 1u)) {
++		printf("SWEET GPU: GPU not powered, registers not read%s\n",
++		    fg.mode == 1 ? " (sweetgpu=2 powers it)" : "");
++		goto out;
++	}
++	fg_checkpoint("read GPU registers");
++	fg_dump_gpu();
++	if (fg.mode >= 3) {
++		fg_gpu_bringup();
++	}
++	printf("SWEET GPU: probe done\n");
++out:
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++void
++fleur_gpu_probe(void)
++{
++	static bool started;
++	thread_t thread;
++	if (started) {
++		return;
++	}
++	started = true;
++	fg.mode = 0;
++	fg.delay_s = 30;
++	fg.pause_s = 12;
++	(void)PE_parse_boot_argn("sweetgpu", &fg.mode, sizeof(fg.mode));
++	if (fg.mode <= 0) {
++		return;
++	}
++	(void)PE_parse_boot_argn("sweetgpudelay", &fg.delay_s, sizeof(fg.delay_s));
++	(void)PE_parse_boot_argn("sweetgpupause", &fg.pause_s, sizeof(fg.pause_s));
++	fg.gpu = ml_io_map(GPU_PA, GPU_SIZE);
++	fg.mfg = ml_io_map(MFGCFG_PA, 0x1000);
++	fg.top = ml_io_map(TOP_PA, 0x1000);
++	fg.infra = ml_io_map(INFRA_PA, 0x1000);
++	fg.spm = ml_io_map(SPM_PA, 0x1000);
++	fg.apmixed = ml_io_map(APMIXED_PA, 0x1000);
++	fg.pwrap = ml_io_map(PWRAP_PA, 0x1000);
++	if (!fg.gpu || !fg.mfg || !fg.top || !fg.infra || !fg.spm || !fg.apmixed || !fg.pwrap) {
++		printf("SWEET GPU: ml_io_map failed\n");
++		return;
++	}
++	kern_return_t kr = kernel_thread_start(fg_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("SWEET GPU: kernel_thread_start failed %d\n", kr);
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index eda99ce..862f5c5 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -55,6 +55,7 @@ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
++extern void fleur_gpu_probe(void);
+ 
+ #define REG_CAP         0x00
+ #define REG_IS          0x20
+@@ -675,6 +676,8 @@ sweet_ufs_init(void)
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
++	/* GPU bring-up probe, off unless sweetgpu=N (bsd/dev/fleur_gpu.c). */
++	fleur_gpu_probe();
+ 	return 0;
+ }
+ 

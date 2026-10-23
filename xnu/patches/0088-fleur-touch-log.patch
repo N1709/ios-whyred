@@ -1,0 +1,54 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 195c7ea..7f94965 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -103,6 +103,8 @@ static struct {
+ 	vm_offset_t i2c, top, infra, gpio, imp, gicd;
+ 	bool started, dead, power;
+ 	int irq_hint;
++	int log;                /* boot-arg sweettouchlog: raw frames + HID down/up, first N */
++	uint8_t last_raw[16];
+ 	unsigned khz, src_khz;
+ 	uint16_t timing, ltiming, hw_timeout, ext_conf;
+ 	uint32_t irq_last, active;
+@@ -371,12 +373,18 @@ touch_report(uint32_t mask, const int *x, const int *y)
+ 	for (unsigned id = 0; id < TOUCH_MAX; ++id) {
+ 		uint32_t bit = 1u << id;
+ 		if (mask & bit) {
++			if (st.log > 0 && !(st.active & bit)) {
++				printf("SWEET TOUCH: hid down id=%u x=%d y=%d\n", id, x[id], y[id]);
++			}
+ 			if (!(st.active & bit) || x[id] != st.x[id] || y[id] != st.y[id]) {
+ 				sweet_hid_touch((int)id, 1, x[id], y[id]);
+ 			}
+ 			st.x[id] = x[id];
+ 			st.y[id] = y[id];
+ 		} else if (st.active & bit) {
++			if (st.log > 0) {
++				printf("SWEET TOUCH: hid up id=%u x=%d y=%d\n", id, st.x[id], st.y[id]);
++			}
+ 			sweet_hid_touch((int)id, 0, st.x[id], st.y[id]);
+ 		}
+ 	}
+@@ -399,6 +407,13 @@ touch_focaltech(void)
+ 	if (err) {
+ 		return err;
+ 	}
++	if (st.log > 0 && memcmp(buf, st.last_raw, sizeof(st.last_raw)) != 0) {
++		memcpy(st.last_raw, buf, sizeof(st.last_raw));
++		st.log--;
++		printf("SWEET TOUCH: raw %02x %02x %02x | %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x\n",
++		    buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8],
++		    buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]);
++	}
+ 	unsigned n = buf[2] & 15u;
+ 	/*
+ 	 * No finger: FT3418 reports either a count of 0 (with stale or UP
+@@ -581,6 +596,7 @@ sweet_touch_init(void)
+ 	(void)PE_parse_boot_argn("sweettouchirq", &st.irq_hint, sizeof(st.irq_hint));
+ 	(void)PE_parse_boot_argn("sweettouchpower", &power, sizeof(power));
+ 	(void)PE_parse_boot_argn("sweettouchkhz", &st.khz, sizeof(st.khz));
++	(void)PE_parse_boot_argn("sweettouchlog", &st.log, sizeof(st.log));
+ 	st.power = power != 0;
+ 	if (!enabled) {
+ 		printf("SWEET TOUCH: disabled (sweettouch=0)\n");

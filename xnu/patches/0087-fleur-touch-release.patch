@@ -1,0 +1,46 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 3f3ef77..195c7ea 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -400,13 +400,21 @@ touch_focaltech(void)
+ 		return err;
+ 	}
+ 	unsigned n = buf[2] & 15u;
+-	if (n == 15u && buf[3] == 0xffu && buf[5] == 0xffu) {
+-		return 0; /* no frame since reset: keep current contacts */
++	/*
++	 * No finger: FT3418 reports either a count of 0 (with stale or UP
++	 * records behind it) or, once idle, all-0xff report registers. Both
++	 * mean every contact is released; on hardware the all-0xff case was
++	 * read as "keep" and left a finger stuck down after lifting.
++	 */
++	if (n == 0u || (n == 15u && buf[3] == 0xffu && buf[5] == 0xffu)) {
++		touch_report(0, x, y);
++		return 0;
+ 	}
+ 	if ((buf[0] & 0x70u) || n > TOUCH_MAX) {
+ 		return EIO;
+ 	}
+-	for (unsigned i = 0; i < TOUCH_MAX; ++i) {
++	for (unsigned i = 0; i < TOUCH_MAX && active < n; ++i) {
++		/* Stop at n contacts: later records can be stale from older frames. */
+ 		unsigned need = 3u + 6u * (i + 1u);
+ 		if (need > have) {
+ 			unsigned more = need - have;
+@@ -425,13 +433,13 @@ touch_focaltech(void)
+ 		if (id >= TOUCH_MAX) {
+ 			break; /* vendor's end-of-records sentinel */
+ 		}
++		if (event == 1u) {
++			continue; /* UP record (may repeat an id that is down again) */
++		}
+ 		if (seen & (1u << id)) {
+ 			return EIO;
+ 		}
+ 		seen |= 1u << id;
+-		if (event == 1u) {
+-			continue; /* UP record */
+-		}
+ 		if (event == 3u) {
+ 			return EIO;
+ 		}
