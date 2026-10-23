@@ -1,0 +1,76 @@
+diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
+--- a/makedefs/MakeInc.def
++++ b/makedefs/MakeInc.def
+@@ -62,7 +62,7 @@
+ MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
+ MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
+ MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET -DARM64_NON_APPLE_BRINGUP                -march=armv8.2-a+crypto
+-MACHINE_FLAGS_ARM64_A05S = -DARM64_BOARD_CONFIG_A05S -DARM64_NON_APPLE_BRINGUP                  -march=armv8-a+crypto
++MACHINE_FLAGS_ARM64_A05S = -DARM64_BOARD_CONFIG_A05S -DARM64_NON_APPLE_BRINGUP -DNO_LSE_ATOMICS                  -march=armv8-a+crypto -Xclang -target-feature -Xclang -lse
+ 
+ 
+ #
+diff --git a/osfmk/arm/commpage/commpage_asm.s b/osfmk/arm/commpage/commpage_asm.s
+--- a/osfmk/arm/commpage/commpage_asm.s
++++ b/osfmk/arm/commpage/commpage_asm.s
+@@ -269,12 +269,34 @@
+ 	ARM64_STACK_PROLOG
+ 	PUSH_FRAME
+ 
++#if !defined(NO_LSE_ATOMICS)
+ 	mov		w10, wzr		 // unlock value = w10 = 0
+ 	mov		w11, #1			 // locked value = w11 = 1
+ 
+ 	// Try to grab the lock
+ 	casa	w10, w11, [x3]	 // Atomic CAS with acquire barrier
+ 	cbz		w10, Ltrylock_enqueue_success
++#else /* NO_LSE_ATOMICS */
++	// casa is ARMv8.1 LSE and this board is ARMv8.0, so the lock is taken with
++	// the ll/sc pair instead. The board says so through -DNO_LSE_ATOMICS
++	// (makedefs/MakeInc.def), NOT through __ARM_ARCH_8_2__: clang does not
++	// define the __ARM_ARCH_8_x__ macros when it preprocesses assembly, so
++	// that form selects ll/sc on ARMv8.2 boards too (measured on sweet).
++	// This file never includes <pexpert/arm64/board_config.h>, so a board
++	// header macro would not be visible here either; a -D always is.
++	// ldaxr carries casa's acquire semantics, and w10 still ends the sequence
++	// holding the value the lock word had before us, which is what the cbnz
++	// fail test reads (the caller only gets 0/-1 back either way).
++	mov		w11, #1			 // locked value = w11 = 1
++Lpfz_enqueue_trylock:
++	ldaxr	w10, [x3]		 // acquire-exclusive read of the lock word
++	cbnz	w10, Lpfz_enqueue_busy	 // already held: no swap, report failure
++	stxr	w12, w11, [x3]	 // w11 = 1; w12 = 0 when the store landed
++	cbnz	w12, Lpfz_enqueue_trylock	 // reservation lost, retry
++	b	Ltrylock_enqueue_success
++Lpfz_enqueue_busy:
++	clrex				 // drop the reservation we did not spend
++#endif
+ 
+ 	mov		x0, #-1			// Failed
+ 	b Ltrylock_enqueue_exit
+@@ -319,12 +341,25 @@
+ 	ARM64_STACK_PROLOG
+ 	PUSH_FRAME
+ 
++#if !defined(NO_LSE_ATOMICS)
+ 	// Try to grab the lock
+ 	mov		w10, wzr		 // unlock value = w10 = 0
+ 	mov		w11, #1			 // locked value = w11 = 1
+ 
+ 	casa	w10, w11, [x2]	 // Atomic CAS with acquire barrier
+ 	cbz		w10, Ltrylock_dequeue_success
++#else /* NO_LSE_ATOMICS */
++	// ll/sc for the same reason as the enqueue lock above.
++	mov		w11, #1			 // locked value = w11 = 1
++Lpfz_dequeue_trylock:
++	ldaxr	w10, [x2]		 // acquire-exclusive read of the lock word
++	cbnz	w10, Lpfz_dequeue_busy	 // already held: no swap, report failure
++	stxr	w12, w11, [x2]	 // w11 = 1; w12 = 0 when the store landed
++	cbnz	w12, Lpfz_dequeue_trylock	 // reservation lost, retry
++	b	Ltrylock_dequeue_success
++Lpfz_dequeue_busy:
++	clrex				 // drop the reservation we did not spend
++#endif
+ 
+ 	mov		x0, #-1			// Failed
+ 	b Ltrylock_dequeue_exit

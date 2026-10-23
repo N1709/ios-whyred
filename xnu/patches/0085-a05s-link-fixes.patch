@@ -1,0 +1,47 @@
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2180,17 +2180,17 @@
+ 	return dec;
+ }
+ 
+-#if defined(SWEET)
++#if defined(ARM64_NON_APPLE_BRINGUP)
+ /*
+- * sweet: arm_vm_init() calls this unconditionally; Apple's definition (it
+- * enters the PPL/monitor) ships only in the closed per-SoC library. There is
+- * no monitor on SWEET.
++ * non-Apple bring-up: arm_vm_init() calls this unconditionally;
++ * Apple's definition (it enters the PPL/monitor) ships only in the closed
++ * per-SoC library. There is no monitor on sweet or a05s.
+  */
+ void
+ ml_enable_monitor(void)
+ {
+ }
+-#endif /* SWEET */
++#endif /* ARM64_NON_APPLE_BRINGUP */
+ 
+ boolean_t
+ ml_get_timer_pending(void)
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -820,7 +820,7 @@
+ 	return exception_triage_thread(exception, code, codeCnt, thread);
+ }
+ 
+-#if defined(ARM64_BOARD_CONFIG_SWEET)
++#if defined(ARM64_NON_APPLE_BRINGUP)
+ #include <vm/vm_shared_region.h>
+ #include <arm/thread.h>
+ 
+@@ -1040,7 +1040,7 @@
+ 	task_unlock(task);
+ }
+ 
+-#endif /* ARM64_BOARD_CONFIG_SWEET */
++#endif /* ARM64_NON_APPLE_BRINGUP */
+ 
+ kern_return_t
+ bsd_exception(

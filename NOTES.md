@@ -2,6 +2,557 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-22 (read first): second board - a05s, Samsung Galaxy A05s (SM6225) <<<
+
+**Intent:** contribute a Samsung Galaxy A05s port (6 GB RAM variant; Qualcomm
+SM6225 / Snapdragon 680, Kryo 265 = 4x Cortex-A73 + 4x Cortex-A53, **ARMv8.0**)
+next to sweet's. Everything so far is on branch `a05s-machine-config` of the
+fork `smiluredev/ios-sweet`; `origin` (dipa-studio) untouched, **no PR opened**.
+
+**Commits:** `b3a3b09` (0082 = ARMv8.0 machine config) -> `c5b621c` (patch
+headers so `git apply` accepts them) -> `dc77426` (0083 = `ARM64_NON_APPLE_BRINGUP`
+umbrella, crypto pilot) -> `91c0694` (HAS_GIC_V3 off) -> `a1eed06` (staging gate)
+-> `be106b0` (these notes) -> `9d9c0d7` (patch-header hygiene) -> `97d54ea` (0084,
+bundled libpthread for a05s) -> `dc660c5` (these notes again) -> `2fe8685` (0085,
+the two link stubs) -> `5cb0d59` (these notes: object-level proof of the compile
+gate) -> `2581b1e` + `b68e68c` (these notes: link success, sweet no-regression,
+the LSE blocker and its classification) -> `b248631` (0086, no-LSE for a05s,
+built green by `39876050634`) -> `f1fda77` (these notes) -> `2816960` (0086 v2,
+the ll/sc path guarded so sweet keeps its `casa`) -> `7fd0cd2` (these notes: the
+measured clean a05s image) -> `ddb57d8` (these notes: the a05s SoC map off the
+stock AP firmware). **CI verdicts on `7fd0cd2`: A05S `39878176532` `success` with
+the image still clean; SWEET `39880178623` `success` - and that green run is the
+one that proved `2816960`'s guard did not work** (sweet's commpage came out ll/sc
+too, see the block above). `0086` v3 (`-DNO_LSE_ATOMICS`) and the matching `0082`
+comment fix are the answer, committed as `149eec3`. **CI verdicts on `149eec3`:
+both boards green and both verified from their own artifact** - A05S `39883074436`
+and SWEET `39884226578`, see the "v3 verified" block below. Verifying that artifact
+is what surfaced the `mov`-reorder above, so `0086` is now **v4** (same gate,
+upstream block verbatim inside the `#if`); the a05s side of v4 is the instruction
+sequence CI already approved, the sweet side is proven identical without CI.
+
+**CI gate** (`xnu.yml`, macos-14, `machine_config=A05S`, `keep_going=true` ~7 min):
+- `39817165380` failure. *Observed:* 1063 compiles carry
+  `-march=armv8-a+crypto -DARM64_BOARD_CONFIG_A05S -DARM64_NON_APPLE_BRINGUP`;
+  309 `osfmk/` files built including `machine_routines_asm.s`, `start.s`,
+  `locore.s`, with **zero** architecture diagnostics and zero mentions of
+  `casa`/`ldadd`/`stadd`/`PAN` -> the ARMv8.0 ISA surface is fine at the
+  assembler level. Never linked (`make: *** [install] Error 2`); `sleh_irq.s`,
+  `pmap.s`, `arm_init.c`, `cpu_data.c` were never reached. 49 errors, two
+  families, both now fixed:
+  1. 17x undeclared `GICR_*`/`GICD_*`/`ICC_*` in `pexpert/arm/pe_fiq.c`. Cause:
+     0082 set `HAS_GIC_V3 1`, so pe_fiq.c's GICv3 branch compiles; the architected
+     offsets live inside `SWEET.h` (Apple's own precedent is to keep them in the
+     board header - `VMAPPLE.h` has them) and 0017's `#if defined(SWEET)` branch
+     is the one that uses them, so a05s fell into the *generic* branch, which
+     enables **PPI 27 as Group 0** - the numbering and security state 0017 had to
+     replace for Qualcomm (Group 0 = TrustZone, vtimer INTID 19 on sweet).
+     Fix `91c0694`: unset `HAS_GIC_V3` -> `pe_init_fiq()` compiles to its no-op,
+     which is exactly BCM2837's (GICv2) configuration upstream. No guessed
+     register values added.
+  2. 18x `'sweet_bearssl/...' file not found` / `'hfs.h' file not found`.
+     Cause: `0019/0020/0026-stage-*.sh` exit unless `MACHINE_CONFIG == SWEET`, so
+     the shared trees were never staged while 0083's gate compiles the sources
+     that `#include` them. Fix `a1eed06`: gate is `^(SWEET|A05S)$`.
+- `39824908819` (dispatched on `a1eed06`): **no verdict - never ran.** Both
+  attempts (the original and `gh run rerun`) were cancelled exactly 15 min after
+  queuing with 0 steps and an empty runner name: the hosted macOS ARM64 pool was
+  not acquired, the same failure mode as `39810670198` (annotation "The job was
+  not acquired by Runner of type hosted even after multiple attempts"). This is
+  capacity, not the code: `39817165380` did get a runner at 16:48Z and built for
+  6m50s. Treat any future 15-minute zero-step cancellation as the same thing and
+  just re-queue.
+
+**Four distinct spellings for "board-specific" in this series** - any umbrella
+pass has to catch all four, and they do *not* have the same reach:
+1. `#if defined(ARM64_BOARD_CONFIG_SWEET)` (66 added lines / 41 files) - the
+   `-D` from `MACHINE_FLAGS_ARM64_SWEET`, visible in every translation unit.
+2. `#if defined(SWEET)` (58 lines / 22 files) - a `#define` in
+   `pexpert/pexpert/arm64/SWEET.h`, so only visible where that header is included.
+3. `ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)` in `libkern/conf/Makefile.template`.
+4. `[[ "${MACHINE_CONFIG:-}" == SWEET ]] || exit 0` in the three `*-stage-*.sh`.
+
+**0083 promoted only `libkern/crypto` (20 gates) as a pilot.** Remaining
+`ARM64_BOARD_CONFIG_SWEET` clusters: `iokit/Kernel` 10, `bsd/kern` 8, `bsd/dev` 6,
+`iokit/KernelConfigTables.cpp` 4, `bsd/pthread` 3, `bsd/sweet_hfs` 3,
+`pexpert/pexpert` 2, `bsd/vfs` 2, `osfmk/console` 2. `bsd/dev` = UFS
+(0028/0030/0034) and the other sweet SoC drivers: shared *plumbing* can be
+promoted, register-level stuff cannot.
+
+**Per-gate map of the 66 `ARM64_BOARD_CONFIG_SWEET` sites** (from the `+#if` lines
+across `xnu/patches/*.patch`, so it can be re-derived): *shared iOS-userland
+behavior, promote:* 0019 bsd/pthread (4 sites incl. the `ksyn_waitq_element`
+`opaque[48]->[56]` ABI site), 0021/0022 `IOService.cpp` ("no IOStorageFamily"),
+0025/0029/0035 AMFI + `bsd_init.c`, 0031 `vfs_subr.c` rootrw + `bsd/sweet_hfs`,
+0039 `kern_core.c`, 0042 `kern_exec.c`, 0043 `exception.c`/`kern_exit.c`, 0047
+`serial_console.c`, 0048 `bsd/dev/mem.c`, 0049 `IOUserClient.cpp` trace, 0052
+`kpi_vfs.c` RENAME_SWAP, 0059 `kern_mib.c` device-tree names, 0070
+`syscalls.master` + `vm_unix.c` pid_hibernate, 0080 `rtsock.c`/`in.c` net trace,
+0016 `KernelConfigTables.cpp` platform expert. *sweet silicon, must NOT be
+promoted:* `bsd/dev/sweet_ufs.c` (0028/0060/0072 SM7150 UFS host), 0062
+`KernelConfigTables.cpp` HID/battery classes, 0017 `pe_fiq.c`/`protos.h` GIC.
+
+**`0084-a05s-builtin-pthread.patch` (`97d54ea`), generated by
+`~/ios-sweet-work/gen0084.py`, verified with `patch --fuzz=0` and `git apply`,
+5 files, 12 hunks, 8 token changes). It moves the whole libpthread unit: the `ifeq` in
+`bsd/conf/Makefile.template` that supplies the provider's `-I`s, the
+`pthread_internal.h` `opaque` size, and the three `sweet_pthread_*.c` that
+`#include` the staged provider. Those three layers are one decision - promoting
+only some of them compiles cleanly and silently builds an empty provider,
+which is what a05s had before it.
+
+**🎉 ARMv8.0 GATE PASSED AT COMPILE TIME - `39832571893` (head `97d54ea`,
+12 steps, ~13 min of build): 0 compile errors, measured object by object.
+`-march=armv8-a+crypto -DARM64_BOARD_CONFIG_A05S -DARM64_NON_APPLE_BRINGUP`
+appears on 965 `CC` lines - 951 distinct objects, and the shared sources the
+umbrella is supposed to bring are all in the list: the 15 BearSSL crypto files
+(`sweet_aes*`, `sweet_{md5,sha1,sha2big,dec32*,enc32*,enc64*,dec64*}`) next to
+the `corecrypto_*` wrappers that call them, the 3 staged libpthread provider
+files (`sweet_pthread_{init,support,synch}.o`), and 24 built-in HFS objects
+(`hfs_{vfsops,catalog,cnode,journal,...}.o`). Log lines confirm it upstream of
+the compiler: all 84 project patches were `Applying patch`-ed, none skipped (the
+4 `Skipping patch` warnings are blacktop's own `TrustCache`,
+`iobuffermemd_monterey`, `skywalk_sonoma` and `syntax_checker_sonoma`, which the
+sweet builds skip too), plus `Staged ... for A05S` x3.
+The only failure is `ld`:
+
+    Undefined symbols for architecture arm64:
+      "_ml_enable_monitor", referenced from: _arm_vm_init in arm_vm_init.o
+      "_sweet_sample_task", referenced from: _sweet_sample_proc in sweet_sample.o
+
+Both are gates that switch a DEFINITION off while leaving the CALLER on - the
+signature failure mode of a bring-up macro, and invisible until the link:
+- `osfmk/arm64/machine_routines.c`, 0008's short `#if defined(SWEET)`:
+  `ml_enable_monitor()` is the empty stub replacing Apple's closed per-SoC
+  definition; `arm_vm_init()` is common code and calls it unconditionally.
+- `osfmk/kern/exception.c`, 0043's `#if defined(ARM64_BOARD_CONFIG_SWEET)`:
+  0054 later put the `sweet_sample_task()` implementation *inside* that region,
+  while its caller `bsd/dev/sweet_sample.c` is `standard` in bsd/conf/files and
+  has no gate at all.
+
+Fixed by `0085-a05s-link-fixes.patch` (both sites -> `ARM64_NON_APPLE_BRINGUP`).
+Checked before pushing that the promoted exception.c region (220 lines) needs
+nothing sweet-only: `sr_slide` and `mach_header_vm_address` are upstream fields
+(`osfmk/vm/vm_shared_region.h:223`, `osfmk/kern/task.h`), and the two includes it
+relies on travel inside the same region. Also checked the other direction, that
+promoting the caller does not manufacture new undefined symbols: every function
+the region calls is upstream code (`kalloc_data`, the `vm_map_*` family,
+`vm_shared_region_get`, `copyin`, `PE_parse_boot_argn`, `printf`) and its three
+`sweet_*` helpers - `sweet_crash_log`, `sweet_crash_strings`, `sweet_sample_task` -
+are *defined inside the same region*, not imported from another SWEET-gated file. The other two short-`SWEET` sites in
+machine_routines.c (957 firehose console, 1090 deep sleep) stay as they are -
+the file links either way.
+
+**🎉 THE A05S KERNEL LINKS - `39837924808` (head `5cb0d59`, i.e. everything
+through `0085`): conclusion `success`, `🎉 XNU Build
+Done!`. *Observed:* 0 compiler errors, **0 undefined symbols**, the same 951
+objects as the previous run, and the `xnu-kernel` artifact is 59 MB instead of
+the 178 KB a failed link produces: `kernel.development.a05s`, **17,010,168
+bytes**, SHA256 matches the artifact's own `SHA256SUMS`, `file` says
+`Mach-O 64-bit arm64 executable, flags:<NOUNDEFS|PIE>`; the load commands read
+`MH_EXECUTE`, cputype `ARM64`, 26 commands, and the section map is the normal
+XNU one (`__TEXT_EXEC,__text` 8,645,900 bytes at `0xfffffe00072d4000`,
+`__BOOTDATA,__init`, `__KLD`, `__CTF`...). So: an iPhone X 16.7 userland kernel,
+configured as a Snapdragon 680 board, cross-assembled and linked to a bootable
+image format by the same CI that builds sweet. The only `Skipping patch` warnings
+remain blacktop's own 4.
+
+`0085` was the whole fix: `ml_enable_monitor()` and the `exception.c` region that
+holds `sweet_sample_task()`, both promoted to `ARM64_NON_APPLE_BRINGUP`.
+
+**The link is not the end of the story, and the difference is not visible to
+CI:** nothing has executed this image. Tasks #2/#3/#4/#6 (GIC/DT/framebuffer/
+MIDR) are what stand between "links" and "boots" - and so does the LSE finding
+below, a hard blocker for execution on A73/A53 that `0086` fixes at the source
+level and that still needs a CI image to prove.
+
+**🚨 BLOCKER FOUND IN THE LINKED IMAGE: `-march=armv8-a+crypto` does NOT turn
+LSE off.** Measured on the CI's own `kernel.development.a05s.a` (the artifact
+ships every object that went into the link, 1096 members; `objs/` after `ar x`),
+disassembling **function by function** with capstone: 36,304 functions, 1,877,887
+instructions, and **~900 post-ARMv8.0 encodings** in real code. The unambiguous
+LSE atomics are **~700** of them: `ldadd` 395, `ldset` 82, `ldclr` 67,
+`cas/casal/casa/casl` ~87, `ldaddl/ldadda/ldaddh/ldaddlh/ldaddalb/ldaddalh` ~42,
+`swp*` ~17, `ldumax` 8. Spread over ~30 objects including hot paths:
+`ast.o:_ast_taken_user` (12), `pmap.o:_pmap_ro_zone_atomic_op_internal` (13),
+`kern_descrip.o:_sys_fcntl_nocancel` (10), `kernel_tests.o` (many).
+The other ~200 need classifying before they are called fatal or fine, and my
+first pass mislabelled both groups: `stlr` (42) is **ARMv8.0 base ISA** - as are
+`ldxr/stxr/ldaxr`, which `machine_routines_asm.o` uses precisely because 0082's
+ll/sc selection worked - while `ldapr` (165) is FEAT_LRCPC, also newer than
+ARMv8.0, and each of those wants its own verdict.
+Sample (`ast.o`, and this is textbook `os_atomic_clear_bits`, not a mis-decode -
+the old value comes straight back in the `tbz`):
+
+    0x0022c add x8, x19, #0x458
+    0x00230 mov w9, #0x80
+    0x00234 ldclr w9, w8, [x8]        <- ARMv8.1 LSE, undefined on A73/A53
+    0x00238 mov x0, x19
+    0x00240 tbz w21, #9, #0x204
+
+*Observed:* the encodings are there, in objects built under
+`-march=armv8-a+crypto`. Meanwhile `machine_routines_asm.o` contains `ldxr`,
+`ldaxr` and `stxr` and **not one** `casa`/`cas`/`ldadd`, i.e. 0082's
+`__ARM_ARCH_8_2__` reasoning was right for the **preprocessor** - the source-level
+ll/sc selection works - but the **code generator and the assembler still have
+`lse` enabled**, almost certainly by Apple clang 15's Darwin defaults for
+`-target arm64-apple-macos14.0` (that last clause is an inference, not measured).
+Hand-written LSE confirms the assembler side:
+`osfmk/arm/commpage/commpage_asm.s` uses `casa` **unguarded** (lines 276, 326,
+next to `stlr` which is fine) and assembled into `__commpage_text` without a
+diagnostic. There is no existing knob in `makedefs/` for this (grep for
+`target-feature`, `no-lse`, `outline-atomics`: nothing).
+
+Why CI cannot see it: it compiles, it links, `file` calls it a valid arm64
+Mach-O. It faults only when one of those instructions executes, i.e. at runtime,
+on the first atomic flag update.
+
+Two things to do, in order, as patch `0086`:
+1. force the feature off for the board - `MACHINE_FLAGS_ARM64_A05S` needs
+   `-Xclang -target-feature -Xclang -lse` (or the equivalent driver spelling), so
+   clang falls back to ll/sc for every `os_atomic_*`;
+2. that will make `commpage_asm.s` **fail to assemble**, which is the good
+   outcome: it names the remaining hand-written sites, and each one becomes a
+   ll/sc rewrite the way sweet already did for `machine_routines_asm.s`.
+
+Sweet must keep its `+lse`: A76/A55 are ARMv8.2 and the 900 instructions are
+faster there, so this flag belongs to `MACHINE_FLAGS_ARM64_A05S`, not to a common
+place.
+
+**`0086-a05s-no-lse.patch` (`b248631`) does exactly those two things - generated
+and verified locally, NOT yet built by CI.** 62 lines, 6 hunks, 2 files:
+`makedefs/MakeInc.def`'s `MACHINE_FLAGS_ARM64_A05S` line gains
+`-Xclang -target-feature -Xclang -lse` (the sweet line is untouched), and both
+hand-written `casa` sites in `osfmk/arm/commpage/commpage_asm.s`
+(`Lpfz_enqueue_*`, `Lpfz_dequeue_*`) become `ldaxr`/`stxr` loops. The ll/sc form
+keeps the original contract: `w10` still ends the sequence holding the value the
+lock word had before us, so the existing fail test reads the same register, and
+the dead `mov w10, wzr` goes away with the compare operand. Verified with
+`~/ios-sweet-work/gen0086.py` against a fresh `tree0086/PRE` (all 85 earlier
+patches applied): `patch --fuzz=0` clean, `git apply --check` clean, post-apply
+bytes identical to the generated POST, the flag present on A05S only, and exactly
+two `ldaxr` + two `stxr` left in that file with no hand-written LSE anywhere.
+
+**🎉 THE LSE BLOCKER IS CLOSED AT THE INSTRUCTION LEVEL - `39876050634`
+(machine_config=A05S, head `f1fda77`): `success`, and the image is clean.**
+Measured, in this order:
+- **The flag reaches every TU**: `-Xclang -target-feature -Xclang -lse` appears
+  on **1109** compile lines, exactly the same 1109 that carry
+  `-march=armv8-a+crypto`, so nothing on the board silently kept `lse`. (`-lse`
+  is what `TargetParser` calls the feature; there is no `lse` string in any
+  command line to grep for, which is why this had to be checked as a pair of
+  `-Xclang` arguments.)
+- **It still links** (0085's stubs are unaffected, as expected: `MACHINE_FLAGS`
+  feeds `CFLAGS` at `makedefs/MakeInc.def:559` and `SFLAGS` at `:611`, and
+  nothing in `MakeInc.cmd`/`MakeInc.rules`/`LDFLAGS_KERNEL_*`, so the flag is
+  compile-and-assemble only and cannot perturb the link).
+- **`scan_objs2.py` on the new artifact** (`ar x` of
+  `kernel.development.a05s.a`, 964 objects, 36,304 functions, 1,880,012
+  instructions): **zero post-ARMv8.0 encodings.** The blockers, all gone:
+  `ldadd` 395 → 0, and the 165 `ldapr` → 0 too - turning `lse` off also silenced
+  FEAT_LRCPC, so **no `0087` is needed for `ldapr`** (that was the open question
+  in the previous version of this note; answered by measurement).
+- **ll/sc really is what replaced it** (same scanner, explicit mnemonic list):
+  `ldxr` 100 → 752, `stxr` 83 → 721, `ldaxr` 36 → 117, `casa` 18 → 0. Total
+  decoded instructions went *up* by 2,125, which is what a one-instruction LSE
+  atomic becoming a load/modify/store loop looks like.
+- One correction to the earlier classification, applied in `scan_objs2.py`: the
+  42 `stlr` I had counted as "v8.1 LR/acquire" are **ARMv8.0 base ISA**, so they
+  were never violations; with them reclassified the report reads `NONE`.
+  (For the record, so these numbers are reproducible: the artifact is
+  `xnu-kernel` id 12467964873 from that run, unpacked to
+  `~/ios-sweet-work/k0086/`, `ar x`'d into `~/ios-sweet-work/objs0086/` - 964
+  members - and the scanner now takes the directory as `argv[1]` and an optional
+  comma-separated mnemonic list as `argv[2]`. Baseline and post-0086 output:
+  `objs2.txt`, `objs-0086-clean.txt`, `llsc-base.txt`, `llsc-0086.txt`.)
+
+**Second question - "does any other assembly file hand-write LSE?" - is now
+answered from the source, not from CI:** a scan of every `.s`/`.S` in the
+`xnu-buildtree` artifact, reporting each hit with the `#if` that encloses it,
+finds exactly three post-v8.0 atomics in arm64 assembly. At the time I read that
+as "**all three are accounted for**": `commpage_asm.s:276` and `:326` unguarded
+(now handled), and `machine_routines_asm.s:770` already inside
+`#if defined(__ARM_ARCH_8_2__)`. **The second half of that reading was wrong**, and
+the sweet object above is the proof: a `.s` guard on an ISA macro selects the
+ARMv8.0 path on *every* board, because that macro is never defined during assembly
+preprocessing.
+The three `swp` hits in `libsyscall/custom/__{vfork,getpid}.s` are inside
+`#elif defined(__arm__)`/`#elif defined(__x86_64__)` - 32-bit ARM and x86 - so
+they are not compiled here at all. So there was no assembler error waiting to
+happen, and the `-lse`-off naming experiment is moot: 0086 v1 removed the two
+unguarded sites before the assembler ever saw them. *Unverified:* whether the
+integrated assembler would have rejected `casa` under `-target-feature -lse` at
+all - nothing in this session tests that, and v3's `-D` makes the question
+irrelevant, because a05s never hands `casa` to the assembler and sweet never
+compiles with `-lse`.
+
+**`2816960` rewrote that second layer as a guard - and the guard was WRONG.** 0086
+v1 (`b248631`) replaced both `casa` sites with the ll/sc loop *unconditionally*,
+which fixed a05s and quietly took LSE away from sweet as well. v2 tried to keep
+`sweet`'s CAS by writing `#if defined(__ARM_ARCH_8_2__)` around the `casa` and
+`#else` around the `ldaxr`/`stxr` pair, copying what looks like the precedent in
+`osfmk/arm64/machine_routines_asm.s`. The SWEET artifact killed that:
+
+```
+objs/commpage_asm.o       (pre-0086, sweet)   casa=2 ldaxr=0 stxr=0   177 instr
+objs0086v2/commpage_asm.o (v2, A05S run)      casa=0 ldaxr=2 stxr=2   181 instr
+objssweet/commpage_asm.o  (v2, SWEET run)     casa=0 ldaxr=2 stxr=2   181 instr
+```
+
+sweet and a05s produced **the same `__commpage_text`**: the `#else` was taken on an
+ARMv8.2 board, so v2 regressed sweet instead of sparing it.
+
+**The rule, measured twice.** `clang` does not define the `__ARM_ARCH_8_x__`
+feature macros when it preprocesses assembly. Run `39880178623`'s log has the
+actual command line:
+
+```
+clang -c -D__ASSEMBLER__ -DASSEMBLER -DARM64_BOARD_CONFIG_SWEET -DARM64_NON_APPLE_BRINGUP \
+      -march=armv8.2-a+crypto -arch arm64 ... osfmk/arm/commpage/commpage_asm.s
+```
+
+`-march=armv8.2-a+crypto` is right there and `__ARM_ARCH_8_2__` is still not
+defined at the `#if`. The second, independent proof is Apple's own code:
+disassembling `_hw_lck_ticket_reserve_orig_allow_invalid` from **sweet's**
+`machine_routines_asm.o` by symbol span gives `ldaxr=1 stxr=1 clrex=1, casa=0` -
+the `#if defined(__ARM_ARCH_8_2__) && !KASAN_TBI` LSE branch at
+`machine_routines_asm.s:759` is dead on every board, including the Apple ones.
+That is upstream's business, not ours (we never touched it, and it is not a
+regression from any patch in this series), but it means 0082's `A05S.h` comment -
+"without a v8.2 march `__ARM_ARCH_8_2__` stays undefined and
+`machine_routines_asm.s` selects its ll/sc path" - states the right outcome for
+the wrong reason: the macro is undefined there regardless of the march. Fixed in
+`0082` alongside the guard, since a wrong justification in a board header is
+exactly what a reviewer will pick up.
+
+**Two consequences for how gates get written from here.** (1) In `.s` files the
+only reliable board signal is a `-D` from `MACHINE_FLAGS_*` (the log shows those
+`-D`s on the assembler command line, and `start.o` differs between the two boards,
+10968 vs 10608 bytes, while `locore.o` is byte-identical - board-dependent content
+does reach `.s`). A *board-header* macro would not: `commpage_asm.s` includes only
+`<machine/asm.h>`, never `<pexpert/arm64/board_config.h>`. (2) Any C-side gate on
+`__ARM_ARCH_8_x__` is still fine - `cc1` does define those - so 0083/0084/0085 do
+not need revisiting; the a05s image scan below is the evidence.
+
+**0086 v3: `-DNO_LSE_ATOMICS`.** `MACHINE_FLAGS_ARM64_A05S` gains
+`-DNO_LSE_ATOMICS` next to its other `-D`s, and the two sites become
+`#if !defined(NO_LSE_ATOMICS)` (`casa`, untouched) / `#else` (ll/sc). The polarity
+is deliberate: only A05S defines the macro, so sweet **and every Apple config**
+keep today's bytes by construction, without anyone having to enumerate which
+boards have LSE. The ll/sc branch also gains `clrex` on the busy exit, the way the
+same file's PFZ backoff loops already do (those three `clrex` sites are
+pre-existing - which is why `gen0086.py` now counts *deltas* against the PRE
+tree instead of absolute totals). `gen0086.py`'s preprocessor simulation was
+rewritten for the new macro and now also asserts the sweet expansion contains none
+of `ldaxr`, `stxr` or the `Lpfz_*_trylock`/`_busy` labels. Regenerated: 77 lines,
+6 hunks, 2 files, 3 changes; `patch --fuzz=0` and `git apply --check` both clean,
+post-apply content identical to the generated POST.
+
+**What the A05S half of `7fd0cd2` did earn.** A05S run `39878176532`:
+`success`. Its `xnu-kernel` artifact (sha256 `9c8fd8d0...f9e8`,
+`kernel.development.a05s`, 17,026,560 bytes; objects re-extracted from the 132 MB
+`kernel.development.a05s.a` into `~/ios-sweet-work/objs0086v2`, 964 `.o`) scans to
+**`functions: 36304, instructions decoded: 1880012, post-v8.0 encodings: NONE`** -
+the same verdict v1 gave, so the (wrong) guard did not weaken the a05s side: that
+side is correct for the reason 0086 v1 was, namely the `-target-feature -lse`
+flags plus an ll/sc commpage. (The `commpage_asm.o` numbers above come from a
+linear decode of its one code section - segment `__TEXT_EXEC`, section
+`__commpage_text`, 724 bytes at file offset 392; its `__TEXT,__text` is empty, so
+`scan_objs2.py`'s symbol-span walk legitimately sees 0 functions there.)
+**The sweet run is green too** (`39880178623`, `success`, 964 objects extracted to
+`~/ios-sweet-work/objssweet`), which is what exposed the regression above - so the
+byte-identity claim for the shipping board is still unearned, and v3 has to be
+verified from its artifact: sweet's `commpage_asm.o` must decode back to `casa=2
+ldaxr=0`, a05s's to `casa=0 ldaxr=2` **and** the full-image scan must stay clean.
+
+**V3 IS VERIFIED - `149eec3`, both runs, from their own artifacts (2026-10-22).**
+- A05S `39883074436`: `success`. `kernel.development.a05s.a` (132 MB) re-extracted
+  to `~/ios-sweet-work/objs0086v3a05s` - **1096 Mach-O members, 964 `.o` + 132
+  `.cpo`**. Its `commpage_asm.o` `__commpage_text` is 732 bytes (the v1/v2 724 +
+  the two `clrex` we now emit on the busy path) and decodes to `casa=0, ldaxr=2,
+  stxr=2` in exactly the two trylock loops.
+- SWEET `39884226578`: `success`. `~/ios-sweet-work/objsweetv3/commpage_asm.o`
+  `__commpage_text` is 708 bytes and decodes to `casa=2, ldaxr=0, stxr=0`, i.e.
+  the shipping board kept LSE. **But it is not bit-identical to the pre-0086
+  baseline, and v3 was the reason:** diffing the two sections instruction by
+  instruction gives 177 instructions in both and exactly four lines different -
+  `0x88/0x8c` and `0xd4/0xd8`, where `mov w10, wzr` and `mov w11, #1` appear in
+  the opposite order. Cause: 0086 v3 left `mov w11, #1` outside the `#if` and
+  moved `mov w10, wzr` inside it, so sweet's assembler saw a reordered (still
+  correct - the two defs are independent) instruction stream. **Fixed as 0086 v4:**
+  the upstream block now goes *verbatim* inside `#if !defined(NO_LSE_ATOMICS)` and
+  the ll/sc arm carries its own `mov w11, #1`, so the preprocessed text for any
+  board that does not define the macro is upstream's, byte for byte. The generator
+  asserts it statically (`expand(new, no_lse=False) == upstream text` for both
+  sites, plus `old in pre_a`), which proves sweet's assembler input is unchanged
+  without needing a CI run to say so; the a05s instruction sequence is the same
+  one v3 shipped (`mov w11,#1` then the loop), only its position in the source
+  moved.
+- Full-image scan of both boards, with the `scan_all.py` that closes the two gaps
+  `scan_objs2.py` had (it read only `__text`, and only `*.o`, so it had never seen
+  the 132 `.cpo` members or `__commpage_text`/`__init`/`__hib_text`): a05s
+  **44,679 symbolicated functions, 2,162,162 instructions decoded, post-v8.0
+  encodings: NONE.** So the ARMv8.0 verdict is now made on ~28% more instructions
+  and 100% of the archive members than the `7fd0cd2` number it replaces.
+- **Regression and its fix, measured in the linked kernels** (only sweet's artifact
+  ships the linked `kernel.development.sweet`, 17,206,064 bytes, so this is a
+  sweet-side measurement; `isa_check.py` on each): pre-0086 baseline `ksw/` =
+  2,206,952 instructions / `casa=21`; 0086 **v2** `artsweet/` = 2,206,956 /
+  **`casa=19`** (the two commpage `casa` silently became ll/sc, 4 instructions
+  longer); 0086 **v3** `artsweetv3/` = 2,206,952 / `casa=21` and the whole
+  post-v8.0 mnemonic histogram matches the baseline exactly (41 kinds, same counts,
+  including the 188 `ldapr` and 24 `msr/mrs PAN` that a05s must never emit).
+  Byte-identity of the *linked* kernel across runs is not attainable and was not
+  claimed: the CI workdir is baked into the objects (1053 of 1096 sweet objects
+  differ between `objs/` and `objsweetv3/`), so the defensible statement is the
+  one above - identical instruction count and identical per-mnemonic histogram.
+  What v4 does claim, and proves statically rather than from an artifact, is the
+  stronger and more useful thing: **sweet's assembler input for the patched file is
+  upstream's text, unchanged**, so any future difference in sweet's objects can only
+  come from something other than 0086.
+
+**SWEET DOES NOT REGRESS - `39861867773`, same head `5cb0d59`,
+`machine_config=SWEET`: `success` in ~8 min.** It built with
+`-march=armv8.2-a+crypto` (1109 compiles, exactly the same count the A05S run had,
+so the umbrella macro reached the same set of TUs on both boards), shipped a
+60 MB `xnu-kernel` artifact, and produced `kernel.development.sweet`. That is the
+evidence `0083`/`0084`/`0085` are behaviour-preserving for sweet rather than merely
+self-consistent for a05s - which is what makes the branch safe to propose.
+
+**Do not blanket-promote the short-name gates** (`osfmk/arm64` 20: `proc_reg.h`,
+`sleh.c`, `start.s`, `machine_routines.c`, `sweet_early.c`, `arm_vm_init.c`,
+`cpu.c` PSCI; `osfmk/prng` 8 = 0013/0014; `bsd/kern` 7; `iokit/Kernel` 6;
+`pexpert/arm` 5; `osfmk/vm` 4). They sit in files every config compiles, so
+turning them on for a05s silently changes what the kernel does (PSCI SMP, the
+firehose console, the PRNG entropy source), and because `SWEET` is a `#define`
+rather than a `-D`, promotion also depends on a per-file include audit. Do that
+audit against the `xnu-buildtree` artifact, not from the patches.
+
+**That audit is now measured** (from `xnu-buildtree` of run 39832571893, whose
+`.d` files are the compiler's own transitive include lists): of 966 A05S
+translation units, **820 include the board header (`A05S.h`) and exactly 0
+include `SWEET.h`**. So on a05s every short-`SWEET` gate is dead code, in every
+file, whatever the include path. Of the 22 files carrying `defined(SWEET)` (50
+gate lines), the 13 that are actually compiled on A05S - `bsd/kern/kern_trustcache.c`
+6, `osfmk/arm64/{start.s 6, arm_vm_init.c 3, machine_routines.c 3, cpu.c 2,
+sleh.c 1, sweet_early.c 1, sweet_early.h 1}`, `osfmk/kern/debug.c` 1,
+`osfmk/prng/{entropy.c 6, prng_random.c 2}`, `osfmk/vm/vm_kern.c` 4,
+`pexpert/arm/pe_fiq.c` 5 - all sit in that 820, so promoting them changes nothing
+for sweet and switches them on for a05s. The other 8 are
+`iokit/Kernel/arm/Sweet*.cpp` (Framebuffer, CPU, KeyStore, PlatformExpert,
+Surface, Surface.h, Entitlements, Watchdog): no `.d` at all, i.e. the A05S build
+never compiles them, so their gate is a Makefile/`files` question, not a C one.
+The remaining hazard is semantic, not mechanical: `pe_fiq.c`'s 5 gates are the
+GICv3 path 0082 deliberately switched off, and `cpu.c`/`start.s` are PSCI SMP.
+
+**Measuring from the CI log:** `gh run view --log` writes the ESC of every colour
+code as the two literal characters `^` `[`, so a `\x1b\[...m` strip matches
+nothing and `CC` never lines up with its object name (it reported 13 objects here
+once). Strip with `perl -pe 's/\^\[\[[0-9;]*m//g'` first, then
+`grep -oE 'CC +[A-Za-z0-9_.+-]+\.o$'`.
+
+**Measuring the ISA from a Mach-O:** do **not** sweep `__text` linearly. Two traps
+hit here before the number was trustworthy. (1) In an *object* file the section's
+relocation entries are separate from its bytes and `section_64.nreloc` sits at
++60 (`reloff` +56) - reading +84 (`reserved2`) and adding `8*nreloc` to the file
+offset points the disassembler at the reloc table, which decodes as
+`udf`/`.byte`/SVE nonsense. (2) Even over real bytes, capstone's `skipdata`
+resynchronises **mid-instruction** after a data island and then invents
+`casa`/`ldadd` for pointer pairs; the first image sweep "found" 1046 v8.1
+encodings and 2 `fcmla ... z` (SVE - impossible here, so false) that way. The
+trustworthy method is `~/ios-sweet-work/scan_objs2.py`: per object, take the
+function symbols whose `n_sect` is `__text`, disassemble each symbol's own span,
+and read the enclosing instructions to confirm a hit is code (the `ast.o` sample
+above survived that check). Plain `disasm()` without skipdata also stops early -
+34,946 of 2.1M instructions - which is how the first pass under-counted.
+
+**Verification trap worth remembering:** blacktop's `build.sh` applies each patch
+with `git apply --check || warning "Skipping patch"` and **keeps building**, so a
+malformed patch is invisible until a much later, unrelated failure (that is how
+`c5b621c` was found). GNU `patch --fuzz=0` accepts headers that `git apply`
+rejects, so every patch is now checked with both in a real git repo.
+Helpers (outside the repo, not committed): `~/ios-sweet-work/gen0082.py`,
+`gen0083.py` (generate + verify), `checkpatch.py` (dry-run against the real
+pre-state), `simulate-ci-apply.py` (replicates the apply loop; its own docstring
+says why it is *not* faithful - it never runs the staging `.sh`).
+
+**Patch-header hygiene (fixed in the cleanup commit):** the generators used to
+leave a stray `diff -urN PRE/x POST/x` line between the git blocks of
+0082/0083/0084, because `assemble()` appended it to the previous block.
+`git apply` ignores it - CI proved that by applying 0082 - but it is not valid
+diff syntax, so `assemble()` now drops `diff -urN` lines and all three patches
+were regenerated and re-verified (`patch --fuzz=0` + `git apply` in a real repo,
+byte-compare against the generated tree).
+
+**🎉 THE A05S SoC MAP IS MEASURED NOW, NOT GUESSED.** The live DT turned out to be
+unreadable without root: `/sys/firmware/devicetree/base` is traversable but every
+property file is mode `0400` (so `adb pull -a` produced 0 files - and sysfs
+attribute files stat size 0 anyway), `find` on `soc`/`cpus` gets `Permission
+denied`, and `/proc/iomem`, `/proc/cmdline`, `/sys/firmware/fdt`, `dmesg`
+(`klogctl: Permission denied`) and `card0-DSI-1/modes` are all denied on a user
+OS15 build. So the map came from the **stock AP firmware** the user provided
+(`/media/miguelthedrmr/HD/SM-A057M_A057MUBSFDZE2_ZTA/AP_A057MUBSFDZE2_..._MQB110319099_REV00_user_low_ship_MULTI_CERT_meta_OS15`):
+four base DTBs carved out of `vendor_boot.img` (magic `VNDRBOOT`, FDTs at
+`0x918000`/`0x95bde0`/`0x99b4a5`/`0x9cd593`) and two overlays out of `dtbo.img`
+(header `d7b7ab1e`, big-endian FDTs at `0x60` and `0x15f08`), each decoded with
+`dtc 1.7.0 -I dtb -O dts` into `~/a05s-dump/dt/` (`vb-0..3.dtb/.dts`,
+`dtbo-*.dtb`). **`vb-0` is the A05s's own DTB**: `compatible = "qcom,khaje"`,
+`qcom,msm-id = <0x24a 0x10000 0x206 0x10000>`, and `/sys/devices/soc0` on the
+phone reads `soc_id 518` (= `0x206`) / `machine KHAJE`. The overlays declare
+`model = "Samsung A05S PROJECT"`, `qcom,khaje-idp`. What that DT answers, per node
+(all of it observation, none of it inferred from sweet):
+
+- **GICv3 is present, with redistributors.** `interrupt-controller@f200000`,
+  `compatible = "arm,gic-v3"`, `#interrupt-cells = <3>`,
+  `#redistributor-regions = <1>`, `redistributor-stride = <0x0 0x20000>`,
+  `reg = <0xf200000 0x10000 0xf300000 0x100000>` - GICD at `0x0f200000` (64 KiB),
+  8 GICRs at `0x0f300000` stride `0x20000`. `91c0694` had switched `HAS_GIC_V3`
+  off for *compile* reasons; that decision now has real hardware evidence against
+  it and has to be revisited. Secondary: `interrupt-controller@45f01b8`
+  `qcom,mpm-khaje` (`reg = <0x45f01b8 0x1000 0xf111008 0x4 0xf121000 0x1000>`) is
+  the sleep-mode MPM, not the primary controller.
+- **CPU bring-up is PSCI 1.0 over SMC.** `cpus` = 8 x `cpu`,
+  `compatible = "arm,armv8"`, `reg = <0x00 0x00>` .. `<0x00 0x07>`,
+  `enable-method = "psci"`; `psci { compatible = "arm,psci-1.0"; method = "smc"; }`.
+  Not HVC, not spin-table. So the `cpu.c`/`start.s` PSCI gates - deliberately left
+  out of the umbrella in `0082` - are the *correct* thing to promote for a05s.
+- **Which silicon, from `/proc/cpuinfo` MIDRs**: cpu0-3 `0x51af8014` (implementer
+  `0x51` Qualcomm, part `0x801` - Kryo 265 as Cortex-A53 r4p0), cpu4-7
+  `0x411fd090` (implementer `0x41` Arm, part `0xd09` = **Cortex-A73 r1p0**).
+  `Features` = `fp asimd evtstrm aes pmull sha1 sha2 crc32 cpuid` - **no `lse`**,
+  which is the observation `0083`/`0086` rest on. The errata list to write is the
+  Arm A73 r1p0 + A53 r4p0 one, not Apple's.
+- **Console is a Qualcomm GENI UART at `0x04a8c000`.** `chosen/bootargs`
+  contains `console=ttyMSM0,115200n8` (plus `kpti=off ssbd=force-off
+  rcu_nocbs=0-7 panic=5`); the node is `qcom,qup_uart@4a8c000` under
+  `qcom,qupv3_0_geni_se@4ac0000`, and sysfs agrees (`ttyHS0`). So
+  `0x04a8c000 @ 115200` for a05s.
+- **Display**: `qcom,mdss_dsi_ctrl0@5e94000` (`qcom,dsi-ctrl-hw-v2.4`),
+  `qcom,mdss_dsi_phy0@5e94400`, `qcom,mdss_mdp`.
+- **Capture set** (`~/a05s-dump/`, outside git per AGENTS.md): `cpuinfo.txt`,
+  `proc-interrupts.txt` (GICv3 IPI numbering, 8 CPUs online), `soc-devices.txt`
+  (330 `soc/*` units - the node names carry the DT unit addresses quoted above),
+  `sysfs-dev.txt`, `sysfs-memmap.txt`, `dt-top.txt`, `soc0.txt`, `dt/`.
+
+**The one number this session could not measure is DRAM base+size**, and it is
+worth being explicit about why: there is **no `memory@` node in any of the four
+base DTBs** - the Qualcomm platform DTs are boot-injected, the bootloader writes
+the DRAM bank into the DTB it passes to the kernel - and the two places that would
+show the result (`/proc/iomem`, `/memory@` in the live `/sys/firmware/fdt`) are
+root-only. The bounds we *do* have: `MemTotal` 5,724,820 kB, and `/proc/zoneinfo`
+`Node 0, zone DMA32 present 0` / `Normal present 1559552, managed 1431205` at
+`start_pfn 262144` - so usable RAM starts at `0x40000000` (1 GiB) and the low
+1 GiB is device space plus carveouts. That is enough to plan, not enough to put in
+an ADT. Getting it needs either a root path (not available on a user OS15 build)
+or a `dd` of the *live* dtb from a recovery we control.
+
+**Unfinished / open hardware questions:** the trust-zone/secure split of the GIC
+PPIs; whether the Samsung
+bootloader hands over a linear framebuffer; `tools/mkadt.py` is still
+sweet-hardcoded, so there is no a05s ADT yet; A73 r1p0 / A53 r4p0 **errata list**
+not yet written up (the MIDRs themselves are measured now); DRAM base+size (above);
+`MAX_CPU_CLUSTERS 1` (4 A73s still unstarted).
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **STATE at end of 2026-10-18 (evening):**
