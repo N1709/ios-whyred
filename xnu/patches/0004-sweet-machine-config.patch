@@ -363,7 +363,7 @@ diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_
 index 9454534..88e524a 100644
 --- a/pexpert/pexpert/arm64/board_config.h
 +++ b/pexpert/pexpert/arm64/board_config.h
-@@ -97,6 +97,28 @@
+@@ -97,5 +97,27 @@
  #define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
  #endif  /* ARM64_BOARD_CONFIG_BCM2837 */
  
