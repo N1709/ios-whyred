@@ -16,7 +16,7 @@ index 8460893..9a748ea 100644
  MACHINE_FLAGS_ARM64_VMAPPLE = -DARM64_BOARD_CONFIG_VMAPPLE              -march=armv8.5a
  MACHINE_FLAGS_ARM64_BCM2837 = -DARM64_BOARD_CONFIG_BCM2837
 +MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -march=armv8.2-a+crypto
-+MACHINE_FLAGS_ARM64_WHYRED = -DARM64_BOARD_CONFIG_WHYRED              -march=armv8-a+crypto+crc
++MACHINE_FLAGS_ARM64_WHYRED = -DARM64_BOARD_CONFIG_WHYRED -DARM64_BOARD_CONFIG_SWEET -march=armv8-a+crypto+crc
  
  
  #
@@ -219,7 +219,7 @@ new file mode 100644
 index 0000000..a044ad0
 --- /dev/null
 +++ b/pexpert/pexpert/arm64/SWEET.h
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,75 @@
 +/*
 + * Board config for the Redmi Note 10 Pro ("sweet", Qualcomm SM7150 /
 + * Snapdragon 732G): Kryo 470 = Cortex-A76 + Cortex-A55, ARMv8.2, no PAC.
@@ -295,75 +295,32 @@ index 0000000..a044ad0
 +/* End of GICv3 register definitions */
 +
 +#endif /* ! _PEXPERT_ARM64_SWEET_H */
-+diff --git a/pexpert/pexpert/arm64/WHYRED.h b/pexpert/pexpert/arm64/WHYRED.h
-+new file mode 100644
-+index 0000000..a044ad1
-+--- /dev/null
-++++ b/pexpert/pexpert/arm64/WHYRED.h
-+@@ -0,0 +1,70 @@
-++/*
-++ * Board config for Xiaomi Redmi Note 5 / Note 5 Pro ("whyred", Qualcomm SDM636):
-++ * Kryo 260 = 4x Cortex-A73 + 4x Cortex-A53, ARMv8.0, no PAC.
-++ */
-++
-++#ifndef _PEXPERT_ARM64_WHYRED_H
-++#define _PEXPERT_ARM64_WHYRED_H
-++
-++#define NO_MONITOR                1
-++#define NO_ECORE                  1
-++
-++#define WHYRED                    1
-++
-++#define ARM_ARCH_TIMER
-++#define __ARM_ARCH__              8
-++#define __ARM_VMSA__              8
-++#define __ARM_VFP__               4
-++#define __ARM_COHERENT_CACHE__    1
-++#define __ARM_DEBUG__             7
-++#define __ARM_ENABLE_SWAP__       1
-++#define __ARM_V8_CRYPTO_EXTENSIONS__ 1
-++#define __ARM_PAN_AVAILABLE__     1
-++#define __ARM_16K_PG__            1
-++
-++#define HAS_GIC_V3                1
-++
-++#ifndef ASSEMBLER
-++#define PLATFORM_PANIC_LOG_DISABLED
-++#endif /* ! ASSEMBLER */
-++
-++#define SWEET_VTIMER_INTID        19
-++#define SWEET_IPI_SGI             1
-++
-++#define GIC_SPURIOUS_IRQ          1023
-++#define GICR_PE_SIZE              0x20000
-++
-++#define GICD_CTLR                 0x0
-++#define GICD_CTLR_ENABLEGRP1      0x1
-++#define GICD_CTLR_ENABLEGRP1A     0x2
-++#define GICD_CTLR_ARE_NS          0x10
-++#define GICD_CTLR_RWP             0x80000000
-++
-++#define GICR_TYPER                              0x08
-++#define GICR_WAKER                              0x14
-++#define GICR_IGROUPR0                           0x10080
-++#define GICR_ISENABLER0                         0x10100
-++#define GICR_IPRIORITYR0                        0x10400
-++
-++#define GICR_TYPER_AFFINITY_VALUE_SHIFT         32
-++#define GICR_TYPER_LAST                         0x10
-++
-++#define GICR_WAKER_PROCESSORSLEEP               0x2
-++#define GICR_WAKER_CHILDRENASLEEP               0x4
-++
-++#define ICC_CTLR_EOIMODE                        0x2
-++#define ICC_SRE_SRE                             0x1
-++
-++#endif /* ! _PEXPERT_ARM64_WHYRED_H */
+diff --git a/pexpert/pexpert/arm64/WHYRED.h b/pexpert/pexpert/arm64/WHYRED.h
+new file mode 100644
+index 0000000..a044ad1
+--- /dev/null
++++ b/pexpert/pexpert/arm64/WHYRED.h
+@@ -0,0 +1,15 @@
++/*
++ * Board config for Xiaomi Redmi Note 5 / Note 5 Pro ("whyred", Qualcomm SDM636):
++ * Kryo 260 = 4x Cortex-A73 + 4x Cortex-A53, ARMv8.0, no PAC.
++ *
++ * Shares the SWEET code paths; SWEET.h is the single source of board constants.
++ */
++
++#ifndef _PEXPERT_ARM64_WHYRED_H
++#define _PEXPERT_ARM64_WHYRED_H
++
++#include <pexpert/arm64/SWEET.h>
++
++#define WHYRED                    1
++
++#endif /* ! _PEXPERT_ARM64_WHYRED_H */
 diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
 index 9454534..88e524a 100644
 --- a/pexpert/pexpert/arm64/board_config.h
 +++ b/pexpert/pexpert/arm64/board_config.h
-@@ -97,5 +97,27 @@
+@@ -97,5 +97,20 @@
  #define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
  #endif  /* ARM64_BOARD_CONFIG_BCM2837 */
  
@@ -380,13 +337,6 @@ index 9454534..88e524a 100644
 +
 +#ifdef ARM64_BOARD_CONFIG_WHYRED
 +#include <pexpert/arm64/WHYRED.h>
-+
-+#define MAX_L2_CLINE                   6
-+#define MAX_CPUS                       8
-+#define MAX_CPU_CLUSTERS               1
-+
-+#define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
-+
 +#endif  /* ARM64_BOARD_CONFIG_WHYRED */
 +
  #ifdef ARM64_BOARD_CONFIG_VMAPPLE
