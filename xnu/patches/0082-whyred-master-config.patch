@@ -1,0 +1,8 @@
+diff --git a/config/MASTER.arm64.whyred b/config/MASTER.arm64.whyred
+new file mode 120000
+index 0000000..3d4e0de
+--- /dev/null
++++ b/config/MASTER.arm64.whyred
+@@ -0,0 +1 @@
++MASTER.arm64.sweet
+\ No newline at end of file
