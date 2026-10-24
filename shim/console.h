@@ -1,10 +1,15 @@
 #pragma once
 #include <stdint.h>
 
-#define FB_BASE		0x9c000000UL	/* reserved-memory cont_splash_region */
+/* whyred (SDM636 / SDM660): cont_splash_mem at 0x9d400000, 1080x2160 (18:9) */
+#define FB_BASE		0x9d400000UL	/* reserved-memory splash_region@9d400000 */
 #define FB_W		1080
-#define FB_H		2400
+#define FB_H		2160
 #define FB_STRIDE	(FB_W * 4)	/* a8r8g8b8, matches mainline simplefb */
+
+/* fallback / alternate base for sm7150 compatibility */
+#define FB_BASE_SWEET	0x9c000000UL
+#define FB_H_SWEET	2400
 
 #define RED	0xffff0000U
 #define BLUE	0xff0000a0U

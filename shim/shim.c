@@ -11,13 +11,16 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#include "sdhci.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
+/* whyred (SDM636 / SDM660) addresses */
+#define IMEM_RESTART_REASON	0x146bf65cUL	/* sdm660 msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
-#define PSHOLD			0x0c264000UL
+#define PSHOLD			0x010ac000UL	/* sdm660 pshold */
 
 #define GICD_BASE		0x17a00000UL
-#define GICR_BASE		0x17a60000UL
+#define GICR_BASE		0x17b00000UL	/* sdm660/636 GICR base is 0x17b00000 */
+#define GICR_BASE_SWEET		0x17a60000UL
 #define GICR_SIZE		0x100000UL
 #define GICR_PE_SIZE		0x20000UL
 #define GICR_TYPER		0x08
@@ -189,13 +192,25 @@ static void __attribute__((unused)) test_smp(void)
 	uint64_t self = rsr("mpidr_el1") & 0xffffff;
 	int64_t ret[NR_CPUS];
 
-	for (int i = 1; i < NR_CPUS; i++)
-		ret[i] = smc(PSCI_CPU_ON, (uint64_t)i << 8, (uintptr_t)secondary_entry, i);
+	/* SDM636 / Kryo 260 topology: 4x A53 (0x0..0x3), 4x A73 (0x100..0x103) */
+	static const uint64_t mpidr_targets[NR_CPUS] = {
+		0x000, 0x001, 0x002, 0x003,
+		0x100, 0x101, 0x102, 0x103
+	};
+
+	for (int i = 0; i < NR_CPUS; i++) {
+		uint64_t target = mpidr_targets[i];
+		if (target == self) {
+			ret[i] = 0;
+			continue;
+		}
+		ret[i] = smc(PSCI_CPU_ON, target, (uintptr_t)secondary_entry, i);
+	}
 	delay_ms(500);
-	for (int i = 1; i < NR_CPUS; i++) {
+	for (int i = 0; i < NR_CPUS; i++) {
 		char label[] = "CPU0";
 		label[3] = '0' + i;
-		if (((uint64_t)i << 8) == self)
+		if (mpidr_targets[i] == self)
 			con_str(label, "is boot cpu");
 		else
 			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
@@ -209,13 +224,17 @@ static uintptr_t find_gicr(void)
 {
 	uint64_t aff = rsr("mpidr_el1");
 	uint32_t want = (aff & 0xffffff) | ((aff >> 8) & 0xff000000);
+	uintptr_t bases[] = { GICR_BASE, GICR_BASE_SWEET };
 
-	for (uintptr_t off = 0; off < GICR_SIZE; off += GICR_PE_SIZE) {
-		uint64_t typer = rd64(GICR_BASE + off + GICR_TYPER);
-		if ((uint32_t)(typer >> 32) == want)
-			return GICR_BASE + off;
-		if (typer & (1 << 4))	/* Last */
-			break;
+	for (int b = 0; b < 2; b++) {
+		uintptr_t base = bases[b];
+		for (uintptr_t off = 0; off < GICR_SIZE; off += GICR_PE_SIZE) {
+			uint64_t typer = rd64(base + off + GICR_TYPER);
+			if ((uint32_t)(typer >> 32) == want)
+				return base + off;
+			if (typer & (1 << 4))	/* Last */
+				break;
+		}
 	}
 	return 0;
 }
@@ -377,20 +396,20 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", "whyred: xnu loader (SDM636)");
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
 
-	/* No payload: probe the internal UFS while the MMU is still off. */
-	stage = "ufs";
+	/* No payload: probe internal storage (eMMC SDHCI on whyred, UFS on sweet) */
+	stage = "storage";
+	test_sdhci();
 	test_ufs();
 	con_skip();
 	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
-	con_str("UFS", "probe done, reset in ~3 min");
-	delay_ms(180000);
-	reset(20);
+	con_str("STORAGE", "probe done, continuing in 5s");
+	delay_ms(5000);
 
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);
@@ -405,11 +424,11 @@ void shim_main(uint64_t dtb)
 	if (rc)
 		con_clear(RED);
 
-	con_str("SHIM", "sweet milestone 3");
+	con_str("SHIM", "whyred: stage-1 MMU & GICv3");
 	con_skip();
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(rd32(dtb)) : 0);
 	con_hex2("IMAGE", "lo=", mi.img_lo, "hi=", mi.img_hi);
-	con_hex2("MMU", "rc=", rc, "l3=", mi.n_l3);
+	con_hex2("MMU", "rc=", rc, "granule_kb=", mi.page_granule);
 	con_hex2("TTBR0", "pa=", mi.ttbr, "pa_hi=", mi.ttbr >> 32);
 	con_hex("SCTLR0", mi.sctlr_before);
 	con_hex("SCTLR1", mi.sctlr_after);

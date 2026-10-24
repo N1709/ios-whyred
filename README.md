@@ -1,63 +1,72 @@
-# ios-sweet
+# ios-whyred
 
-**Apple's iOS 16 running on a Redmi Note 10 Pro.**
+**Apple's iOS 16 running on the Xiaomi Redmi Note 5 / Note 5 Pro (`whyred`).**
 
-This project ports Apple's open-source XNU kernel (xnu-8796, the iOS 16 generation) to the Xiaomi Redmi Note 10 Pro (`sweet`, Qualcomm SM7150 / Snapdragon 732G). On top of it runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone X**: launchd, the system daemons, backboardd, SpringBoard and the stock apps.
+This project ports Apple's open-source XNU kernel (xnu-8796, iOS 16 era) to the Xiaomi Redmi Note 5 / Note 5 Pro (`whyred`, Qualcomm SDM636 / Snapdragon 636). On top of it runs the unmodified **iOS 16.7.16 (20H392)** userland from the iPhone X (`iPhone10,3` / `D22AP`): launchd, the system daemons, backboardd, SpringBoard, and system applications.
 
-As of **2026-10-18** the phone boots to the **iOS home screen**. You can unlock it, open Settings, pull down Control Center and the notification center, and use the touchscreen and the hardware buttons. Rendering runs entirely on the CPU; there is no GPU driver.
+## Overview & Hardware Mapping
 
-> Experimental bring-up, not a usable phone OS. Many things are missing or stubbed (see below), and Apple's security model is mostly switched off. It installs into the `userdata` partition and so **erases Android's user data**.
+| Subsystem | `whyred` (Snapdragon 636) | Port State |
+| --- | --- | --- |
+| **Bootloader** | Stock unlocked Xiaomi ABL -> `fastboot boot` | `shim-boot.img` boots directly from fastboot memory |
+| **CPU** | 8 cores: Kryo 260 (4x Cortex-A53 Silver + 4x Cortex-A73 Gold) | PSCI SMP, 4KB/16KB page support, GICv3 interrupts, generic timers |
+| **Interrupts** | ARM GICv3 (`0x17a00000` GICD, `0x17b00000` GICR) | Architected virtual timer PPI (INTID 19), IPI SGI 1 |
+| **Memory** | 3 GB / 4 GB / 6 GB LPDDR4X | Kernel DRAM pool from `0xb0000000` |
+| **Display** | 1080×2160 (18:9 aspect ratio), 403 ppi LCD | Bootloader splash framebuffer at `0x9d400000`; IOMobileFramebuffer canvas (1125×2250) |
+| **Storage** | eMMC 5.1 (`sdhc_1` at `0x0c0c4000`) | HFS+ root volume on `userdata` (`/dev/block/bootdevice/by-name/userdata`) |
+| **USB** | Qualcomm DWC3 (`0x0a800000`, QSCRATCH `0x0a8f8800`) | High-speed USB device mode & CDC-ECM network interface (`ue0`) |
+| **Device ID** | iPhone X (`iPhone10,3` / `D22AP`) | Native Hactivation path via `/chosen` security properties |
 
-## What works
-
-| Area | State |
-| --- | --- |
-| Boot | Stock Xiaomi bootloader → `fastboot boot` of our shim → XNU. Nothing is flashed to the boot partitions |
-| CPU | 6 of the 8 cores (the six Cortex-A55s) via PSCI, 16K pages, GICv3 interrupts, timers |
-| Memory | About 3.95 GiB of the upper DDR bank |
-| Storage | Own UFS host driver; the iOS root is a journaled HFS+ volume in `userdata`, read/write |
-| iOS userland | Real iPhone X 16.7.16 root filesystem and shared cache; launchd and the system daemons run |
-| Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`) services; CoreAnimation renders in software; frames are copied into the bootloader's framebuffer. Presented to iOS as an iPhone X panel (1125×2436) |
-| GUI | backboardd, SpringBoard, lock screen, home screen, Control Center, notification center, Settings |
-| Touch | Goodix GT9896 over I²C (GENI), rail enabled through RPMh, delivered as HID digitizer events |
-| Buttons | Power, volume up/down (PMIC through SPMI) as HID consumer keys; lock/wake works |
-| Battery | IOPMPowerSource service (static 100 %, charging icon; real fuel-gauge readout prepared) |
-| Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
-| Activation | Native "Hactivation" path of mobileactivationd, chosen through device-tree security status. No Apple servers involved |
-
-## What does not work (yet)
-
-- **Navigation:** you cannot leave an app (the home gesture and AssistiveTouch Home do nothing yet).
-- **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS or SEP / Face ID.** Daemons for them start and fail or keep relaunching.
-- **No GPU.** Everything is drawn by the CPU at roughly 20–30 fps. The two Cortex-A76 cores are not used yet.
-- **Few apps.** The image has only what is on the system volume. There is no App Store, no Apple ID, and some Settings pages are empty.
-- **Slow boot:** about 4 minutes on the Apple logo.
-- **Security is off:** permissive code signing (AMFI) and sandbox policies, a stub AppleKeyStore, no data protection. Do not put anything personal on it.
-
-## How it boots
+## Boot Architecture
 
 ```
 ABL (stock Xiaomi bootloader, unlocked)
   -> fastboot boot shim-boot.img              (temporary; nothing is flashed to boot)
-     -> shim: own MMU setup, reads the live FDT, loads the payload from the ramdisk
+     -> shim: sets up stage-1 MMU (4KB/16KB adaptive), parses live FDT, loads payload
         -> XNU Mach-O + generated Apple Device Tree (ADT) + boot-args
-           -> XNU -> UFS driver -> HFS+ root in the userdata partition
+           -> XNU -> eMMC / SDHCI driver -> HFS+ root in userdata
               -> dyld + shared cache -> launchd -> daemons -> backboardd + SpringBoard
 ```
 
-There is no serial port (the debug UART is wired as SPI on this board). The kernel draws its console into the framebuffer that ABL leaves at `0x9c000000`, and keeps a persistent 4 MiB log ring at the end of `userdata`. You read that log from OrangeFox recovery with `tools/sweet-log-pull.sh`, so you don't have to film the screen.
+## Quick Start
 
-## How to do it yourself
+### 1. Build the Shim Boot Image
 
-You need a Redmi Note 10 Pro (`sweet`, global or Indian variant, SM7150) with an **unlocked bootloader**, a Linux PC, and a GitHub account for the kernel build. This is the exact path used for the screenshots above; other variants or firmware may need changes. **Everything on `userdata` is lost.** Bootloaders, recovery, modem and persist partitions are never touched.
+Ensure `aarch64-linux-gnu-gcc` and `mkbootimg` are installed:
 
-### 0. Back up the phone
+```bash
+cd shim
+./build.sh
+# -> Outputs out/Image and out/shim-boot.img
+```
 
-Boot OrangeFox (or any recovery with adb root) temporarily and pull at least `persist`, `modemst1`, `modemst2`, `fsg`, `fsc` and `boot`, `dtbo`, `vbmeta`. They contain per-device calibration data. Keep them off git; `.gitignore` already excludes `backup/`, `dtb/` and `recovery/`.
+### 2. Generate Apple Device Tree (ADT)
 
-The shim needs the stock DTB. Unpack your phone's stock `boot.img`:
+Generate the ADT for whyred:
 
-```sh
+```bash
+python3 tools/mkadt.py whyred.adt --device=whyred --dump
+```
+
+### 3. Pack Payload
+
+Combine your XNU Mach-O kernel with the generated ADT:
+
+```bash
+python3 tools/mkpayload.py path/to/kernel.development whyred.adt payload.bin --device=whyred
+cd shim
+./build.sh out/payload.bin
+```
+
+### 4. Boot Device
+
+Boot temporarily via fastboot without modifying internal boot partitions:
+
+```bash
+fastboot boot shim/out/shim-boot.img
+```
+
+Kernel logs can be pulled via recovery using `tools/whyred-log-pull.sh`.
 python3 tools/unpack_bootv2.py backup/boot.img dtb/boot_unpacked   # -> dtb/boot_unpacked/dtb
 ```
 

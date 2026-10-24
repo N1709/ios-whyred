@@ -1,3 +1,23 @@
+# iOS 16 on whyred (Xiaomi Redmi Note 5 / Note 5 Pro, SDM636) - working notes
+
+## Agent handoff / active work (2026-10-24, latest)
+
+### >>> UPDATE 2026-10-24: Ported to whyred (Snapdragon 636 / SDM636) <<<
+
+**HARDWARE MAP & BRING-UP FOR WHYRED:**
+- **SoC:** Qualcomm SDM636 (octa-core Kryo 260: 4x Cortex-A53 Silver + 4x Cortex-A73 Gold).
+- **MMU & Page Size:** Cortex-A53 and Cortex-A73 do NOT support hardware 16KB granule (`ID_AA64MMFR0_EL1` TGran16 = 0). The boot shim (`shim/mmu.c`) now features adaptive page table configuration: dynamically detects `TGran16`; on whyred, sets up 4KB translation tables (36-bit VA, L1 table with 64 entries of 1GB, L2 2MB identity-mapped blocks, L3 4KB pages for image execution).
+- **Interrupt Controller (GICv3):** GICD at `0x17a00000`, GICR at `0x17b00000` (stride `0x20000`, 8 cores = `0x100000`). Architected virtual timer PPI INTID 19.
+- **CPU MPIDR Topology:** Cluster 0: Silver cores at MPIDRs `0x000, 0x001, 0x002, 0x003`. Cluster 1: Gold cores at MPIDRs `0x100, 0x101, 0x102, 0x103`. Handled via PSCI `CPU_ON`.
+- **Display & Framebuffer:** 1080x2160 (18:9 aspect ratio). Bootloader splash framebuffer at `0x9d400000` (`cont_splash_mem`, size `0x23ff000`). Presented to iOS as an iPhone X-class canvas (1125x2250).
+- **Storage:** Qualcomm SDHCI MSM v5 host controller (`sdhc_1` / `mmc@c0c4000`) for eMMC 5.1. iOS root volume resides in `userdata` (`/dev/block/bootdevice/by-name/userdata`). Shim probes eMMC (`shim/sdhci.c`).
+- **USB:** Qualcomm DWC3 at `0x0a800000` with QSCRATCH at `0x0a8f8800`.
+- **Device Tree:** `tools/mkadt.py` outputs whyred Apple Device Tree (`whyred.adt`) with `compatible = 'D22AP|iPhone10,3|xiaomi,whyred|qcom,sdm636|AppleARM'`.
+- **Boot Shim:** `shim/build.sh` successfully compiles `out/Image` and `out/shim-boot.img` for `fastboot boot`.
+- **Site Directory:** Removed as instructed.
+
+---
+
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
 ## Agent handoff / active work (2026-10-15, latest)

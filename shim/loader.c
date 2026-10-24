@@ -67,11 +67,14 @@ static void zero64(uintptr_t dst, uint64_t n)
 
 static int magic_ok(const char *m)
 {
-	static const char want[] = "SWEETXNU";
-	for (int i = 0; i < 8; i++)
-		if (m[i] != want[i])
-			return 0;
-	return 1;
+	static const char want_whyred[] = "WHYRDXNU";
+	static const char want_sweet[]  = "SWEETXNU";
+	int ok_whyred = 1, ok_sweet = 1;
+	for (int i = 0; i < 8; i++) {
+		if (m[i] != want_whyred[i]) ok_whyred = 0;
+		if (m[i] != want_sweet[i]) ok_sweet = 0;
+	}
+	return ok_whyred || ok_sweet;
 }
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
