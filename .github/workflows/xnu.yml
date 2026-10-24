@@ -48,13 +48,6 @@ jobs:
 
           cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
 
-          # Apply WHYRED support patch directly to the fetched XNU tree
-          patch -d dxb/xnu -p1 --forward --batch < xnu/patches/0004-sweet-machine-config.patch || true
-
-          # Guard: ensure WHYRED support exists before make starts
-          grep -n 'WHYRED' dxb/xnu/makedefs/MakeInc.def
-          grep -n 'ARM64_BOARD_CONFIG_WHYRED' dxb/xnu/pexpert/pexpert/arm64/board_config.h
-
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh
           ls dxb/patches
