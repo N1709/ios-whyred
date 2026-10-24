@@ -5,11 +5,11 @@ diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
  
  const char * gIOKernelConfigTables =
      "("
-+#if defined(ARM64_BOARD_CONFIG_SWEET)
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_WHYRED)
 +    "   {"
 +    "     'IOClass'         = SweetPlatformExpert;"
 +    "     'IOProviderClass' = IOPlatformExpertDevice;"
-+    "     'IONameMatch'     = 'xiaomi,sweet';"
++    "     'IONameMatch'     = ('xiaomi,whyred', 'xiaomi,sweet');"
 +    "     'IOProbeScore'    = 10000:32;"
 +    "   },"
 +#endif
@@ -38,7 +38,7 @@ new file mode 100644
 + */
 +#include <pexpert/arm64/board_config.h>
 +
-+#if defined(SWEET)
++#if defined(SWEET) || defined(WHYRED)
 +#include <IOKit/IOPlatformExpert.h>
 +#include <IOKit/IODeviceTreeSupport.h>
 +#include <IOKit/IOLib.h>
