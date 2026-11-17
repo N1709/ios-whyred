@@ -1,7 +1,7 @@
 # Working on ios-whyred
 
 - Read `progres.md` first (live board: what works, latest boot, next actions)
-  and `rules.md` (hard rules for AI agents). Then `STATUS.md`,
+  and `../rules.md` (hard rules for AI agents). Then `STATUS.md`,
   `touch.md` and `history/<newest month>.md`.
 - Read `NOTES.md` for the short handoff index; the full engineering log now
   lives in `history/`, one file per month.
