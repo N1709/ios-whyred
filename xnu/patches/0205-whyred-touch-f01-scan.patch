@@ -1,0 +1,84 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -1141,6 +1141,62 @@
+ }
+ 
+ /*
++ * 0205: the 0204 ring found a perfect F12 record at 0x00dd but the entry the
++ * walk reports above it is not the standard F01 record 00 06 0d 11, so
++ * dsx_f12_program() refused to enable reporting and every later F12 read
++ * returned noise. The walk assumes the vendor's six-byte stride from 0x00e9.
++ * This scan reads the raw register space and searches for the F01 signature
++ * at any byte offset, so an off-by-one walk still finds the truth.
++ */
++#define DSX_F01_SCAN_START	0x0000
++#define DSX_F01_SCAN_END	0x0200
++#define DSX_F01_SCAN_CHUNK	61	/* 58 + 3 overlap bytes */
++
++static int
++dsx_f01_scan(void)
++{
++	uint8_t b[DSX_F01_SCAN_CHUNK + 3];
++	uint16_t addr;
++	int found = -1, i, n;
++
++	for (addr = DSX_F01_SCAN_START; addr < DSX_F01_SCAN_END;
++	    addr = (uint16_t)(addr + DSX_F01_SCAN_CHUNK)) {
++		n = DSX_F01_SCAN_END - addr;
++		if (n > (int)sizeof(b)) {
++			n = (int)sizeof(b);
++		}
++		if (dsx_read_page(DSX_ADDR, addr, b, n) != 0) {
++			printf("WHYRED TOUCH: f01 scan read failed at 0x%04x\n",
++			    addr);
++			break;
++		}
++		dsx_dump("f01scan", addr, b, n);
++		for (i = 0; i + 4 <= n; i++) {
++			if (b[i] == 0x00 && b[i + 1] == 0x06 &&
++			    b[i + 2] == 0x0d && b[i + 3] == 0x11) {
++				found = (int)addr + i;
++				printf("WHYRED TOUCH: F01 record at 0x%04x "
++				    "(00 06 0d 11)\n", found);
++				break;
++			}
++		}
++		if (found >= 0) {
++			break;
++		}
++	}
++	if (found < 0) {
++		printf("WHYRED TOUCH: no 00 06 0d 11 record in "
++		    "0x%04x..0x%04x\n", DSX_F01_SCAN_START, DSX_F01_SCAN_END);
++		return -1;
++	}
++	dsx_f01_query = 0x00;
++	dsx_f01_cmd = 0x06;
++	dsx_f01_ctrl = 0x0d;
++	dsx_f01_data = 0x11;
++	return 0;
++}
++
++/*
+  * After the reset: read the device status, then the PDT, then only touch the
+  * F01 control register if the configured bit is still clear. 0195 wrote it
+  * before scanning and every read afterwards returned zero, so the scan comes
+@@ -1170,6 +1226,17 @@
+ 	if (dsx_early_marks_on) {
+ 		touch_early_mark(16, 0xff606060);	/* dark grey: walk done */
+ 	}
++	/*
++	 * 0205: only pay for the raw scan when the walk's F01 record is not
++	 * the standard one; a correct walk needs no second opinion.
++	 */
++	if (dsx_f01_query != 0x00 || dsx_f01_cmd != 0x06 ||
++	    dsx_f01_ctrl != 0x0d || dsx_f01_data != 0x11) {
++		printf("WHYRED TOUCH: walk F01 %02x %02x %02x %02x is not "
++		    "00 06 0d 11, scanning the raw space\n", dsx_f01_query,
++		    dsx_f01_cmd, dsx_f01_ctrl, dsx_f01_data);
++		(void)dsx_f01_scan();
++	}
+ 	if (!dsx_f01_ctrl) {
+ 		printf("WHYRED TOUCH: no F01 control base, skipping configure\n");
+ 	} else if (dsx_read_page(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1) ==

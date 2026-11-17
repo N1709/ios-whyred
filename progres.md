@@ -71,15 +71,16 @@ sha256 `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`.
 
 ## Next actions (in order)
 
-1. **Fix the F01 gate.** The PDT walk returns `4c 00 13 06 01 12` (a perfect
-   F12 record) at `0x00dd`, but the entry above it at `0x00e3` is
-   `26 0d 04 01 01 81`, which is not `00 06 0d 11`. Either F01 is at another
-   address or the walk shifts by one byte above F12. Print both alignments
-   and let the F01 record decide; do not program F12 until it matches.
-2. Re-run the boot and confirm `f12 ctrl28 <- 0x1f ack` plus a read-back.
-3. Then run the tap test and decode X/Y; wire
-   `SweetHIDTouch::touch(finger, down, x, y)`.
-4. Keep `sweetouchreboot` off while debugging so the phone stays in place.
+1. **0205 is built**: when the walk's F01 is not `00 06 0d 11`, read the raw
+   `0x0000`..`0x0200` space in overlapping chunks and search every byte offset
+   for the signature. Boot the image and read the ring for
+   `F01 record at 0x....`.
+2. If found, confirm `f12 ctrl28 <- 0x1f ack` plus a read-back, then run the
+   tap test.
+3. If not found, the raw `f01scan` rows decide where the PDT really starts.
+4. Decode X/Y and wire `SweetHIDTouch::touch(finger, down, x, y)`.
+5. `sweetouchreboot` is now a knob (`SWEETREBOOT=0`); keep it off while
+   debugging so the phone stays in place.
 
 
 ## Blockers / unknowns
@@ -103,5 +104,8 @@ sha256 `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`.
 
 * Enter fastboot: hold Power ~12 s, wait 5 s, then Power + Volume Down.
 * Enter recovery (OrangeFox): Power + Volume Up. adb serial `611026fa`.
+* Local folder: `ios-whyred` (renamed from `ios-whyred2` on 2026-11-17).
+  The GitHub repo is still `N1709/ios-whyred2`; rename it on GitHub, then
+  update this URL.
 * Push target: `ssh://git@ssh.github.com:443/N1709/ios-whyred2.git`,
   branch `whyred`. Never push to `main`.

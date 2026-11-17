@@ -1590,6 +1590,40 @@ assert 'printf() calls below' in body
 PY2
 echo "ok   0204 removes the %s%s format and keeps one string argument"
 
+echo "== TOUCH: 0205 finds F01 by signature instead of by walk alignment =="
+P205="xnu/patches/0205-whyred-touch-f01-scan.patch"
+python3 tools/check_patch.py "$P205" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_f01_scan' \
+	--added-contains 'bsd/dev/santoni_touch.c:DSX_F01_SCAN_END' \
+	--added-contains 'bsd/dev/santoni_touch.c:b[i + 2] == 0x0d'
+python3 - <<'PY2'
+src = open('xnu/patches/0205-whyred-touch-f01-scan.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The 0204 ring showed a perfect F12 record above an F01 entry that is not
+# 00 06 0d 11, and the gate then refused to program reporting. The scan must
+# look for the four signature bytes at every offset, and must be called only
+# when the walk's F01 is wrong.
+assert 'b[i] == 0x00 && b[i + 1] == 0x06' in body
+assert 'b[i + 2] == 0x0d && b[i + 3] == 0x11' in body
+assert 'dsx_f01_query = 0x00;' in body
+assert 'dsx_f01_cmd = 0x06;' in body
+assert 'dsx_f01_ctrl = 0x0d;' in body
+assert 'dsx_f01_data = 0x11;' in body
+assert 'is not\n' in body or 'is not ' in body
+assert 'dsx_f01_scan();' in body
+
+# Chunks overlap by the signature length minus one so a match cannot be
+# split across a read boundary.
+assert 'DSX_F01_SCAN_CHUNK\t61' in body, body[:400]
+PY2
+grep -Fq 'reboot=${SWEETREBOOT:-1}' tools/build-touch-diag.sh
+grep -Fq 'sweetouchreboot=$reboot' tools/build-touch-diag.sh
+echo "ok   0205 scans for 00 06 0d 11 and SWEETREBOOT can hold the phone"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

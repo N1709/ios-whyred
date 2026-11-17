@@ -43,6 +43,7 @@ the reason it exists. Tests for every row live in `tests/run_tests.sh`.
 | 0202 | Map the whole framebuffer once and paint a lime band in the gap after the early probe's last `printf()` but before its `return`, because the 0201 boot still stopped at the white band: either the probe never returned or the second window never mapped, and one window plus a return band separates those two |
 | 0203 | Make every eMMC phase band bright and split take-over into entry, core check, HC mode, pre-reset snapshot and reset/power/clock, because the boot ended at the lime return band while the first phase colours (navy/olive/dark green) read as black on the panel, so a hang inside take-over looked the same as no phase band at all |
 | 0204 | Fix the early probe's final `printf()`: the format had two `%s` but one string argument, so the second `%s` read the next register (value 1) and `vprintf_internal` took a data abort at `far 0x1` right after the white band - the "hang" every boot showed; print the F12 state with one `%s` and leave the rest to the existing separate lines |
+| 0205 | Find F01 by signature instead of by walk alignment: the 0204 ring showed a perfect F12 record at `0x00dd` above an entry that is not `00 06 0d 11`, so the gate refused to program reporting and the poll read noise; when the walk F01 is wrong, read the raw `0x0000`..`0x0200` space in overlapping chunks, search every byte offset for the four signature bytes, and adopt the address that matches |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

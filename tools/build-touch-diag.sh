@@ -20,6 +20,10 @@
 # probes at 0.9 s and suspends into wakeup-gesture mode at 3.2 s). 0 leaves the
 # late-only probe untouched.
 #
+# SWEETREBOOT=0 drops `sweetouchreboot=1`, so a finished probe does not walk
+# the phone back to fastboot. Keep it off while a boot result is still being
+# read from the panel.
+#
 # DIAG_CONSOLE=1 keeps the kernel text console on the panel instead of muting
 # it, so the probe's own lines can be read on the phone without a recovery
 # round trip. It costs boot time (every line is painted), so it is off by
@@ -30,6 +34,7 @@ cd "$(dirname "$0")/.."
 qup=${SWEETI2C:-1}
 reset=${SWEETRESET:-1}
 early=${SWEETEARLY:-0}
+reboot=${SWEETREBOOT:-1}
 out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}
 
 arg=${1:?usage: build-touch-diag.sh RUN_ID|KERNEL}
@@ -43,7 +48,7 @@ echo "kernel: $kernel ($(stat -c%s "$kernel") bytes)"
 
 # Same command line as the existing diag image: muted console (the ring has
 # the log), the ring on, and the touch probe with its 30 s F12 poll.
-cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=1"
+cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=$reboot"
 if [ "$early" != 0 ]; then
 	cmdl="$cmdl sweetouchearly=$early"
 fi
