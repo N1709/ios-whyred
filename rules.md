@@ -60,7 +60,7 @@ a ring dump.
 * There is no local `unixnu build`; a kernel change costs one CI run
   (~10–15 min). Batch small changes into one patch.
 * `gh` is not installed. Use the REST API:
-  `curl -s "https://api.github.com/repos/N1709/ios-whyred2/actions/runs?branch=whyred&per_page=1"`
+  `curl -s "https://api.github.com/repos/N1709/ios-whyred/actions/runs?branch=whyred&per_page=1"`
   and match `head_sha`.
 * Pack images with `tools/build-touch-diag.sh <run-id>`; pass `SWEETEARLY`,
   `SWEETI2C`, `SWEETRESET`, `SWEETREBOOT`, `OUT_IMAGE`.
@@ -68,7 +68,7 @@ a ring dump.
 
 ## 7. Git
 
-* Push target: `ssh://git@ssh.github.com:443/N1709/ios-whyred2.git`,
+* Push target: `ssh://git@ssh.github.com:443/N1709/ios-whyred.git`,
   branch `whyred`. Never push to `main`.
 * Commit completed work, not half-states.
 * Message = subject plus body. **No `Co-Authored-By:` trailer.**

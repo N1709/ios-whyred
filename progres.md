@@ -105,7 +105,7 @@ sha256 `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`.
 * Enter fastboot: hold Power ~12 s, wait 5 s, then Power + Volume Down.
 * Enter recovery (OrangeFox): Power + Volume Up. adb serial `611026fa`.
 * Local folder: `ios-whyred` (renamed from `ios-whyred2` on 2026-11-17).
-  The GitHub repo is still `N1709/ios-whyred2`; rename it on GitHub, then
+  The GitHub repo is still `N1709/ios-whyred`; rename it on GitHub, then
   update this URL.
-* Push target: `ssh://git@ssh.github.com:443/N1709/ios-whyred2.git`,
+* Push target: `ssh://git@ssh.github.com:443/N1709/ios-whyred.git`,
   branch `whyred`. Never push to `main`.

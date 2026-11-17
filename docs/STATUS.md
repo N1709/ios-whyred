@@ -1,7 +1,7 @@
 # Current status
 
-Last updated: 2026-11-17, kernel `bb17acf` (patch 0204), image
-`shim-boot-touch-early-format.img`.
+Last updated: 2026-11-17, kernel `87b7805` (patch 0205), image
+`shim-boot-touch-f01-scan.img`.
 
 ## One-paragraph summary
 
@@ -30,10 +30,10 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 
 ## Next actions
 
-1. **Fix the F01 gate.** The PDT walk returns a perfect F12 record at
-   `0x00dd` but a non-standard entry at `0x00e3`. Either F01 lives at another
-   address or the stream shifts by one byte above F12. Read both alignments,
-   print them, and let the `00 06 0d 11` record decide.
+1. **0205 searches for F01.** When the walk's F01 is not `00 06 0d 11`, it
+   reads the raw `0x0000`..`0x0200` space in overlapping chunks and looks for
+   the signature at every byte offset. Boot the image and read the ring for
+   `F01 record at 0x....`.
 2. Re-run and confirm `f12 ctrl28 <- 0x1f ack` plus a read-back.
 3. Run the tap test only after that, then decode X/Y and feed
    `SweetHIDTouch::touch(finger, down, x, y)`.
@@ -57,7 +57,7 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 * Every kernel change needs a CI run (~10-15 min); there is no local
   `unixnu build`.
 * Find the run for a commit:
-  `curl -s "https://api.github.com/repos/N1709/ios-whyred2/actions/runs?branch=whyred&per_page=1"`
+  `curl -s "https://api.github.com/repos/N1709/ios-whyred/actions/runs?branch=whyred&per_page=1"`
 * Fetch the kernel and pack a diag image:
   `env SWEETEARLY=1000 SWEETI2C=0 SWEETRESET=0 OUT_IMAGE=images/<name>.img bash tools/build-touch-diag.sh <run-id>`
 * Boot arguments are listed in [`../README.md`](../README.md) and
