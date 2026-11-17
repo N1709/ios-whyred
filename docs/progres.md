@@ -2,7 +2,7 @@
 
 Update this file at every milestone, before handing off, and whenever a boot
 result changes the picture. Keep it short: facts and next actions only. The
-long reasoning belongs in `docs/history/`.
+long reasoning belongs in `history/`.
 
 Last updated: 2026-11-17.
 
@@ -44,7 +44,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | eMMC | SDCC v5, 8-bit high-speed, 122,142,720 sectors, GPT parsed — **works** |
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
 | Display | Kernel framebuffer + 4-bar test visible on panel — **works** |
-| Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `tools/sweet-log-pull.sh` — **works** |
+| Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | launchd starts, then dies at code signing (`CS_KILLED`) — **blocked** |
 | Touch | DSX at `0x20` probed, F12 programmed, tap poll exists — **not in HID yet** |
 
@@ -93,12 +93,12 @@ sha256 `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`.
 
 | Path | Why |
 | --- | --- |
-| `docs/STATUS.md` | Longer status, artifact table |
-| `docs/touch.md` | DSX probe, F12 setup, band map, boot args |
-| `docs/history/` | Full engineering log, per month |
-| `xnu/patches/0204-whyred-touch-early-format.patch` | Latest patch |
-| `tools/build-touch-diag.sh` | Pack a diag image from a CI kernel |
-| `tools/sweet-log-pull.sh` | Pull the ring from SYSTEM |
+| `STATUS.md` | Longer status, artifact table |
+| `touch.md` | DSX probe, F12 setup, band map, boot args |
+| `history/` | Full engineering log, per month |
+| `../xnu/patches/0205-whyred-touch-f01-scan.patch` | Latest patch (0205) |
+| `../tools/build-touch-diag.sh` | Pack a diag image from a CI kernel |
+| `../tools/sweet-log-pull.sh` | Pull the ring from SYSTEM |
 
 ## Device / workflow facts
 

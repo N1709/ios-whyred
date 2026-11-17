@@ -44,7 +44,7 @@ bash tools/sweet-log-pull.sh /tmp/ring.txt
 
 | File | What |
 | --- | --- |
-| [`progres.md`](progres.md) | Live board: what works, latest boot, next actions |
+| [`docs/progres.md`](docs/progres.md) | Live board: what works, latest boot, next actions |
 | [`rules.md`](rules.md) | Hard rules for AI agents |
 | [`docs/STATUS.md`](docs/STATUS.md) | Status, boot result, image hashes |
 | [`docs/touch.md`](docs/touch.md) | Touch probe, F12 setup, panel band map |
@@ -53,7 +53,6 @@ bash tools/sweet-log-pull.sh /tmp/ring.txt
 | [`docs/patches.md`](docs/patches.md) | XNU patch series |
 | [`docs/roadmap.md`](docs/roadmap.md) | What is left |
 | [`docs/history/`](docs/history/) | Engineering log, one file per month |
-| [`RECOVERY.md`](RECOVERY.md) | Returning the phone to Android/OrangeFox |
 
 ## Credits
 

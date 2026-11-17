@@ -1,20 +1,20 @@
 # ios-whyred — working notes
 
 This file used to be the full engineering log (5,700+ lines). It is now the
-short index; the log lives in `docs/history/`, one file per month, newest
-month last.
+short index; the log lives in `history/`, one file per month, newest month last.
 
 ## Start here
 
 | File | What |
 | --- | --- |
 | [`progres.md`](progres.md) | Live board: what works, latest boot, next actions |
+| [`AGENTS.md`](AGENTS.md) | Environment, workflow and reference sources |
 | [`rules.md`](rules.md) | Hard rules for AI agents (safety, git, CI, patch discipline) |
-| [`docs/STATUS.md`](docs/STATUS.md) | Longer status and the latest image hashes |
-| [`docs/touch.md`](docs/touch.md) | Synaptics DSX probe, F12 setup, panel band map |
-| [`docs/patches.md`](docs/patches.md) | The XNU patch series |
-| [`docs/history/2026-11.md`](docs/history/2026-11.md) | Newest month of the log |
-| [`README.md`](README.md) | Overview, what works, how to boot |
+| [`STATUS.md`](STATUS.md) | Longer status and the latest image hashes |
+| [`touch.md`](touch.md) | Synaptics DSX probe, F12 setup, panel band map |
+| [`patches.md`](patches.md) | The XNU patch series |
+| [`history/2026-11.md`](history/2026-11.md) | Newest month of the log |
+| [`README.md`](../README.md) | Overview, what works, how to boot |
 
 ## Project in one paragraph
 
@@ -42,8 +42,8 @@ being brought up, but no touch data reaches HID yet.
 
 | File | Range |
 | --- | --- |
-| [`docs/history/2026-10.md`](docs/history/2026-10.md) | October 2026: shim, CPU, memory, SDHCI/eMMC, root mount, code signing, first touch probes |
-| [`docs/history/2026-11.md`](docs/history/2026-11.md) | November 2026: QUP vs bit-bang, PDT/page-select, F12 reporting, panel bands, 0204 format fix |
+| [`history/2026-10.md`](history/2026-10.md) | October 2026: shim, CPU, memory, SDHCI/eMMC, root mount, code signing, first touch probes |
+| [`history/2026-11.md`](history/2026-11.md) | November 2026: QUP vs bit-bang, PDT/page-select, F12 reporting, panel bands, 0204 format fix |
 
 The archive is append-only. New entries go to the month file and a one-line
 summary goes into `progres.md`.

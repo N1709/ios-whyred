@@ -4,11 +4,11 @@ These are hard rules. If a user request conflicts with them, stop and ask.
 
 ## 1. Read before touching anything
 
-1. `progres.md` — the live board: what works, latest boot, next actions.
+1. `docs/progres.md` — the live board: what works, latest boot, next actions.
 2. `docs/STATUS.md` — longer status and image hashes.
 3. `docs/touch.md` — touch hardware, boot args, panel band map.
 4. `docs/history/<newest month>.md` — why the code looks like it does.
-5. `AGENTS.md` — environment and reference sources.
+5. `docs/AGENTS.md` — environment and reference sources.
 
 Do not re-derive facts that are already recorded. Do not trust a summary over
 a ring dump.
@@ -105,12 +105,12 @@ a ring dump.
 * Use OpenCode for heavy reasoning, hardware register analysis and code
   authoring:
   `opencode run -m opencode/deepseek-v4.1-flash-free --auto "<prompt>"`.
-* `AGENTS.md` carries the workflow; this file carries the hard rules. There
+* `docs/AGENTS.md` carries the workflow; this file carries the hard rules. There
   is no separate Gemini file any more.
 
 ## 11. Handoff
 
-Before stopping, update `progres.md`:
+Before stopping, update `docs/progres.md`:
 
 * the "What works" table,
 * latest kernel commit, image name and sha256,
