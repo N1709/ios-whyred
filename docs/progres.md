@@ -77,7 +77,9 @@ sha256 `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`.
    `F01 record at 0x....`.
 2. If found, confirm `f12 ctrl28 <- 0x1f ack` plus a read-back, then run the
    tap test.
-3. If not found, the raw `f01scan` rows decide where the PDT really starts.
+3. If not found, feed the ring to `../tools/dsx-pdt.py`: it merges the
+   overlapping `f01scan` rows, prints coverage, every `00 06 0d 11` hit and
+   the decoded records around it.
 4. Decode X/Y and wire `SweetHIDTouch::touch(finger, down, x, y)`.
 5. `sweetouchreboot` is now a knob (`SWEETREBOOT=0`); keep it off while
    debugging so the phone stays in place.

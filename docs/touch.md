@@ -22,7 +22,9 @@
 2. Maps TLMM, sets up SDA/SCL, clears the bus.
 3. Bit-bangs I2C at ~50 kHz (byte-identical to the vendor driver, 0188).
 4. Software-resets the DSX, walks the PDT downwards with an addressed page
-   select, and finds F01 (`00 06 0d 11`) and F12.
+   select, and finds F01 (`00 06 0d 11`) and F12. If the walk's F01 is not
+   the standard record, 0205 dumps the raw `0x0000`..`0x0200` space; rebuild
+   it with `tools/dsx-pdt.py <ring>` to see where the table really starts.
 5. Programs F12 reporting: `RPT_DEFAULT (0x1F)` to control 28; the 2D data
    base is `F12 data base + data0 present`.
 6. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result and runs a

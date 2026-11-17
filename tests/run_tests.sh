@@ -1832,4 +1832,31 @@ grep -Fq 'until fastboot boot "$img"; do' tools/touch-cycle.sh
 grep -Fq 'fastboot boot failed (attempt' tools/touch-cycle.sh
 echo "ok   the cycle waits 600 s for fastboot and retries a failed boot"
 
+echo "== TOUCH: dsx-pdt.py rebuilds the 0205 raw scan =="
+# The 0205 dump is split into 61-byte rows with three bytes of overlap. The
+# parser must merge them back, respect the vendor record order (query, cmd,
+# control, data, version, function) and find 00 06 0d 11 at any offset.
+python3 - "$OUT/fake-f01scan.txt" <<'PY'
+import sys
+
+rows = bytearray(b"\xee" * 0x40)
+rows[0x00:0x06] = bytes((0x00, 0x06, 0x0d, 0x11, 0x01, 0x01))
+rows[0x06:0x0c] = bytes((0x26, 0x0d, 0x04, 0x01, 0x01, 0x81))
+rows[0x0c:0x12] = bytes((0x4c, 0x00, 0x13, 0x06, 0x01, 0x12))
+out = []
+for start in range(0, 0x40, 61):
+    chunk = rows[start:start + 64]
+    out.append("WHYRED TOUCH: dsx f01scan [0x%04x] %s" %
+               (start, " ".join("%02x" % b for b in chunk)))
+open(sys.argv[1], "w").write("\n".join(out) + "\n")
+PY
+python3 tools/dsx-pdt.py "$OUT/fake-f01scan.txt" > "$OUT/dsx-pdt.log"
+grep -Fq 'F01 at 0x0000' "$OUT/dsx-pdt.log"
+grep -Fq 'fn=0x12  F12 2D touch' "$OUT/dsx-pdt.log"
+if ! grep -Fq 'coverage: 0x0000..0x003f, 64 bytes, 0 missing' "$OUT/dsx-pdt.log"; then
+	echo "fail tools/dsx-pdt.py did not merge the overlapping chunks"
+	exit 1
+fi
+echo "ok   tools/dsx-pdt.py merges the scan rows and finds F01/F12"
+
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"
