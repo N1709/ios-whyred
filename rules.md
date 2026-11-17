@@ -105,8 +105,8 @@ a ring dump.
 * Use OpenCode for heavy reasoning, hardware register analysis and code
   authoring:
   `opencode run -m opencode/deepseek-v4.1-flash-free --auto "<prompt>"`.
-* The same rule lives in `AGENTS.md`; this is the single source of truth.
-  `GEMINI.md` only points here.
+* `AGENTS.md` carries the workflow; this file carries the hard rules. There
+  is no separate Gemini file any more.
 
 ## 11. Handoff
 
