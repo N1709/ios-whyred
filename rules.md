@@ -106,7 +106,7 @@ a ring dump.
   authoring:
   `opencode run -m opencode/deepseek-v4.1-flash-free --auto "<prompt>"`.
 * The same rule lives in `AGENTS.md`; this is the single source of truth.
-  `.gemini/rules/model-delegation.md` and `GEMINI.md` only point here.
+  `GEMINI.md` only points here.
 
 ## 11. Handoff
 
