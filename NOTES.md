@@ -5723,3 +5723,13 @@ were never reached.
 Band readout rule from now on: white is band 19 and means "early probe
 finished the F12 setup"; the phase bands only start *below* it, after the
 fixed printf returns.
+
+The 0204 image is `images/shim-boot-touch-early-format.img` (kernel
+`bb17acf` from CI run `43548059636`, sha256
+`c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`,
+6,119,424 B), same knobs: `sweetouchearly=1000`, `sweetouchtouch=30`,
+`sweetouchreboot=1`, muted console, 4-bar test. If the early probe now
+returns, the white band is followed by the phase group and the ring gains a
+new flush; the late probe then runs the 30 s F12 tap test after
+`santoni_log_start()`, so tapping the panel during that window records raw
+F12 bytes on SYSTEM.
