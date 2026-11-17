@@ -9,7 +9,10 @@ concrete action, the latest images and their hashes.
 | [`../rules.md`](../rules.md) | Hard rules for AI agents |
 | [`STATUS.md`](STATUS.md) | Current state, next actions, latest images |
 | [`touch.md`](touch.md) | Synaptics DSX probe, F12 setup, panel band map, touch boot args |
-| [`patches.md`](patches.md) | The XNU patch series (moved out of the README) |
+| [`build-and-boot.md`](build-and-boot.md) | Boot path, build steps, repository layout |
+| [`hardware.md`](hardware.md) | SoC, memory, storage, panel and pin facts |
+| [`patches.md`](patches.md) | The XNU patch series |
+| [`roadmap.md`](roadmap.md) | What is left |
 | [`history/`](history/) | Reverse-chronological engineering log, one file per month |
 | [`../README.md`](../README.md) | Overview, what works, how to boot, repository layout |
 | [`../RECOVERY.md`](../RECOVERY.md) | Getting the phone back to Android/OrangeFox |
