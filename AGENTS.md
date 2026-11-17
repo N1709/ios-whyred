@@ -1,10 +1,14 @@
-# Working on ios-sweet
+# Working on ios-whyred
 
-- Read `NOTES.md` before starting; it contains the project goal, hardware facts,
-  current blocker, local artifact locations and the next concrete action.
-- The user switches agents frequently. Update the active handoff in `NOTES.md`
-  after each milestone and before stopping. Record commits, CI run IDs, exact
-  build/boot results and unfinished work. Distinguish observations from guesses.
+- Read `progres.md` first (live board: what works, latest boot, next actions)
+  and `rules.md` (hard rules for AI agents). Then `docs/STATUS.md`,
+  `docs/touch.md` and `docs/history/<newest month>.md`.
+- Read `NOTES.md` for the short handoff index; the full engineering log now
+  lives in `docs/history/`, one file per month.
+- The user switches agents frequently. Update the active handoff in
+  `progres.md` after each milestone and before stopping. Record commits, CI
+  run IDs, exact build/boot results and unfinished work. Distinguish
+  observations from guesses.
 - Commit completed changes. Do **not** add any `Co-Authored-By:` trailer (user request, 2026-10-31); the message is just the subject and body. Use the GitHub REST API for Actions builds and logs (`gh` is not installed).
   Local single-file cross-compiles are useful before spending a CI run.
 - Leverage OpenCode for task delegation:
