@@ -55,7 +55,8 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 ## Build and CI
 
 * Every kernel change needs a CI run (~10-15 min); there is no local
-  `unixnu build`.
+  `unixnu build`. The 0205 kernel (patch `87b7805`, workflow bump
+  `66a8b93`) built green in run `44071902075`.
 * Find the run for a commit:
   `curl -s "https://api.github.com/repos/N1709/ios-whyred/actions/runs?branch=whyred&per_page=1"`
 * Fetch the kernel and pack a diag image:
