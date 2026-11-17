@@ -66,15 +66,17 @@ drivers, and make the Synaptics touch controller work as real HID input.
   GPT, mount, log flusher), except one CMD24 timeout while the poll was
   running.
 
-Image: `shim-boot-touch-early-format.img`,
+Image 0204: `shim-boot-touch-early-format.img`,
 sha256 `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`.
+
+Image 0205: `shim-boot-touch-f01-scan.img` (`SWEETREBOOT=0`),
+sha256 `a0ad381cc88396de3a8f1ce44d35e5ee0becf06e4f8dbf0962856218737593f6`,
+6,119,424 B. Built from CI run `44071902075`; waiting for its ring.
 
 ## Next actions (in order)
 
-1. **0205 is built**: when the walk's F01 is not `00 06 0d 11`, read the raw
-   `0x0000`..`0x0200` space in overlapping chunks and search every byte offset
-   for the signature. Boot the image and read the ring for
-   `F01 record at 0x....`.
+1. **0205 image is ready**: boot it cold, then pull the ring and look for
+   `F01 record at 0x....` and `f12 ctrl28 <- 0x1f ack`.
 2. If found, confirm `f12 ctrl28 <- 0x1f ack` plus a read-back, then run the
    tap test.
 3. If not found, feed the ring to `../tools/dsx-pdt.py`: it merges the

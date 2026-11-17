@@ -69,6 +69,7 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 | Image | Kernel | sha256 | Size |
 | --- | --- | --- | --- |
 | `shim-boot-touch-early-format.img` | `bb17acf` (0204) | `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2` | 6,119,424 B |
+| `shim-boot-touch-f01-scan.img` | `87b7805` + `66a8b93` (0205, run `44071902075`) | `a0ad381cc88396de3a8f1ce44d35e5ee0becf06e4f8dbf0962856218737593f6` | 6,119,424 B |
 | `shim-boot-touch-emmc-phases-bright.img` | `31a73bd` (0203) | `acbdbcbbbb2a5254a49c090ac4d035020c0ba24ddefd7fed5992b06aca07965f` | 6,119,424 B |
 | `shim-boot-touch-early-return.img` | `7afa32e` (0202) | `ca8ad3edfc7baca4b3f401c95b31700ad071f728f89f229e659e885768a2cfdf` | 6,119,424 B |
 | `shim-boot-touch-emmc-phases.img` | `02fce27` (0201) | `bdcdbb8a747c313f08af2c1833d66894538c4b8f3fd36c67420896d6e52e7724` | 6,119,424 B |
