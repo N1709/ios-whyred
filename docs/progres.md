@@ -4,7 +4,7 @@ Update this file at every milestone, before handing off, and whenever a boot
 result changes the picture. Keep it short: facts and next actions only. The
 long reasoning belongs in `history/`.
 
-Last updated: 2026-11-17.
+Last updated: 2026-11-19.
 
 ## What works
 
@@ -48,49 +48,43 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | iOS userland | launchd starts, then dies at code signing (`CS_KILLED`) — **blocked** |
 | Touch | DSX at `0x20` probed, F12 programmed, tap poll exists — **not in HID yet** |
 
-## Latest boot (kernel `bb17acf`, patch 0204)
+## Latest ring (patch 0205)
 
-* 0204 fixed a real panic: the early probe's last `printf()` had two `%s`
-  and one string argument, so `vprintf_internal` aborted at `far 0x1`
-  immediately after the white band.
-* With 0204 the boot passes the probe and reaches the **four-bar test** at
-  the end of storage init. The user also saw a **green band above the bars**.
-* The 0204 ring was pulled: **new log, total 27885 bytes, flush #188**. The
-  early probe ran, walked the PDT, found F12, but **rejected F01**
-  (`PDT is not real (F01 49 07 83 02, want 00 06 0d 11)`), so
-  `dsx_f12_program()` bailed and reporting was never enabled.
-* The late F12 poll therefore read **random bytes** every sample; the green
-  band was that noise, not a finger. The 300 s watchdog then fired
-  (`probe did not finish`) and reset the phone to fastboot.
-* The eMMC path stayed healthy through it (CMD1 `OCR 0xc0ff8080`, 8-bit HS,
-  GPT, mount, log flusher), except one CMD24 timeout while the poll was
-  running.
-
-Image 0204: `shim-boot-touch-early-format.img`,
-sha256 `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2`.
+* 0205 boots; the raw scan shows the part **ignores the address phase** after
+  the first read and streams its whole register map.
+* In that stream the PDT records are back to back and ascending: F34
+  `27 00 09 00 21 34`, **F01 `2f 26 0d 04 01 01`**, F12
+  `4c 00 13 06 01 12`, end marker, then the same 536 bytes again. The
+  `00 06 0d 11` literal does not exist anywhere in it.
+* The real F01 command base is therefore **0x26**, not `0x06`. 0196/0205
+  wrote the reset command `0x01` to `0x06`, which is F12's **data** register,
+  so the controller never left wakeup-gesture/suspend.
+* The walk's garbage `dsx_f01_ctrl=0x83` also sent the F01 control write to
+  `0x0083` (`ack` there is meaningless).
+* `tools/dsx-pdt.py` now reports the F34/F01/F12 triplet and the stream
+  phase.
 
 Image 0205: `shim-boot-touch-f01-scan.img` (`SWEETREBOOT=0`),
 sha256 `a0ad381cc88396de3a8f1ce44d35e5ee0becf06e4f8dbf0962856218737593f6`,
-6,119,424 B. Built from CI run `44071902075`; waiting for its ring.
+6,119,424 B, CI run `44071902075`.
 
 ## Next actions (in order)
 
-1. **0205 image is ready**: boot it cold, then pull the ring and look for
-   `F01 record at 0x....` and `f12 ctrl28 <- 0x1f ack`.
-2. If found, confirm `f12 ctrl28 <- 0x1f ack` plus a read-back, then run the
-   tap test.
-3. If not found, feed the ring to `../tools/dsx-pdt.py`: it merges the
-   overlapping `f01scan` rows, prints coverage, every `00 06 0d 11` hit and
-   the decoded records around it.
+1. **Boot 0206** (`shim-boot-touch-pdt-reset.img`) and read the ring for
+   `pdt stream F01 ... cmd 26`, `addr test`, `address phase`, `f01 cmd
+   0x0026 <- 0x01` and `f12 ctrl28 <- 0x1f`.
+2. If the address phase works, confirm `f12 ctrl28 <- 0x1f ack` with a
+   read-back, then run the tap test.
+3. If it still streams, the next step is documented in `history/2026-11.md`.
 4. Decode X/Y and wire `SweetHIDTouch::touch(finger, down, x, y)`.
-5. `sweetouchreboot` is now a knob (`SWEETREBOOT=0`); keep it off while
-   debugging so the phone stays in place.
+5. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
 
 
 ## Blockers / unknowns
 
 * No finger-down F12 samples yet → the 2D report layout is inferred.
-* Boot stop after the four bars is unidentified until the ring is read.
+* Whether the F01 reset at `0x26` actually leaves LPWG is the open question;
+  the 0206 boot answers it.
 * No local `unixnu build`; every kernel iteration costs a CI run.
 
 ## Key files
@@ -100,7 +94,7 @@ sha256 `a0ad381cc88396de3a8f1ce44d35e5ee0becf06e4f8dbf0962856218737593f6`,
 | `STATUS.md` | Longer status, artifact table |
 | `touch.md` | DSX probe, F12 setup, band map, boot args |
 | `history/` | Full engineering log, per month |
-| `../xnu/patches/0205-whyred-touch-f01-scan.patch` | Latest patch (0205) |
+| `../xnu/patches/0206-whyred-touch-pdt-record-reset.patch` | Latest patch (0206) |
 | `../tools/build-touch-diag.sh` | Pack a diag image from a CI kernel |
 | `../tools/sweet-log-pull.sh` | Pull the ring from SYSTEM |
 

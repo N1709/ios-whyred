@@ -1,0 +1,407 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -987,6 +987,7 @@
+ static int dsx_f12_touch_reg;	/* data base + data0 offset, for polling */
+ static int dsx_f12_report_ctrl;	/* control base + ctrl28 offset */
+ static int dsx_f12_programmed;
++static int dsx_addressable;	/* F34 reads back twice after the reset */
+ static uint64_t dsx_early_start_ms;
+ static uint64_t dsx_early_end_ms;
+ 
+@@ -1019,6 +1020,18 @@
+ 	return dsx_read_f(addr, reg, buf, len, dsx_frame);
+ }
+ 
++/*
++ * The vendor's rmi4_i2c_read() only sends FF <page> when the page changes.
++ * Once the address phase is trusted, every F12 register read must use this
++ * cached form; re-sending the page select before a read is what the 0191
++ * ring showed parks the pointer.
++ */
++static int
++dsx_read_cached(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
++{
++	return dsx_read_f(addr, reg, buf, len, dsx_frame);
++}
++
+ static void
+ dsx_block(const char *label, uint16_t reg, int len)
+ {
+@@ -1046,15 +1059,15 @@
+ }
+ 
+ static int
+-dsx_sw_reset(void)
++dsx_sw_reset_at(uint16_t base)
+ {
+ 	uint8_t cmd = 0x01;
+ 	int rc;
+ 
+ 	dsx_page = -1;
+-	rc = dsx_write_f(DSX_ADDR, DSX_F01_CMD, &cmd, 1);
+-	printf("WHYRED TOUCH: f01 cmd 0x%02x <- 0x01 %s, waiting 300 ms\n",
+-	    DSX_F01_CMD, rc == 0 ? "ack" : "nack");
++	rc = dsx_write_f(DSX_ADDR, base, &cmd, 1);
++	printf("WHYRED TOUCH: f01 cmd 0x%04x <- 0x01 %s, waiting 300 ms\n",
++	    base, rc == 0 ? "ack" : "nack");
+ 	if (rc == 0) {
+ 		delay(300000);
+ 	}
+@@ -1062,6 +1075,21 @@
+ }
+ 
+ /*
++ * The F01 command base is not 0x06 on this unit: the PDT record in the 0205
++ * stream is 2f 26 0d 04 01 01, so the vendor's sw_reset writes 0x01 to 0x26.
++ * 0196 and 0205 wrote it to 0x06, which is F12's *data* register, and the
++ * controller never left its suspended/streaming state. The default is only a
++ * fallback for the case where no stream was found at all.
++ */
++static int
++dsx_sw_reset(void)
++{
++	uint16_t base = (uint16_t)(dsx_f01_cmd ? dsx_f01_cmd : DSX_F01_CMD);
++
++	return dsx_sw_reset_at(base);
++}
++
++/*
+  * The vendor scan: downwards from 0x00E9 in six-byte records, each one an
+  * addressed read. The record is query, command, control, data, interrupt
+  * count/version, function number. Stop at the 0x00 end marker instead of
+@@ -1141,80 +1169,147 @@
+ }
+ 
+ /*
+- * 0205: the 0204 ring found a perfect F12 record at 0x00dd but the entry the
+- * walk reports above it is not the standard F01 record 00 06 0d 11, so
+- * dsx_f12_program() refused to enable reporting and every later F12 read
+- * returned noise. The walk assumes the vendor's six-byte stride from 0x00e9.
+- * This scan reads the raw register space and searches for the F01 signature
+- * at any byte offset, so an off-by-one walk still finds the truth.
++ * 0206: the 0205 ring settles the layout. The part ignores the address phase
++ * after the first read and streams its register map; in that stream the
++ * function records sit back to back in walk order:
++ *
++ *   27 00 09 00 21 34   F34  query 0x27 cmd 0x00 ctrl 0x09 data 0x00
++ *   2f 26 0d 04 01 01   F01  query 0x2f cmd 0x26 ctrl 0x0d data 0x04
++ *   4c 00 13 06 01 12   F12  query 0x4c cmd 0x00 ctrl 0x13 data 0x06
++ *   00 00 00 00 00 00   end of PDT
++ *
++ * The F01 command base on this unit is therefore 0x26, not the RMI4 default
++ * 0x06. 0196 and 0205 wrote the sw_reset command 0x01 to 0x06, which is
++ * F12's data register, so the controller was never reset out of wakeup
++ * gesture mode and every later read kept streaming. Read the whole register
++ * space once, find the F12 record by value and take the nearest F01 record
++ * (function number 0x01, control base 0x0d) as the authority; the record also
++ * appears at its real address when the part is addressable, so the search is
++ * two-sided.
+  */
+-#define DSX_F01_SCAN_START	0x0000
+-#define DSX_F01_SCAN_END	0x0200
+-#define DSX_F01_SCAN_CHUNK	61	/* 58 + 3 overlap bytes */
++#define DSX_STREAM_LEN		0x0200
++#define DSX_STREAM_ROW		64
++
++static uint8_t dsx_pdt_map[DSX_STREAM_LEN];
++
++static const uint8_t dsx_f12_record[6] = {
++	0x4c, 0x00, 0x13, 0x06, 0x01, 0x12
++};
+ 
+ static int
+-dsx_f01_scan(void)
++dsx_pdt_stream(void)
+ {
+-	uint8_t b[DSX_F01_SCAN_CHUNK + 3];
+-	uint16_t addr;
+-	int found = -1, i, n;
++	int f12 = -1, f01 = -1, i, off;
+ 
+-	for (addr = DSX_F01_SCAN_START; addr < DSX_F01_SCAN_END;
+-	    addr = (uint16_t)(addr + DSX_F01_SCAN_CHUNK)) {
+-		n = DSX_F01_SCAN_END - addr;
+-		if (n > (int)sizeof(b)) {
+-			n = (int)sizeof(b);
+-		}
+-		if (dsx_read_page(DSX_ADDR, addr, b, n) != 0) {
+-			printf("WHYRED TOUCH: f01 scan read failed at 0x%04x\n",
+-			    addr);
++	if (dsx_read_page(DSX_ADDR, 0x0000, dsx_pdt_map,
++	    sizeof(dsx_pdt_map)) != 0) {
++		printf("WHYRED TOUCH: pdt stream read failed\n");
++		return -1;
++	}
++	for (off = 0; off < DSX_STREAM_LEN; off += DSX_STREAM_ROW) {
++		dsx_dump("f01scan", (uint16_t)off, dsx_pdt_map + off,
++		    DSX_STREAM_ROW);
++	}
++	for (off = 0; off + 6 <= DSX_STREAM_LEN; off++) {
++		if (memcmp(dsx_pdt_map + off, dsx_f12_record, 6) == 0) {
++			f12 = off;
+ 			break;
+ 		}
+-		dsx_dump("f01scan", addr, b, n);
+-		for (i = 0; i + 4 <= n; i++) {
+-			if (b[i] == 0x00 && b[i + 1] == 0x06 &&
+-			    b[i + 2] == 0x0d && b[i + 3] == 0x11) {
+-				found = (int)addr + i;
+-				printf("WHYRED TOUCH: F01 record at 0x%04x "
+-				    "(00 06 0d 11)\n", found);
+-				break;
+-			}
++	}
++	if (f12 < 0) {
++		printf("WHYRED TOUCH: no F12 record in the pdt stream\n");
++		return -1;
++	}
++	/* Address order puts F01 above F12, the streaming order below. */
++	for (i = f12 - 18; i <= f12 + 18; i++) {
++		if (i < 0 || i + 6 > DSX_STREAM_LEN) {
++			continue;
+ 		}
+-		if (found >= 0) {
++		if ((dsx_pdt_map[i + 5] & 0x3f) == 0x01 &&
++		    dsx_pdt_map[i + 2] == 0x0d) {
++			f01 = i;
+ 			break;
+ 		}
+ 	}
+-	if (found < 0) {
+-		printf("WHYRED TOUCH: no 00 06 0d 11 record in "
+-		    "0x%04x..0x%04x\n", DSX_F01_SCAN_START, DSX_F01_SCAN_END);
++	if (f01 < 0) {
++		printf("WHYRED TOUCH: no F01 record next to F12 in the pdt "
++		    "stream\n");
+ 		return -1;
+ 	}
+-	dsx_f01_query = 0x00;
+-	dsx_f01_cmd = 0x06;
+-	dsx_f01_ctrl = 0x0d;
+-	dsx_f01_data = 0x11;
++	dsx_f01_query = dsx_pdt_map[f01];
++	dsx_f01_cmd = dsx_pdt_map[f01 + 1];
++	dsx_f01_ctrl = dsx_pdt_map[f01 + 2];
++	dsx_f01_data = dsx_pdt_map[f01 + 3];
++	dsx_f12_found = 1;
++	dsx_f12_query = dsx_pdt_map[f12];
++	dsx_f12_ctrl = dsx_pdt_map[f12 + 2];
++	dsx_f12_data = dsx_pdt_map[f12 + 3];
++	dsx_f12_page = 0;
++	printf("WHYRED TOUCH: pdt stream F01 at 0x%04x q %02x cmd %02x "
++	    "ctrl %02x data %02x; F12 at 0x%04x q %02x ctrl %02x data %02x\n",
++	    f01, dsx_f01_query, dsx_f01_cmd, dsx_f01_ctrl, dsx_f01_data,
++	    f12, dsx_f12_query, dsx_f12_ctrl, dsx_f12_data);
+ 	return 0;
+ }
+ 
+ /*
+- * After the reset: read the device status, then the PDT, then only touch the
+- * F01 control register if the configured bit is still clear. 0195 wrote it
+- * before scanning and every read afterwards returned zero, so the scan comes
+- * first this time and the write is verified by a read-back.
++ * Read the F34 entry twice. A part that accepts the address phase returns the
++ * same six bytes both times; a streaming part returns the next six bytes.
++ */
++static int
++dsx_addr_works(void)
++{
++	uint8_t a[DSX_PDT_ENTRY_SIZE], b[DSX_PDT_ENTRY_SIZE];
++
++	if (dsx_read_page(DSX_ADDR, DSX_PDT_START, a, sizeof(a)) != 0 ||
++	    dsx_read_page(DSX_ADDR, DSX_PDT_START, b, sizeof(b)) != 0) {
++		return 0;
++	}
++	printf("WHYRED TOUCH: addr test %02x %02x %02x %02x %02x %02x -> "
++	    "%02x %02x %02x %02x %02x %02x\n", a[0], a[1], a[2], a[3], a[4],
++	    a[5], b[0], b[1], b[2], b[3], b[4], b[5]);
++	return memcmp(a, b, sizeof(a)) == 0 && a[5] == 0x34;
++}
++
++/*
++ * 0206 order: map first, reset second. The stream is the only place the real
++ * F01 command base can be read on this unit, and the reset must go to that
++ * base. If the part is already addressable (cold boot, pointer at 0) no reset
++ * is needed; if it streams, try the record's base first and the RMI4 default
++ * 0x06 second, so one boot distinguishes the two candidates.
+  */
+ static void
+ dsx_reset_probe(void)
+ {
+ 	uint8_t v = 0;
++	int addressable;
+ 
+ 	if (dsx_early_marks_on) {
+ 		touch_early_mark(7, 0xff800000);	/* maroon: before reset */
+ 	}
+-	dsx_sw_reset();
++	if (dsx_pdt_stream() != 0) {
++		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
++	}
++	addressable = dsx_addr_works();
++	if (!addressable) {
++		(void)dsx_sw_reset();
++		addressable = dsx_addr_works();
++	}
++	if (!addressable && dsx_f01_cmd != DSX_F01_CMD) {
++		printf("WHYRED TOUCH: still streaming after reset at 0x%02x, "
++		    "trying the RMI4 default 0x%02x\n", dsx_f01_cmd,
++		    DSX_F01_CMD);
++		(void)dsx_sw_reset_at(DSX_F01_CMD);
++		addressable = dsx_addr_works();
++	}
++	dsx_addressable = addressable;
++	printf("WHYRED TOUCH: address phase %s\n",
++	    addressable ? "works" : "still ignored (streaming)");
+ 	if (dsx_early_marks_on) {
+ 		touch_early_mark(8, 0xff800080);	/* purple: reset command done */
+ 	}
+-	if (dsx_read_page(DSX_ADDR, DSX_F01_DATA, &v, 1) == 0) {
++	if (dsx_read_page(DSX_ADDR, (uint16_t)(dsx_f01_data ?
++	    dsx_f01_data : DSX_F01_DATA), &v, 1) == 0) {
+ 		printf("WHYRED TOUCH: f01 status 0x%02x\n", v);
+ 	} else {
+ 		printf("WHYRED TOUCH: f01 status read failed\n");
+@@ -1222,20 +1317,15 @@
+ 	if (dsx_early_marks_on) {
+ 		touch_early_mark(9, 0xff808080);	/* grey: F01 status read */
+ 	}
+-	dsx_pdt_walk("after reset");
+-	if (dsx_early_marks_on) {
+-		touch_early_mark(16, 0xff606060);	/* dark grey: walk done */
+-	}
+ 	/*
+-	 * 0205: only pay for the raw scan when the walk's F01 record is not
+-	 * the standard one; a correct walk needs no second opinion.
++	 * The walk is authoritative only when the address phase works. While
++	 * the part streams, keep the bases parsed out of the map.
+ 	 */
+-	if (dsx_f01_query != 0x00 || dsx_f01_cmd != 0x06 ||
+-	    dsx_f01_ctrl != 0x0d || dsx_f01_data != 0x11) {
+-		printf("WHYRED TOUCH: walk F01 %02x %02x %02x %02x is not "
+-		    "00 06 0d 11, scanning the raw space\n", dsx_f01_query,
+-		    dsx_f01_cmd, dsx_f01_ctrl, dsx_f01_data);
+-		(void)dsx_f01_scan();
++	if (addressable) {
++		dsx_pdt_walk("after reset");
++	}
++	if (dsx_early_marks_on) {
++		touch_early_mark(16, 0xff606060);	/* dark grey: walk done */
+ 	}
+ 	if (!dsx_f01_ctrl) {
+ 		printf("WHYRED TOUCH: no F01 control base, skipping configure\n");
+@@ -1276,9 +1366,10 @@
+  *   data_base + (data0 present), because data0 carries the wakeup gesture and
+  *   sits before the fingers (the vendor's data1_offset).
+  *
+- * The PDT must prove it is real first: in the only window where the part
+- * answers, F01 is the standard 00/06/0D/11 record. A shifted byte stream can
+- * fake a function number 0x12 and must never be programmed.
++ * 0206: the F01 record on this unit is 2f 26 0d 04 01 01, not the RMI4
++ * default 00 06 0d 11, so the old "not real" gate rejected the only valid
++ * PDT this part ever returns. Accept the record from the map when it has a
++ * command and control base; the F12 record is matched by its full six bytes.
+  */
+ #define DSX_F12_Q5_SIZE	0x04
+ #define DSX_F12_Q5_DATA	0x05
+@@ -1312,15 +1403,19 @@
+ 		printf("WHYRED TOUCH: no F12, skipping reporting setup\n");
+ 		return -1;
+ 	}
+-	if (dsx_f01_query != 0x00 || dsx_f01_cmd != 0x06 ||
+-	    dsx_f01_ctrl != 0x0d || dsx_f01_data != 0x11) {
+-		printf("WHYRED TOUCH: PDT is not real (F01 %02x %02x %02x %02x, "
+-		    "want 00 06 0d 11); not programming F12\n", dsx_f01_query,
+-		    dsx_f01_cmd, dsx_f01_ctrl, dsx_f01_data);
++	/*
++	 * 0206: the stream is the authority while the part is suspended, so
++	 * the only requirement is a structurally valid F01/F12 pair. The MTP
++	 * style literal 00 06 0d 11 does not exist on this unit.
++	 */
++	if (!dsx_f01_cmd || !dsx_f01_ctrl) {
++		printf("WHYRED TOUCH: no usable F01 record (q %02x cmd %02x "
++		    "ctrl %02x data %02x); not programming F12\n",
++		    dsx_f01_query, dsx_f01_cmd, dsx_f01_ctrl, dsx_f01_data);
+ 		return -1;
+ 	}
+ 	q5n = 0;
+-	if (dsx_read_page(DSX_ADDR, (uint16_t)(dsx_f12_query +
++	if (dsx_read_cached(DSX_ADDR, (uint16_t)(dsx_f12_query +
+ 	    DSX_F12_Q5_SIZE), &v, 1) == 0) {
+ 		q5n = v;
+ 	}
+@@ -1331,13 +1426,13 @@
+ 	for (i5 = 0; i5 < (int)sizeof(q5); i5++) {
+ 		q5[i5] = 0;
+ 	}
+-	if (dsx_read_page(DSX_ADDR, (uint16_t)(dsx_f12_query +
++	if (dsx_read_cached(DSX_ADDR, (uint16_t)(dsx_f12_query +
+ 	    DSX_F12_Q5_DATA), q5, q5n) != 0) {
+ 		printf("WHYRED TOUCH: query_5 read failed\n");
+ 		return -1;
+ 	}
+ 	q8n = 0;
+-	if (dsx_read_page(DSX_ADDR, (uint16_t)(dsx_f12_query +
++	if (dsx_read_cached(DSX_ADDR, (uint16_t)(dsx_f12_query +
+ 	    DSX_F12_Q8_SIZE), &v, 1) == 0) {
+ 		q8n = v;
+ 	}
+@@ -1348,7 +1443,7 @@
+ 	for (i8 = 0; i8 < (int)sizeof(q8); i8++) {
+ 		q8[i8] = 0;
+ 	}
+-	if (dsx_read_page(DSX_ADDR, (uint16_t)(dsx_f12_query +
++	if (dsx_read_cached(DSX_ADDR, (uint16_t)(dsx_f12_query +
+ 	    DSX_F12_Q8_DATA), q8, q8n) != 0) {
+ 		printf("WHYRED TOUCH: query_8 read failed\n");
+ 		return -1;
+@@ -1368,8 +1463,8 @@
+ 	rc = dsx_write_f(DSX_ADDR, (uint16_t)dsx_f12_report_ctrl, &rpt, 1);
+ 	printf("WHYRED TOUCH: f12 ctrl28 <- 0x%02x %s\n", rpt,
+ 	    rc == 0 ? "ack" : "nack");
+-	if (rc == 0 && dsx_read_page(DSX_ADDR, (uint16_t)dsx_f12_report_ctrl,
+-	    &v, 1) == 0) {
++	if (rc == 0 && dsx_read_cached(DSX_ADDR,
++	    (uint16_t)dsx_f12_report_ctrl, &v, 1) == 0) {
+ 		printf("WHYRED TOUCH: f12 ctrl28 readback 0x%02x\n", v);
+ 	}
+ 	dsx_f12_programmed = (rc == 0);
+@@ -1377,8 +1472,8 @@
+ }
+ 
+ /*
+- * Poll F12's 2D data block. The base is whatever the scan found; every sample
+- * re-sends the page select, like synaptics_rmi4_i2c_read() does.
++ * Poll F12's 2D data block. The base is whatever the map/walk found; each
++ * sample uses the cached page, like synaptics_rmi4_i2c_read() does.
+  */
+ static void
+ dsx_f12_poll(void)
+@@ -1395,7 +1490,7 @@
+ 	    (uint16_t)((dsx_f12_page << 8) | dsx_f12_data);
+ 	printf("WHYRED TOUCH: poll F12 0x%04x, 12 samples\n", reg);
+ 	for (i = 0; i < 12; i++) {
+-		if (dsx_read_page(DSX_ADDR, reg, b, sizeof(b)) != 0) {
++		if (dsx_read_cached(DSX_ADDR, reg, b, sizeof(b)) != 0) {
+ 			printf("WHYRED TOUCH: poll %d read failed\n", i);
+ 			break;
+ 		}
+@@ -1888,7 +1983,7 @@
+ 	dsx_early_marks_on = 0;
+ 	touch_early_mark(18, 0xff404040);	/* charcoal: probe returned */
+ 	dsx_early_found = dsx_f12_found;
+-	if (dsx_f12_found) {
++	if (dsx_addressable && dsx_f12_found) {
+ 		(void)dsx_f12_program();
+ 	}
+ 	touch_early_mark(19, 0xffffffff);	/* white: done */
+@@ -2049,7 +2144,7 @@
+ 		} else {
+ 			dsx_reset_probe();
+ 		}
+-		if (!dsx_early_ran && dsx_f12_found) {
++		if (!dsx_early_ran && dsx_addressable && dsx_f12_found) {
+ 			(void)dsx_f12_program();
+ 		}
+ 		dsx_f12_poll();

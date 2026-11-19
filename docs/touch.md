@@ -21,13 +21,19 @@
    `1000`).
 2. Maps TLMM, sets up SDA/SCL, clears the bus.
 3. Bit-bangs I2C at ~50 kHz (byte-identical to the vendor driver, 0188).
-4. Software-resets the DSX, walks the PDT downwards with an addressed page
-   select, and finds F01 (`00 06 0d 11`) and F12. If the walk's F01 is not
-   the standard record, 0205 dumps the raw `0x0000`..`0x0200` space; rebuild
-   it with `tools/dsx-pdt.py <ring>` to see where the table really starts.
-5. Programs F12 reporting: `RPT_DEFAULT (0x1F)` to control 28; the 2D data
+4. Reads the streamed register map once. This part ignores the address phase
+   after the first read, so the PDT records arrive back to back: F34, F01
+   `2f 26 0d 04 01 01`, F12 `4c 00 13 06 01 12`. 0206 takes the F01 command
+   base (`0x26`) from that record; the RMI4 default `00 06 0d 11` does not
+   exist on this unit. `tools/dsx-pdt.py <ring>` reports the triplet and the
+   stream phase.
+5. Software-resets the part at that command base, then reads F34 twice to
+   test whether the address phase works. Only an addressable part is walked
+   and gets F12 programmed; a still-streaming part tries the `0x06` base
+   once more first.
+6. Programs F12 reporting: `RPT_DEFAULT (0x1F)` to control 28; the 2D data
    base is `F12 data base + data0 present`.
-6. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result and runs a
+7. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result and runs a
    `sweetouchtouch` second poll of the F12 2D block.
 
 The F12 query block read on this unit:

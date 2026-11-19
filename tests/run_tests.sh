@@ -1624,6 +1624,51 @@ grep -Fq 'reboot=${SWEETREBOOT:-1}' tools/build-touch-diag.sh
 grep -Fq 'sweetouchreboot=$reboot' tools/build-touch-diag.sh
 echo "ok   0205 scans for 00 06 0d 11 and SWEETREBOOT can hold the phone"
 
+echo "== TOUCH: 0206 takes the F01 base from the PDT stream =="
+P206="xnu/patches/0206-whyred-touch-pdt-record-reset.patch"
+python3 tools/check_patch.py "$P206" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_pdt_stream' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_addr_works' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_sw_reset_at' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_read_cached' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_addressable'
+python3 - <<'PY2'
+src = open('xnu/patches/0206-whyred-touch-pdt-record-reset.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+gone = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('-') and not l.startswith('---'))
+
+# The 0205 ring put 27 00 09 00 21 34 / 2f 26 0d 04 01 01 / 4c 00 13 06
+# 01 12 back to back in the stream, so the real F01 command base is 0x26.
+# 0205 wrote the reset to 0x06, which is F12's data register.
+assert '0x4c, 0x00, 0x13, 0x06, 0x01, 0x12' in body
+assert '2f 26 0d 04 01 01' in body
+assert 'dsx_f01_cmd ? dsx_f01_cmd : DSX_F01_CMD' in body
+assert 'dsx_f01_cmd = dsx_pdt_map[f01 + 1];' in body
+assert 'dsx_f01_ctrl = dsx_pdt_map[f01 + 2];' in body
+
+# The map must be parsed before the reset, because the reset target comes
+# from it, and the walk is only trusted when the address phase works.
+assert 'if (dsx_pdt_stream() != 0) {' in body
+assert 'addressable = dsx_addr_works();' in body
+assert 'if (addressable) {\n\t\tdsx_pdt_walk("after reset");' in body
+assert 'a[5] == 0x34' in body
+
+# F12 may only be programmed while the part honours the address phase; the
+# streaming F12 "query" bytes in 0205 were the data register 0x06.
+assert 'if (dsx_addressable && dsx_f12_found) {' in body
+assert '!dsx_early_ran && dsx_addressable && dsx_f12_found' in body
+
+# The old literals must be gone: they rejected this unit's only real PDT.
+assert 'scanning the raw space' in gone
+assert 'PDT is not real' not in body
+assert 'dsx_f01_scan' not in body
+PY2
+echo "ok   0206 parses the PDT stream, resets at the record base and gates F12"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
@@ -1858,5 +1903,31 @@ if ! grep -Fq 'coverage: 0x0000..0x003f, 64 bytes, 0 missing' "$OUT/dsx-pdt.log"
 	exit 1
 fi
 echo "ok   tools/dsx-pdt.py merges the scan rows and finds F01/F12"
+
+echo "== TOUCH: dsx-pdt.py reports the PDT triplet and stream phase =="
+# 0206 reads the whole map in one transfer, so the rows are 64 bytes and the
+# three records sit back to back. The parser must name the streamed bases.
+python3 - "$OUT/fake-pdt-stream.txt" <<'PY'
+import sys
+
+blob = bytearray(b"\xee" * 0x100)
+blob[0x40:0x46] = bytes((0x27, 0x00, 0x09, 0x00, 0x21, 0x34))
+blob[0x46:0x4c] = bytes((0x2f, 0x26, 0x0d, 0x04, 0x01, 0x01))
+blob[0x4c:0x52] = bytes((0x4c, 0x00, 0x13, 0x06, 0x01, 0x12))
+blob[0x52:0x58] = bytes(6)
+out = []
+for start in range(0, 0x100, 64):
+    out.append("WHYRED TOUCH: dsx f01scan [0x%04x] %s" %
+               (start, " ".join("%02x" % b for b in blob[start:start + 64])))
+open(sys.argv[1], "w").write("\n".join(out) + "\n")
+PY
+python3 tools/dsx-pdt.py "$OUT/fake-pdt-stream.txt" > "$OUT/dsx-pdt-stream.log"
+grep -Fq 'PDT triplet in walk order:' "$OUT/dsx-pdt-stream.log"
+grep -Fq 'F01 at 0x0046: q=0x2f cmd=0x26 ctl=0x0d data=0x04' "$OUT/dsx-pdt-stream.log"
+grep -Fq 'F12 at 0x004c: q=0x4c cmd=0x00 ctl=0x13 data=0x06' "$OUT/dsx-pdt-stream.log"
+grep -Fq 'F34 at 0x0040:' "$OUT/dsx-pdt-stream.log"
+grep -Fq 'use: F01 cmd=0x26 ctrl=0x0d data=0x04; F12 query=0x4c ctrl=0x13 data=0x06' \
+	"$OUT/dsx-pdt-stream.log"
+echo "ok   tools/dsx-pdt.py names the streamed F01/F12 bases"
 
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"

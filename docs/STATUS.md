@@ -1,7 +1,7 @@
 # Current status
 
-Last updated: 2026-11-17, kernel `87b7805` (patch 0205), image
-`shim-boot-touch-f01-scan.img`.
+Last updated: 2026-11-19, patch 0206 (PDT record reset). Latest image built
+from CI; see the artifact table.
 
 ## One-paragraph summary
 
@@ -12,40 +12,43 @@ The **touch controller** (Synaptics DSX at I2C `0x20`) is probed before eMMC,
 its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 **not yet wired into HID**, so SpringBoard still ignores the panel.
 
-## Where the boot stands (2026-11-17)
+## Where the boot stands (2026-11-19)
 
-* 0204 fixed the last early-probe `printf()` (`%s%s` with one argument). The
-  boot now passes the white band and reaches the **four-bar test**, which is
-  painted at the end of the storage init.
-* The 0204 ring was pulled: **new log, total 27885 bytes, flush #188**. The
-  early probe ran at 64.7 s kernel time, reset the DSX, walked the PDT and
-  found the F12 record (`4c 00 13 06 01 12` at `0x00dd`), but rejected the F01
-  record (`26 0d 04 01 01 81`, expected `00 06 0d 11`), so
-  `dsx_f12_program()` bailed out and **reporting was never enabled**.
-* The late F12 poll then read random bytes on every sample; the green band
-  above the four bars was that noise, not a finger. The 300 s watchdog fired
-  (`probe did not finish`) and reset the phone to fastboot.
-* Everything else stayed healthy: CMD1 `OCR 0xc0ff8080`, 8-bit HS, GPT,
-  HFSX mount, log flusher. One CMD24 timeout occurred while the poll ran.
+* The **0205 ring** answered the question: this part ignores the address
+  phase after the first read and streams its register map. Reconstructed,
+  the 536-byte stream is F34 `27 00 09 00 21 34`, **F01
+  `2f 26 0d 04 01 01`**, F12 `4c 00 13 06 01 12`, an end marker, then the
+  same bytes again.
+* So the real F01 command base is **0x26**, not the RMI4 default `0x06`.
+  Every reset since 0196 wrote `0x01` to `0x06`, which is F12's **data**
+  register; the chip never left LPWG/suspend. The F01 control write also
+  went to the walk's garbage `0x0083`.
+* The `00 06 0d 11` literal does not exist in that stream, so gating on it
+  rejected the only valid PDT this unit returns.
+* **0206** parses the stream first (F12 record by full six bytes, nearest
+  F01 record with control `0x0d`), resets at the record's command base,
+  verifies the address phase by reading F34 twice, and only then walks,
+  programs F12 and polls. The RMI4 `0x06` base is tried as a fallback so one
+  boot distinguishes both candidates.
+* eMMC, GPT, HFSX mount, log flusher and the four-bar test all stayed
+  healthy through 0204/0205.
 
 ## Next actions
 
-1. **0205 searches for F01.** When the walk's F01 is not `00 06 0d 11`, it
-   reads the raw `0x0000`..`0x0200` space in overlapping chunks and looks for
-   the signature at every byte offset. Boot the image and read the ring for
-   `F01 record at 0x....`.
-2. Re-run and confirm `f12 ctrl28 <- 0x1f ack` plus a read-back.
-3. Run the tap test only after that, then decode X/Y and feed
-   `SweetHIDTouch::touch(finger, down, x, y)`.
-4. Turn `sweetouchreboot` off while debugging so the phone stays put.
+1. **Boot 0206** and read the ring for `pdt stream F01 ... cmd 26`,
+   `addr test`, `address phase works`, `f01 cmd 0x0026 <- 0x01` and
+   `f12 ctrl28 <- 0x1f`.
+2. Confirm the ctrl28 read-back, then run the tap test.
+3. Decode X/Y and feed `SweetHIDTouch::touch(finger, down, x, y)`.
+4. Keep `sweetouchreboot` off while debugging so the phone stays put.
 
 ## Touch: what is known
 
 * The part is the **Synaptics DSX/RMI4 at `0x20`**, not the Novatek variant.
-* Early probe (before eMMC) is the only window where it answers; it resets
-  the part, walks the PDT, finds F01 (`00 06 0d 11`) and F12, and programs
-  F12 reporting (`RPT_DEFAULT 0x1F` to control 28). Touch data base:
-  `F12 data base + data0 present`.
+* Early probe (before eMMC) is the only window where it answers; it parses
+  the streamed PDT, resets the part at the record's F01 command base (`0x26`
+  on this unit), and programs F12 reporting (`RPT_DEFAULT 0x1F` to control
+  28). Touch data base: `F12 data base + data0 present`.
 * F12 query block, from the 0201 ring:
   `01 01 01 02 00 00 00 0e 0f 15 c7 11 12 33 13 49 07 83 02 0b 81 04 03`
 * The bit-banged I2C is byte-identical to the vendor driver (0188).
@@ -56,7 +59,7 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 
 * Every kernel change needs a CI run (~10-15 min); there is no local
   `unixnu build`. The 0205 kernel (patch `87b7805`, workflow bump
-  `66a8b93`) built green in run `44071902075`.
+  `66a8b93`) built green in run `44071902075`; 0206 needs a fresh run.
 * Find the run for a commit:
   `curl -s "https://api.github.com/repos/N1709/ios-whyred/actions/runs?branch=whyred&per_page=1"`
 * Fetch the kernel and pack a diag image:
