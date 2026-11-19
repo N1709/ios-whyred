@@ -70,7 +70,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
   * The vendor scan: downwards from 0x00E9 in six-byte records, each one an
   * addressed read. The record is query, command, control, data, interrupt
   * count/version, function number. Stop at the 0x00 end marker instead of
-@@ -1141,80 +1169,147 @@
+@@ -1141,80 +1169,183 @@
  }
  
  /*
@@ -101,7 +101,8 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 -#define DSX_F01_SCAN_START	0x0000
 -#define DSX_F01_SCAN_END	0x0200
 -#define DSX_F01_SCAN_CHUNK	61	/* 58 + 3 overlap bytes */
-+#define DSX_STREAM_LEN		0x0200
++#define DSX_STREAM_LEN		0x0400
++#define DSX_STREAM_READ		0x0200
 +#define DSX_STREAM_ROW		64
 +
 +static uint8_t dsx_pdt_map[DSX_STREAM_LEN];
@@ -128,8 +129,16 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 -		if (dsx_read_page(DSX_ADDR, addr, b, n) != 0) {
 -			printf("WHYRED TOUCH: f01 scan read failed at 0x%04x\n",
 -			    addr);
++	/*
++	 * The pointer position is unknown when the part streams, so read two
++	 * 0x200 windows back to back: the 0x218-byte cycle is longer than one
++	 * window, and two windows guarantee a complete record somewhere,
++	 * including one that would straddle the first window's end.
++	 */
 +	if (dsx_read_page(DSX_ADDR, 0x0000, dsx_pdt_map,
-+	    sizeof(dsx_pdt_map)) != 0) {
++	    DSX_STREAM_READ) != 0 ||
++	    dsx_read_page(DSX_ADDR, 0x0000, dsx_pdt_map + DSX_STREAM_READ,
++	    DSX_STREAM_READ) != 0) {
 +		printf("WHYRED TOUCH: pdt stream read failed\n");
 +		return -1;
 +	}
@@ -156,7 +165,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 +		printf("WHYRED TOUCH: no F12 record in the pdt stream\n");
 +		return -1;
 +	}
-+	/* Address order puts F01 above F12, the streaming order below. */
++	/* F01 sits six bytes from F12 in stream order, either side. */
 +	for (i = f12 - 18; i <= f12 + 18; i++) {
 +		if (i < 0 || i + 6 > DSX_STREAM_LEN) {
 +			continue;
@@ -201,22 +210,49 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 - * F01 control register if the configured bit is still clear. 0195 wrote it
 - * before scanning and every read afterwards returned zero, so the scan comes
 - * first this time and the write is verified by a read-back.
-+ * Read the F34 entry twice. A part that accepts the address phase returns the
-+ * same six bytes both times; a streaming part returns the next six bytes.
++ * Prove the address phase by reading the same two registers twice. An
++ * addressable part returns the same bytes both times; a streaming part
++ * returns the next bytes of its map. The first entry at 0xe9 is not assumed
++ * to have any particular function number: this unit's F01 is vendor-specific
++ * (2f 26 0d 04), so only the repetition counts.
 + */
 +static int
 +dsx_addr_works(void)
 +{
 +	uint8_t a[DSX_PDT_ENTRY_SIZE], b[DSX_PDT_ENTRY_SIZE];
++	uint8_t c[DSX_PDT_ENTRY_SIZE], d[DSX_PDT_ENTRY_SIZE];
++	int i, ok;
 +
 +	if (dsx_read_page(DSX_ADDR, DSX_PDT_START, a, sizeof(a)) != 0 ||
-+	    dsx_read_page(DSX_ADDR, DSX_PDT_START, b, sizeof(b)) != 0) {
++	    dsx_read_page(DSX_ADDR, DSX_PDT_START, b, sizeof(b)) != 0 ||
++	    dsx_read_page(DSX_ADDR,
++	    (uint16_t)(DSX_PDT_START - DSX_PDT_ENTRY_SIZE), c,
++	    sizeof(c)) != 0 ||
++	    dsx_read_page(DSX_ADDR,
++	    (uint16_t)(DSX_PDT_START - DSX_PDT_ENTRY_SIZE), d,
++	    sizeof(d)) != 0) {
 +		return 0;
 +	}
-+	printf("WHYRED TOUCH: addr test %02x %02x %02x %02x %02x %02x -> "
-+	    "%02x %02x %02x %02x %02x %02x\n", a[0], a[1], a[2], a[3], a[4],
-+	    a[5], b[0], b[1], b[2], b[3], b[4], b[5]);
-+	return memcmp(a, b, sizeof(a)) == 0 && a[5] == 0x34;
++	printf("WHYRED TOUCH: addr test 0x%04x %02x %02x %02x %02x %02x %02x "
++	    "-> %02x %02x %02x %02x %02x %02x\n", DSX_PDT_START, a[0], a[1],
++	    a[2], a[3], a[4], a[5], b[0], b[1], b[2], b[3], b[4], b[5]);
++	printf("WHYRED TOUCH: addr test 0x%04x %02x %02x %02x %02x %02x %02x "
++	    "-> %02x %02x %02x %02x %02x %02x\n",
++	    DSX_PDT_START - DSX_PDT_ENTRY_SIZE, c[0], c[1], c[2], c[3], c[4],
++	    c[5], d[0], d[1], d[2], d[3], d[4], d[5]);
++	ok = memcmp(a, b, sizeof(a)) == 0 && memcmp(c, d, sizeof(c)) == 0;
++	/* A constant 00/ff region repeats even while streaming. */
++	if (ok) {
++		for (i = 0; i < (int)sizeof(a); i++) {
++			if (a[i] != 0x00 && a[i] != 0xff) {
++				break;
++			}
++		}
++		if (i == (int)sizeof(a)) {
++			ok = 0;
++		}
++	}
++	return ok;
 +}
 +
 +/*
@@ -263,7 +299,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  		printf("WHYRED TOUCH: f01 status 0x%02x\n", v);
  	} else {
  		printf("WHYRED TOUCH: f01 status read failed\n");
-@@ -1222,20 +1317,15 @@
+@@ -1222,20 +1353,15 @@
  	if (dsx_early_marks_on) {
  		touch_early_mark(9, 0xff808080);	/* grey: F01 status read */
  	}
@@ -291,7 +327,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  	}
  	if (!dsx_f01_ctrl) {
  		printf("WHYRED TOUCH: no F01 control base, skipping configure\n");
-@@ -1276,9 +1366,10 @@
+@@ -1276,9 +1402,10 @@
   *   data_base + (data0 present), because data0 carries the wakeup gesture and
   *   sits before the fingers (the vendor's data1_offset).
   *
@@ -305,7 +341,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
   */
  #define DSX_F12_Q5_SIZE	0x04
  #define DSX_F12_Q5_DATA	0x05
-@@ -1312,15 +1403,19 @@
+@@ -1312,15 +1439,19 @@
  		printf("WHYRED TOUCH: no F12, skipping reporting setup\n");
  		return -1;
  	}
@@ -331,7 +367,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  	    DSX_F12_Q5_SIZE), &v, 1) == 0) {
  		q5n = v;
  	}
-@@ -1331,13 +1426,13 @@
+@@ -1331,13 +1462,13 @@
  	for (i5 = 0; i5 < (int)sizeof(q5); i5++) {
  		q5[i5] = 0;
  	}
@@ -347,7 +383,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  	    DSX_F12_Q8_SIZE), &v, 1) == 0) {
  		q8n = v;
  	}
-@@ -1348,7 +1443,7 @@
+@@ -1348,7 +1479,7 @@
  	for (i8 = 0; i8 < (int)sizeof(q8); i8++) {
  		q8[i8] = 0;
  	}
@@ -356,7 +392,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  	    DSX_F12_Q8_DATA), q8, q8n) != 0) {
  		printf("WHYRED TOUCH: query_8 read failed\n");
  		return -1;
-@@ -1368,8 +1463,8 @@
+@@ -1368,8 +1499,8 @@
  	rc = dsx_write_f(DSX_ADDR, (uint16_t)dsx_f12_report_ctrl, &rpt, 1);
  	printf("WHYRED TOUCH: f12 ctrl28 <- 0x%02x %s\n", rpt,
  	    rc == 0 ? "ack" : "nack");
@@ -367,7 +403,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  		printf("WHYRED TOUCH: f12 ctrl28 readback 0x%02x\n", v);
  	}
  	dsx_f12_programmed = (rc == 0);
-@@ -1377,8 +1472,8 @@
+@@ -1377,8 +1508,8 @@
  }
  
  /*
@@ -378,7 +414,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
   */
  static void
  dsx_f12_poll(void)
-@@ -1395,7 +1490,7 @@
+@@ -1395,7 +1526,7 @@
  	    (uint16_t)((dsx_f12_page << 8) | dsx_f12_data);
  	printf("WHYRED TOUCH: poll F12 0x%04x, 12 samples\n", reg);
  	for (i = 0; i < 12; i++) {
@@ -387,7 +423,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  			printf("WHYRED TOUCH: poll %d read failed\n", i);
  			break;
  		}
-@@ -1888,7 +1983,7 @@
+@@ -1888,7 +2019,7 @@
  	dsx_early_marks_on = 0;
  	touch_early_mark(18, 0xff404040);	/* charcoal: probe returned */
  	dsx_early_found = dsx_f12_found;
@@ -396,7 +432,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  		(void)dsx_f12_program();
  	}
  	touch_early_mark(19, 0xffffffff);	/* white: done */
-@@ -2049,7 +2144,7 @@
+@@ -2049,7 +2180,7 @@
  		} else {
  			dsx_reset_probe();
  		}

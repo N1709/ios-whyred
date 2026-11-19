@@ -1655,7 +1655,17 @@ assert 'dsx_f01_ctrl = dsx_pdt_map[f01 + 2];' in body
 assert 'if (dsx_pdt_stream() != 0) {' in body
 assert 'addressable = dsx_addr_works();' in body
 assert 'if (addressable) {\n\t\tdsx_pdt_walk("after reset");' in body
-assert 'a[5] == 0x34' in body
+
+# The streamed pointer position is unknown, so two 0x200 windows cover the
+# 0x218-byte cycle even when a record straddles the first window's end.
+assert 'DSX_STREAM_LEN\t\t0x0400' in body
+assert 'DSX_STREAM_READ\t\t0x0200' in body
+assert 'dsx_pdt_map + DSX_STREAM_READ' in body
+
+# The first entry at 0xe9 is not assumed to be F34: this unit's F01 is
+# vendor-specific, so only two identical reads prove the address phase.
+assert 'memcmp(a, b, sizeof(a)) == 0 && memcmp(c, d, sizeof(c)) == 0' in body
+assert 'a[5] == 0x34' not in body
 
 # F12 may only be programmed while the part honours the address phase; the
 # streaming F12 "query" bytes in 0205 were the data register 0x06.

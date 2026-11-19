@@ -27,7 +27,8 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
   rejected the only valid PDT this unit returns.
 * **0206** parses the stream first (F12 record by full six bytes, nearest
   F01 record with control `0x0d`), resets at the record's command base,
-  verifies the address phase by reading F34 twice, and only then walks,
+  verifies the address phase by reading two PDT registers twice, and only
+  then walks,
   programs F12 and polls. The RMI4 `0x06` base is tried as a fallback so one
   boot distinguishes both candidates.
 * eMMC, GPT, HFSX mount, log flusher and the four-bar test all stayed

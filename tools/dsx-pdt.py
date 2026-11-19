@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reassemble the DSX register map from a pulled console ring.
 
-Patch 0205 read 0x0000..0x0200 in 61-byte chunks; patch 0206 reads the same
-space in one 0x200-byte transfer and prints it in 64-byte rows. Both use
+Patch 0205 read 0x0000..0x0200 in 61-byte chunks; patch 0206 reads two
+back-to-back 0x200-byte windows and prints them in 64-byte rows. Both use
 
     WHYRED TOUCH: dsx f01scan [0x00dd] 4c 00 13 06 01 12 |L.....|
 
