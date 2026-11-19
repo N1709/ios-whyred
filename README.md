@@ -19,7 +19,7 @@ userland of the iPhone X: launchd, backboardd, SpringBoard.
 | Storage | **Works** — eMMC 5.1 at 8-bit high-speed, GPT, HFSX root read-write |
 | Display | **Works** — kernel framebuffer, four colour bars visible on the panel |
 | Console log | **Works** — persistent ring on SYSTEM, pulled from recovery |
-| Touch | Probe works and finds F12; reporting **not enabled yet** (F01 gate), no HID input |
+| Touch | Probe finds the streamed PDT and resets at the real F01 base; F12 reporting awaits the 0206 ring, no HID input |
 | iOS userland | `launchd` starts, then dies at code signing (`CS_KILLED`) |
 | GPU / Wi-Fi / Bluetooth / audio / cellular / charging | Not implemented |
 
