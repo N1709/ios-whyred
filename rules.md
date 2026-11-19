@@ -21,6 +21,13 @@ a ring dump.
   existing `userdata` partition.
 * Keep the Android installation and the partition backups usable.
 * Ask the user before any destructive step, even if it looks safe.
+* **Recovery is read-only.** Never write to the vendor DSX sysfs
+  (`/sys/class/input/input*/suspend|reset|wake_gesture|...`) and never run
+  anything that can crash or reboot the recovery kernel. On 2026-11-19 a
+  `suspend`/`reset` write crashed OrangeFox and rebooted the phone, which
+  dropped the RAM-only XNU image. Reading (`getprop`, `getevent`, pulling the
+  SYSTEM ring) is fine.
+* Never reboot the phone unless the user asked for exactly that step.
 
 ## 3. Language and interaction
 
@@ -94,9 +101,9 @@ a ring dump.
 * The chip only answers in early boot, before eMMC and the QUP driver. Probe
   there (`sweetouchearly`).
 * Do not pulse GPIO 66 except through the documented reset path.
-* Do not trust a "F12 found" result alone: validate the F01 record
-  (`00 06 0d 11`) first, and remember the PDT stream can be shifted by one
-  byte.
+* A "F12 found" is not enough: the PDT on this unit streams (`27 00 09 00 21
+  34`, F01 `2f 26 0d 04 01 01`, F12 `4c 00 13 06 01 12`); the standard
+  `00 06 0d 11` does not exist. Parse the stream, do not grep for the literal.
 * The final path is `SweetHIDTouch::touch(finger, down, x, y)`; do not invent
   a second HID stack.
 
