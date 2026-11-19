@@ -1,7 +1,7 @@
 # Current status
 
-Last updated: 2026-11-19, patch 0206 (PDT record reset). Latest image built
-from CI; see the artifact table.
+Last updated: 2026-11-19, kernel `23e59b3` (patch 0206), image
+`shim-boot-touch-pdt-reset.img`.
 
 ## One-paragraph summary
 
@@ -59,8 +59,8 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 ## Build and CI
 
 * Every kernel change needs a CI run (~10-15 min); there is no local
-  `unixnu build`. The 0205 kernel (patch `87b7805`, workflow bump
-  `66a8b93`) built green in run `44071902075`; 0206 needs a fresh run.
+  `unixnu build`. The 0206 kernel (`23e59b3`) built green in run
+  `44506155564`.
 * Find the run for a commit:
   `curl -s "https://api.github.com/repos/N1709/ios-whyred/actions/runs?branch=whyred&per_page=1"`
 * Fetch the kernel and pack a diag image:
@@ -73,6 +73,7 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 | Image | Kernel | sha256 | Size |
 | --- | --- | --- | --- |
 | `shim-boot-touch-early-format.img` | `bb17acf` (0204) | `c4c197aa03be58f2bcd568079997396fcc297463c6d46d996d8ff5d77006cdb2` | 6,119,424 B |
+| `shim-boot-touch-pdt-reset.img` | `23e59b3` (0206, run `44506155564`) | `4b55e7916dbda67c8835ecfefa105fdf4177862dd7954b1838a56636c9a42139` | 6,119,424 B |
 | `shim-boot-touch-f01-scan.img` | `87b7805` + `66a8b93` (0205, run `44071902075`) | `a0ad381cc88396de3a8f1ce44d35e5ee0becf06e4f8dbf0962856218737593f6` | 6,119,424 B |
 | `shim-boot-touch-emmc-phases-bright.img` | `31a73bd` (0203) | `acbdbcbbbb2a5254a49c090ac4d035020c0ba24ddefd7fed5992b06aca07965f` | 6,119,424 B |
 | `shim-boot-touch-early-return.img` | `7afa32e` (0202) | `ca8ad3edfc7baca4b3f401c95b31700ad071f728f89f229e659e885768a2cfdf` | 6,119,424 B |

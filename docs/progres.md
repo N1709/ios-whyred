@@ -68,6 +68,10 @@ Image 0205: `shim-boot-touch-f01-scan.img` (`SWEETREBOOT=0`),
 sha256 `a0ad381cc88396de3a8f1ce44d35e5ee0becf06e4f8dbf0962856218737593f6`,
 6,119,424 B, CI run `44071902075`.
 
+Image 0206: `shim-boot-touch-pdt-reset.img` (`SWEETREBOOT=0`),
+sha256 `4b55e7916dbda67c8835ecfefa105fdf4177862dd7954b1838a56636c9a42139`,
+6,119,424 B, CI run `44506155564` (kernel `23e59b3`).
+
 ## Next actions (in order)
 
 1. **Boot 0206** (`shim-boot-touch-pdt-reset.img`) and read the ring for
