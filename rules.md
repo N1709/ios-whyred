@@ -100,7 +100,8 @@ a ring dump.
   is the other panel variant; do not pivot to it.
 * The chip only answers in early boot, before eMMC and the QUP driver. Probe
   there (`sweetouchearly`).
-* Do not pulse GPIO 66 except through the documented reset path.
+* Do not pulse GPIO 66: the vendor DT gives the DSX no reset line and GPIO
+  66 is the Novatek reset next to it (0194 established this).
 * A "F12 found" is not enough: the PDT on this unit streams (`27 00 09 00 21
   34`, F01 `2f 26 0d 04 01 01`, F12 `4c 00 13 06 01 12`); the standard
   `00 06 0d 11` does not exist. Parse the stream, do not grep for the literal.

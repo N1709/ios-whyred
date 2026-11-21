@@ -6,8 +6,14 @@
   (`0x0c175000`, GIC SPI 95). Some whyred panels ship a Novatek NT36672 that
   answers at `0x62` while its bootloader runs and `0x01` after firmware load;
   the probe scans the whole bus, but this unit is the DSX.
-* SDA GPIO 2, SCL GPIO 3 (TLMM SOUTH tile, `+0x100000`); reset GPIO 66 and
-  IRQ GPIO 67 (TLMM NORTH tile, `+0x900000`).
+* SDA GPIO 2, SCL GPIO 3 (TLMM SOUTH tile, `+0x100000`); IRQ GPIO 67, and
+  GPIO 66 is the **Novatek** reset, not the DSX's (TLMM NORTH tile,
+  `+0x900000`).
+* The vendor DT for the Synaptics variant
+  (`sdm636-touchpad-whyred.dsi`) comments out `synaptics,reset-gpio` and has
+  no power GPIO: the DSX is reset only by the F01 command or by its rail.
+  `ts_active` configures GPIO 66/67 as function `gpio` with a pull-up and no
+  value.
 * Rail: `vcc_i2c` = `pm660_l11`; it also powers the bus pull-ups. The board
   has no external pull resistors.
 * The chip only answers in a **window during early boot** (before eMMC and
@@ -102,6 +108,10 @@ The last visible band names the step that did not finish.
 
 * No finger-down samples have been captured yet, so the F12 2D report layout
   is not decoded.
+* GPIO 66 is the Novatek reset; the DSX has no reset line in the vendor DT.
+  Do not expect a GPIO pulse to recover it.
+* Next read-only recovery probe: address `0x2c` (the DT's UB address) and a
+  general-call `00 06`, to tell bootloader mode from a bus-resettable state.
 * `drivers/touch/hid/native/NativeHidInput.cpp` already exposes a report-3
   digitizer descriptor and `native_touch_*` sink globals;
   `SweetHIDTouch::touch(finger, down, x, y)` is the path to use once X/Y are
