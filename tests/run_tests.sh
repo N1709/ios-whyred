@@ -2039,6 +2039,50 @@ assert mirror.count('whyred_disarm_reboot_watchdog();') == 1
 PY2
 echo "ok   0222 gates F12 on the address phase and cancels the watchdog"
 
+echo "== TOUCH: 0223 speeds up the bit-bang wait and can skip the stream scan =="
+P223="xnu/patches/0223-whyred-touch-fast-probe.patch"
+python3 tools/check_patch.py "$P223" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:#define TOUCH_LINE_WAIT_US	500' \
+	--added-contains 'bsd/dev/whyred_touch.c:touch_line_wait_config' \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchscl' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_fast_known_bases' \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchfast'
+python3 - <<'PY2'
+src = open('xnu/patches/0223-whyred-touch-fast-probe.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The old 2 ms wait dominated the stream window when the DSX held SCL low.
+# The default is now 500 us, the loop reads the variable, and the boot arg
+# clamps a hand value into 10..20000 us.
+assert '#define TOUCH_LINE_WAIT_US\t500' in body
+assert 'touch_line_wait_us = us;' in body
+assert 'us < 10' in body and 'us > 20000' in body
+assert body.count('(int)touch_line_wait_us') == 2
+
+# sweetouchfast=1 uses the F01/F12 bases this panel actually streamed, but
+# only to skip the two 0x200 reads: the address test still runs afterwards,
+# and 0222 keeps every F12 write gated on its result.
+assert 'dsx_f01_cmd = 0x26;' in body
+assert 'dsx_f12_ctrl = 0x13;' in body
+assert 'dsx_f12_data = 0x06;' in body
+assert 'PE_parse_boot_argn("sweetouchfast"' in body
+
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+assert mirror.index('dsx_fast_known_bases();') < \
+    mirror.index('addressable = dsx_addr_works();')
+assert mirror.count('touch_line_wait_config();') == 2
+early = mirror.split('whyred_touch_early(void)', 1)[1]
+early = early[:early.index('\n}\n')]
+assert 'touch_line_wait_config();' in early
+probe = mirror.split('whyred_touch_probe(void)', 1)[1]
+probe = probe[:probe.index('\n}\n')]
+assert 'touch_line_wait_config();' in probe
+PY2
+echo "ok   0223 shortens the line wait and adds the known-base fast path"
+
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
 python3 tools/check_patch.py "$P212" -q \
@@ -2225,11 +2269,12 @@ echo "ok   zip_partial proves an entry before calling it the kernel"
 python3 tests/test_payload_cmdline.py >/dev/null
 echo "ok   payload_cmdline reads the line the shim really uses, not boot.img"
 
-echo "== IMAGES: manual runs choose normal / log / both =="
-# Both images come from the same kernel; the normal one must carry no log
-# capture at all (no sweetlog ring, no cs_debug page dumps, no kprintf spam)
-# and the log one must carry all three. The switches that keep the unsealed
-# root alive belong to both.
+echo "== IMAGES: manual runs choose normal / log / quick =="
+# Every image comes from the same kernel; the normal and fast images must
+# carry no log capture at all (no sweetlog ring, no cs_debug page dumps, no
+# kprintf spam), the ring image keeps only the ring, and the log image keeps
+# all three. Quick images add 0223's short touch probe. The switches that
+# keep the unsealed root alive belong to every image.
 grep -q 'KPRINTF_SPAM=' shim/build.sh
 grep -q 'build_mode "-log"' .github/workflows/xnu.yml
 grep -q 'shim-boot-log.img' .github/workflows/xnu.yml
@@ -2240,6 +2285,14 @@ grep -q -- '--reject sweetlog=1 --reject cs_debug=2' .github/workflows/xnu.yml
 grep -q -- '--reject=-enable_kprintf_spam' .github/workflows/xnu.yml
 grep -q -- '--require sweetlog=1 --require cs_debug=2' .github/workflows/xnu.yml
 grep -q 'DIAG="sweetlog=1 cs_debug=2"' .github/workflows/xnu.yml
+# Quick mode is B + C: the fast image is quiet, the ring image records only
+# the 4 MiB console ring, and both use 0223's short probe.
+grep -Fq 'TOUCH_FAST="sweetouchscl=200 sweetouchfast=1"' .github/workflows/xnu.yml
+grep -Fq 'build_mode "-fast" "$TOUCH_FAST"' .github/workflows/xnu.yml
+grep -Fq 'build_mode "-ring" "sweetlog=1 $TOUCH_FAST"' .github/workflows/xnu.yml
+grep -Fq -- '--require sweetouchfast=1 --require sweetouchscl=200' .github/workflows/xnu.yml
+grep -Fq 'shim-boot-fast.img' .github/workflows/xnu.yml
+grep -Fq 'shim-boot-ring.img' .github/workflows/xnu.yml
 # Display profile: the normal image keeps the boot log off the panel (so the
 # graphical boot and the Apple logo stay visible) and the log image keeps
 # printing, because the ring and the UART are the only diagnostics there is.
@@ -2270,14 +2323,20 @@ grep -Fq -- '--require disable_kprintf_output=0' .github/workflows/xnu.yml
 grep -Fq -- "--reject 'ignition_level='" .github/workflows/xnu.yml
 grep -Fq 'build_mode "-log" "$DIAG" "$SPAM" 0' .github/workflows/xnu.yml
 grep -Fq 'build_mode ""     ""     ""     1' .github/workflows/xnu.yml
-# Only the normal image may mute the framebuffer console.
+# The quiet images mute the framebuffer console; only the full diagnostic
+# image still prints to the panel.
 python3 - <<'PY'
 wf = open('.github/workflows/xnu.yml').read()
-normal = wf.split('if [ -f images/shim-boot.img ]; then', 1)[1].split('\n          fi', 1)[0]
-log = wf.split('if [ -f images/shim-boot-log.img ]; then', 1)[1].split('\n          fi', 1)[0]
-assert 'disable_kprintf_output=1' in normal, 'normal image is not muted'
+def check(name):
+    return wf.split('if [ -f images/%s ]; then' % name, 1)[1].split('\n          fi', 1)[0]
+normal = check('shim-boot.img')
+fast = check('shim-boot-fast.img')
+ring = check('shim-boot-ring.img')
+log = check('shim-boot-log.img')
+for name, body in (('normal', normal), ('fast', fast), ('ring', ring)):
+    assert 'disable_kprintf_output=1' in body, '%s image is not muted' % name
 assert 'disable_kprintf_output=1' not in log, 'log image must not be muted'
-print('ok   the normal image mutes the panel, the log image still prints')
+print('ok   the quiet images mute the panel, the log image still prints')
 PY
 # The command line is assembled by shell assignments in the workflow. An
 # unquoted "COMMON=emmcrw=1 cs_enforcement_disable=1 ..." sets three shell

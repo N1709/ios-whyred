@@ -37,13 +37,18 @@
    writing another EE's rail. The normal image therefore uses the bit-bang
    path only.
 4. Bit-bangs I2C at ~50 kHz (byte-identical to the vendor driver, 0188).
+   A high is a release plus a wait for the line to rise; the wait is 500 us
+   since 0223 (the old 2 ms wait made a stretched bit expensive), and
+   `sweetouchscl=<us>` overrides it.
 5. Reads the streamed register map in two back-to-back `0x200` windows (the
    cycle is 536 bytes and the pointer position is unknown). This part ignores
    the address phase after the first read, so the PDT records arrive back to
    back: F34, F01 `2f 26 0d 04 01 01`, F12 `4c 00 13 06 01 12`. 0206 takes
    the F01 command base (`0x26`) from that record; the RMI4 default
    `00 06 0d 11` does not exist on this unit. `tools/dsx-pdt.py <ring>`
-   reports the triplet and the stream phase.
+   reports the triplet and the stream phase. With `sweetouchfast=1` (0223)
+   the two reads are skipped and those known bases are used directly; the
+   address test below still runs, so a wrong guess cannot write F12.
 6. Software-resets the part at that command base, then reads two PDT
    registers twice to test whether the address phase works. Only an
    addressable part is walked and gets F12 programmed; a still-streaming part
@@ -77,6 +82,8 @@ The F12 query block read on this unit:
 | `sweetouchi2c=1` | run the touch probe (bus scan + chip-ID reads) |
 | `sweetouchearly=MS` | run the whole probe at `MS` kernel time, before eMMC |
 | `sweetouchtouch=SEC` | poll the F12 2D block for `SEC` seconds after the late probe (max 60) |
+| `sweetouchscl=US` | bit-bang line-rise wait in microseconds (default 500, clamped 10..20000; 0223) |
+| `sweetouchfast=1` | skip the two `0x200` stream reads and use this unit's known F01/F12 bases; the address test still runs (0223) |
 | `sweetouchreset=1` | drive reset GPIO 66 per the DT (low 20 ms, high 200 ms) |
 | `sweetouchwait=SEC` | hold the panel with the probe output for `SEC` seconds |
 | `sweetouchreboot=1` | reboot to the bootloader when the probe finishes; also arms the reboot watchdog, because this is the only boot that intentionally leaves XNU |

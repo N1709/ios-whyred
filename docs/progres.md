@@ -17,7 +17,7 @@ Last updated: 2026-11-22.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | Added (0218); 0222 gates F12 on the address phase and only arms the reboot watchdog for a diag reset |
+| Touch (as HID input) | Added (0218); 0222 gates F12 on the address phase, 0223 adds `sweetouchfast`/`sweetouchscl` for a short probe |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -100,6 +100,26 @@ The next boot is the **log image** (`build_mode=log`): the ring records the
 touch lines and the userland path even if the panel stays on the Apple logo.
 Pull it from recovery with `tools/sweet-log-pull.sh`.
 
+## Fast probe and quick images 0223 (2026-11-22)
+
+The old probe spent ~87 s between `early probe requested` and `early done`:
+the open-drain wait was 2 ms per stretched bit and the probe read the stream
+map twice. `0223` lowers the default wait to 500 us, adds
+`sweetouchscl=<us>`, and adds `sweetouchfast=1`, which skips the two `0x200`
+reads and uses the F01/F12 bases this unit already streamed. The address
+test still runs, and 0222 keeps every F12 write gated on it.
+
+The workflow has a new `build_mode=quick` that produces both requested
+variants from one kernel:
+
+* `shim-boot-fast.img` — quiet normal image plus `sweetouchscl=200
+  sweetouchfast=1` (B: boot fast, touch stays).
+* `shim-boot-ring.img` — 4 MiB SYSTEM ring (`sweetlog=1`) with no
+  `cs_debug=2` page dumps and no kprintf spam, plus the same short probe
+  (C: boot fast, still get a readable log).
+
+The ring image is the one to boot next: it covers B and C together.
+
 ## New fixes 0207-0210 (2026-11-22, not booted)
 
 Four small SDM660 fixes from `pcorezzola/lavender-ios16` are now whyred
@@ -175,9 +195,10 @@ sha256 `4b55e7916dbda67c8835ecfefa105fdf4177862dd7954b1838a56636c9a42139`,
 
 ## Next actions (in order)
 
-1. **Build 0222 with `build_mode=log`**, boot `shim-boot-log.img`, and pull
-   the ring from recovery. Confirm the `address phase still ignored, ...`
-   lines, no `watchdog fired`, and whether the boot reaches SpringBoard.
+1. **Build 0223 with `build_mode=quick`**, boot `shim-boot-ring.img`, and
+   pull the ring from recovery. Confirm the short-probe lines, the
+   `address phase still ignored, ...` lines, no `watchdog fired`, and whether
+   the boot reaches SpringBoard.
 2. If the boot still stops before SpringBoard, fix the last ring line first;
    touch is not the only remaining gate.
 3. Touch: build a diag with `sweetouchpower=1` and read the LDO11 APID

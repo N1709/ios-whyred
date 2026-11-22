@@ -357,12 +357,37 @@ pin_read(struct touch_pin *p)
  * by a wait for the line to actually rise. A timeout keeps a stuck bus from
  * hanging the boot.
  */
-#define TOUCH_LINE_WAIT_US	2000
+#define TOUCH_LINE_WAIT_US	500
+static uint32_t touch_line_wait_us = TOUCH_LINE_WAIT_US;
 
 static void
 bb_delay(void)
 {
 	delay(TOUCH_I2C_DELAY_US);
+}
+
+/*
+ * 0223: the old 2 ms wait ran once per bit while the DSX held SCL low, so a
+ * single 0x200 stream window could spend tens of seconds in scl_release().
+ * The default is now 500 us; sweetouchscl=<us> overrides it (10..20000) so a
+ * part that really needs the old 2 ms can still have it.
+ */
+static void
+touch_line_wait_config(void)
+{
+	uint32_t us = 0;
+
+	if (!PE_parse_boot_argn("sweetouchscl", &us, sizeof(us)) || !us) {
+		return;
+	}
+	if (us < 10) {
+		us = 10;
+	}
+	if (us > 20000) {
+		us = 20000;
+	}
+	touch_line_wait_us = us;
+	printf("WHYRED TOUCH: bit-bang line wait %u us\n", us);
 }
 
 static void
@@ -383,7 +408,7 @@ sda_release(void)
 	int i;
 
 	pin_in(&touch_sda);
-	for (i = 0; i < TOUCH_LINE_WAIT_US; i++) {
+	for (i = 0; i < (int)touch_line_wait_us; i++) {
 		if (pin_read(&touch_sda)) {
 			return 1;
 		}
@@ -398,7 +423,7 @@ scl_release(void)
 	int i;
 
 	pin_in(&touch_scl);
-	for (i = 0; i < TOUCH_LINE_WAIT_US; i++) {
+	for (i = 0; i < (int)touch_line_wait_us; i++) {
 		if (pin_read(&touch_scl)) {
 			return 1;
 		}
@@ -1493,6 +1518,29 @@ dsx_addr_works(void)
 }
 
 /*
+ * 0223: the F01/F12 bases on this unit are fixed (F01 2f 26 0d 04, F12
+ * 4c 00 13 06). The full stream scan costs two 0x200 reads and is the
+ * slowest part of the probe; sweetouchfast=1 skips it and uses the known
+ * bases. The address test still runs, and F12 programming stays gated on
+ * dsx_addressable, so a wrong guess cannot write a register.
+ */
+static void
+dsx_fast_known_bases(void)
+{
+	dsx_f01_query = 0x2f;
+	dsx_f01_cmd = 0x26;
+	dsx_f01_ctrl = 0x0d;
+	dsx_f01_data = 0x04;
+	dsx_f12_found = 1;
+	dsx_f12_query = 0x4c;
+	dsx_f12_ctrl = 0x13;
+	dsx_f12_data = 0x06;
+	dsx_f12_page = 0;
+	printf("WHYRED TOUCH: fast path uses F01 cmd 0x26 ctrl 0x0d and "
+	    "F12 query 0x4c ctrl 0x13 data 0x06, skipping the stream scan\n");
+}
+
+/*
  * 0206 order: map first, reset second. The stream is the only place the real
  * F01 command base can be read on this unit, and the reset must go to that
  * base. If the part is already addressable (cold boot, pointer at 0) no reset
@@ -1503,12 +1551,15 @@ static void
 dsx_reset_probe(void)
 {
 	uint8_t v = 0;
+	uint32_t fast = 0;
 	int addressable;
 
 	if (dsx_early_marks_on) {
 		touch_early_mark(7, 0xff800000);	/* maroon: before reset */
 	}
-	if (dsx_pdt_stream() != 0) {
+	if (PE_parse_boot_argn("sweetouchfast", &fast, sizeof(fast)) && fast) {
+		dsx_fast_known_bases();
+	} else if (dsx_pdt_stream() != 0) {
 		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
 	}
 	addressable = dsx_addr_works();
@@ -2410,6 +2461,7 @@ whyred_touch_early(void)
 	if (at > 4000) {
 		at = 4000;
 	}
+	touch_line_wait_config();
 	dsx_early_ran = 1;
 	touch_early_mark(1, 0xffff0000);	/* red: entered */
 	/*
@@ -2513,6 +2565,7 @@ whyred_touch_probe(void)
 		return 0;
 	}
 	touch_probe_done = 1;
+	touch_line_wait_config();
 
 	/*
 	 * Arm the way out before the first clock or QUP register write. A stall

@@ -17,12 +17,13 @@ on:
         description: make -k (collect all compile errors in one run)
         default: "true"
       build_mode:
-        description: both / normal (no log capture) / log (ring + page dumps)
+        description: both / normal (no log capture) / log (ring + page dumps) / quick (fast touch + fast ring)
         type: choice
         options:
           - both
           - normal
           - log
+          - quick
         default: both
       fb_test_pattern:
         description: on (four colour bars prove the panel scans out) / off (clean panel)
@@ -326,6 +327,11 @@ jobs:
           # bit-bang framing; the HID poll starts after the probe unless
           # sweetouchhid=0.
           COMMON="$COMMON launchd_unsecure_cache=1 $FB_ARG sweetouchi2c=1 sweetouchwait=0"
+          # Quick mode: keep the touch probe out of the boot-critical path
+          # without disabling it. 0223 lowers the bit-bang line wait and lets
+          # sweetouchfast=1 skip the two 0x200 stream reads; the address test
+          # still runs and F12 stays gated on it.
+          TOUCH_FAST="sweetouchscl=200 sweetouchfast=1"
           # Log mode: sweetlog=1 records every console character to the 4 MiB
           # ring on SYSTEM, cs_debug=2 prints the CD dump and the per-blob
           # line for every validated page (megabytes), and
@@ -382,6 +388,8 @@ jobs:
                     build_mode "-log" "$DIAG" "$SPAM" 0 "$NOCONSOLE" ;;
             normal) build_mode ""     ""     ""     1 "$NOCONSOLE" ;;
             log)    build_mode "-log" "$DIAG" "$SPAM" 0 "$NOCONSOLE" ;;
+            quick)  build_mode "-fast" "$TOUCH_FAST" "" 1 "$NOCONSOLE"
+                    build_mode "-ring" "sweetlog=1 $TOUCH_FAST" "" 1 "$NOCONSOLE" ;;
             *)      echo "::error::unknown build_mode '$MODE'"; exit 1 ;;
           esac
 
@@ -422,6 +430,24 @@ jobs:
               --require disable_kprintf_output=1 \
               --require sweetfb_stayon=1 --require sweetfb_hz=60
           fi
+          if [ -f images/shim-boot-fast.img ]; then
+            echo "verifying the fast image is quiet and uses the short probe"
+            python3 tools/payload_cmdline.py --image images/shim-boot-fast.img \
+              --reject sweetlog=1 --reject cs_debug=2 \
+              --reject=-enable_kprintf_spam \
+              --require disable_kprintf_output=1 \
+              --require sweetfb_stayon=1 --require sweetfb_hz=60 \
+              --require sweetouchfast=1 --require sweetouchscl=200
+          fi
+          if [ -f images/shim-boot-ring.img ]; then
+            echo "verifying the ring image records without the page dumps"
+            python3 tools/payload_cmdline.py --image images/shim-boot-ring.img \
+              --require sweetlog=1 --reject cs_debug=2 \
+              --reject=-enable_kprintf_spam \
+              --require disable_kprintf_output=1 \
+              --require sweetfb_stayon=1 --require sweetfb_hz=60 \
+              --require sweetouchfast=1 --require sweetouchscl=200
+          fi
           if [ -f images/shim-boot-log.img ]; then
             echo "verifying the log image carries the ring and the dumps"
             python3 tools/payload_cmdline.py --image images/shim-boot-log.img \
@@ -460,24 +486,32 @@ jobs:
                              it when a line is missing, then pull the ring
                              from recovery with tools/sweet-log-pull.sh.
 
-          A manual "Run workflow" chooses which of the two to build
-          (build_mode: both / normal / log). A push builds both.
+          shim-boot-fast.img quick B: quiet like the normal image, but the
+                             touch probe uses sweetouchscl=200 and
+                             sweetouchfast=1 (0223).
 
-          Both draw four colour bars into the boot framebuffer once, early in
-          BSD init (sweetfbtest=1), so a lit panel proves MDSS still scans the
-          ABL splash out even while the console is on the UART.
+          shim-boot-ring.img quick C: keeps the 4 MiB SYSTEM ring
+                             (sweetlog=1) without cs_debug=2 page dumps or
+                             kprintf spam, and uses the same short touch
+                             probe. This is the image that gives a readable
+                             log without the diagnostic boot cost.
 
-          Flash to the recovery partition (slot a on this phone):
+          A manual "Run workflow" chooses which images to build
+          (build_mode: both / normal / log / quick). A push builds both.
 
-              fastboot flash recovery shim-boot.img
-              fastboot reboot recovery
+          fb_test_pattern=on draws four colour bars into the boot framebuffer
+          once, early in BSD init (sweetfbtest=1), so a lit panel proves MDSS
+          still scans the ABL splash out even while the console is on the
+          UART. It is off by default.
 
-          Test without overwriting recovery:
+          Boot without writing any partition (the only supported path here):
 
               fastboot boot shim-boot.img
               fastboot boot shim-boot-log.img
+              fastboot boot shim-boot-fast.img
+              fastboot boot shim-boot-ring.img
 
-          Verify before flashing:
+          Verify before booting:
 
               sha256sum -c SHA256SUMS
           EOF
