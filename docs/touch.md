@@ -54,10 +54,15 @@
    addressable part is walked and gets F12 programmed; a still-streaming part
    tries the `0x06` base once more first. The streamed F12 bases are **not**
    written to: while `dsx_addressable == 0`, `ctrl20`/`ctrl28` writes would
-   land on whatever register the stream pointer is on (0222).
+   land on whatever register the stream pointer is on (0222). With
+   `sweetouchpower=1`, 0224 toggles LDO11 after this and repeats the address
+   test once, so one boot distinguishes "the rail cycle helped" from "still
+   streaming".
 7. Clears the F01 sleep bits and the F12 `ctrl20` wakeup-gesture byte
    (`synaptics_rmi4_f12_wg(false)`), then programs F12 reporting:
-   `RPT_DEFAULT (0x1F)` to control 28. The 2D data base is
+   `RPT_DEFAULT (0x1F)` to control 28. When the address phase works, 0225
+   also forces `NO_SLEEP_ON` (F01 control bit 2) so the part cannot drop back
+   into LPWG on its own. The 2D data base is
    `F12 data base + data0 present`. `ctrl28` alone only selects the report
    type; a part left in LPWG keeps its 2D block inactive until the gesture
    byte is cleared, which is the state Android hands over on a warm reboot.
@@ -68,6 +73,12 @@
    `sweetouchtouch` test and the HID thread all refuse to run while the part
    still streams (0222). With `sweetouchpower=1` this is also the only place
    that toggles LDO11.
+9. After the probe is complete, 0226 forwards every display power change from
+   `SweetFramebuffer` to `whyred_touch_display_power()`. Display off pauses
+   the HID poll, waits for an in-flight read, and writes F01 `SENSOR_SLEEP`
+   (bit 0). Display on writes `NORMAL_OPERATION | NO_SLEEP_ON`, programs F12
+   again, and resumes the poll. A part that never reached the address phase is
+   left alone.
 
 The F12 query block read on this unit:
 
@@ -89,8 +100,42 @@ The F12 query block read on this unit:
 | `sweetouchreboot=1` | reboot to the bootloader when the probe finishes; also arms the reboot watchdog, because this is the only boot that intentionally leaves XNU |
 | `sweetouchwatchdog=SEC` | watchdog delay for `sweetouchreboot=1` (default 300 s, `0` disables). The probe cancels it once it finishes, so a normal or log boot is never reset |
 | `sweetouchpower=1` | late probe only: toggle PM660 LDO11 (`vcc_i2c`) through the SPMI arbiter, after refusing an APID another EE owns; off by default, a fault leaves `WHYRED TOUCH:` lines in the ring |
+| `sweetouchnosleep=0` | do not force `NO_SLEEP_ON` when the panel is on (0225; the default is to force it) |
+| `sweetouchgcall=1` | try the I2C general-call reset (address `0x00`, byte `0x06`) when the address phase is ignored (0225; opt-in because it reaches every device on BLSP1 QUP1) |
 
-## Panel band map (diag images)
+## Display power and the power button
+
+The power button already delivers `key=0` to `SweetHID`; what stopped the
+screen from blanking was the framebuffer's `sweetfb_stayon=1` veto, which
+ignored **every** display-off request. 0226 keeps the veto only until the
+first userspace present (`sweet_fb_present_logged == 0`). After that,
+backboardd's `RequestPowerChange` sets `fPowerOff`, calls
+`whyred_touch_display_power()`, and stops the panel. Display-on reverses the
+sequence before the next frame.
+
+Expected ring lines:
+
+```
+WHYRED TOUCH: f01 ctrl 0x84 -> 0x81 (sleep)
+WHYRED TOUCH: f01 ctrl readback 0x81
+WHYRED TOUCH: display off, HID paused, DSX asleep
+...
+WHYRED TOUCH: f01 ctrl 0x81 -> 0x84 (normal)
+WHYRED TOUCH: f01 ctrl readback 0x84
+WHYRED TOUCH: display on, HID resumed, DSX awake
+```
+
+`0x84` is `CONFIGURED | NO_SLEEP_ON`; `0x81` is `CONFIGURED | SENSOR_SLEEP`.
+If the panel is blanked before the touch probe finishes, the hook is a no-op:
+there is nothing addressable to suspend yet.
+
+The default build no longer passes `sweetfb_native=1`. iOS now sees the
+iPhone X canvas (1125x2436) and `SweetFramebuffer` crops it to the 1080x2160
+panel (`fOffX=20`, `fOffY=138`), which removes UIKit's red
+"rdar:45025538" clock. `SWEETFB_NATIVE=1` is the opt-in path back to the
+native panel canvas and the red fallback.
+
+
 
 The SYSTEM ring only starts after eMMC init, so the early probe cannot be
 read from a log. It paints coloured bands into the framebuffer instead, and

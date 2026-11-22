@@ -1,0 +1,50 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 87091b1..6734f51 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -43,6 +43,8 @@ extern "C" void (*sweet_console_show_hook)(void);
+ extern "C" void topaz_modem_init(void);
+ extern "C" void sweet_busy_init(void);              /* iokit/Kernel/arm/SweetBusy.cpp (boot-arg sweetbusy=N) */             /* iokit/Kernel/arm/TopazModem.cpp (boot-arg modem=1) */
+ extern "C" int sweet_console_copy_dirty(void *dst);
++/* 0226: whyred only; weak so santoni/lavender builds link without it. */
++extern "C" void whyred_touch_display_power(int on) __attribute__((weak_import));
+ 
+ /*
+  * topaz: a surface the MDP may still be fetching counts as in use, so
+@@ -1297,12 +1299,16 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		if (args->scalarInputCount >= 1) {
+ 			bool off = args->scalarInput[0] == 0;
+ 			/*
+-			 * topaz: sweetfb_stayon=1 ignores display-off requests (auto-lock)
+-			 * while there are no buttons or touch to wake the panel again.
++			 * topaz: sweetfb_stayon=1 used to ignore every display-off
++			 * request, so the power button and auto-lock could never
++			 * blank the panel. 0208 gave the PMIC keys a HID path;
++			 * keep the boot hold only until the first userspace frame,
++			 * then let backboardd turn the display off.
+ 			 */
+ 			int stayon = 0;
+-			if (off && PE_parse_boot_argn("sweetfb_stayon", &stayon, sizeof(stayon)) && stayon) {
+-				IOLog("SWEET FB: display off ignored (sweetfb_stayon)\n");
++			if (off && sweet_fb_present_logged == 0 &&
++			    PE_parse_boot_argn("sweetfb_stayon", &stayon, sizeof(stayon)) && stayon) {
++				IOLog("SWEET FB: display off ignored before the first frame (sweetfb_stayon)\n");
+ 				break;
+ 			}
+ 			IOLockLock(fFB->fLock);
+@@ -1314,6 +1320,15 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 			}
+ 			uint32_t level = fFB->fBlLevel;
+ 			IOLockUnlock(fFB->fLock);
++			if (changed && whyred_touch_display_power != NULL) {
++				/*
++				 * 0226: one power story. The DSX sleeps only when
++				 * the panel sleeps and is awake again before the
++				 * next frame. The hook is a no-op until the touch
++				 * probe has run and found the address phase.
++				 */
++				whyred_touch_display_power(off ? 0 : 1);
++			}
+ 			if (changed && fFB->fDsi != NULL) {
+ 				if (off) {
+ 					fFB->setPanelOn(false);

@@ -17,7 +17,8 @@ Last updated: 2026-11-22.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | Code 0218/0222/0223 exists, but the 2026-11-22 console image silently skipped 0219..0223 and still ran the old poll. Chain fixed locally, rebuild pending |
+| Touch (as HID input) | 0222/0223/0225 code exists; the last ring still said `address phase still ignored`, so the HID poll stays off |
+| Power button / display off | 0226 added (stayon only before the first frame), not booted |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -49,10 +50,10 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | CPU / memory | 4× Gold A73, 16K pages, GICv3, timers — **works** |
 | eMMC | SDCC v5, 8-bit high-speed, 122,142,720 sectors, GPT parsed — **works** |
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
-| Display | Kernel framebuffer + 4-bar test visible on panel — **works** |
+| Display | Kernel framebuffer + 4-bar test visible on panel — **works**; 0226 makes the default canvas 1125x2436 (no red clock), not booted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | launchd → backboardd → SpringBoard boots to the lock screen — **works**; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
-| Touch | DSX at `0x20` streams the PDT; the address phase is still ignored. The old image polled random F12 bytes; the 0222 gate was not in it. Chain fixed locally, rebuild pending |
+| Touch | DSX at `0x20` streams the PDT; the address phase is still ignored. 0224 re-tests after a real LDO11 toggle; 0225 ties sleep to the panel. Neither is proven on the phone yet |
 
 ## Panic 0220/0221 (2026-11-22)
 
@@ -124,6 +125,43 @@ variants from one kernel:
 
 The console image is the one to boot next when the screen must show the
 running text; the ring image is the quieter equivalent.
+
+## Rail re-probe, display link and power button 0224-0226 (2026-11-22, not booted)
+
+`0224` changes `whyred_touch_power_cycle()` to return three states: `1` for a
+rail that is on after the toggle, `0` when `sweetouchpower` is absent, `-1`
+when the arbiter refuses the APID. The late probe re-tests the address phase
+only on `> 0`, before `dsx_f12_program()`, so a refused toggle cannot be
+mistaken for a fresh window.
+
+`0225` gives panel and digitizer one power story. When the late probe has
+finished, a display-off request pauses the HID poll, waits for an in-flight
+read, and writes F01 `SENSOR_SLEEP` (bit 0). Display-on writes
+`NORMAL_OPERATION | NO_SLEEP_ON` (bit 2, preserved `CONFIGURED` bit 7),
+programs F12 again, and resumes the poll. This is the vendor's
+`synaptics_rmi4_sleep_enable()` sequence, not a new guess. A part that never
+reached the address phase has nothing to suspend. The same patch adds an
+opt-in I2C general-call reset (`sweetouchgcall=1`) for the case where the
+part ignores the address phase entirely.
+
+`0226` makes `sweetfb_stayon=1` a **boot hold**, not a permanent veto: it
+ignores display-off only before the first userspace present. After that the
+power button and auto-lock can blank the panel; the framebuffer calls
+`whyred_touch_display_power()` before stopping scanout.
+
+`shim/build.sh` no longer puts `sweetfb_native=1` on the default command
+line. The default ADT canvas is again 1125x2436, and `SweetFramebuffer`
+crops it to 1080x2160, which removes the red unsupported-screen clock.
+`SWEETFB_NATIVE=1` is now the opt-in path that publishes 1080x2160 and
+brings the red fallback back. CI rejects `sweetfb_native=1` in every image
+it builds.
+
+Next boot: the quick ring image first. Confirm no phantom `SWEET HID: touch`
+lines, then read `address phase`, `f01 ctrl`, `f12 ctrl20/ctrl28`. If the
+address phase still fails, build a diag with `sweetouchpower=1` and read the
+LDO11 owner; optionally add `sweetouchgcall=1` to test the general call. If
+it works, check `f01 ctrl ... 0x84` (NO_SLEEP_ON), tap the panel, then press
+power and look for `display off, HID paused, DSX asleep`.
 
 ## New fixes 0207-0210 (2026-11-22, not booted)
 
@@ -223,17 +261,22 @@ skipped. Rebuild pending.
 
 ## Next actions (in order)
 
-1. Commit the `0219` context fix and CI guard, then build `build_mode=quick`.
-   Boot `shim-boot-ring.img` and pull the ring. Confirm
+1. Push the 0224-0226 chain and let CI build `build_mode=quick`. Boot
+   `shim-boot-ring.img` and pull the ring. Confirm
    `address phase still ignored, not programming` and **no**
    `SWEET HID: touch` phantom lines.
 2. If the gate holds, build a diag with `sweetouchpower=1` and read the
    LDO11 APID owner. Toggle only an APPS-owned APID; otherwise implement the
-   RPM regulator request. Do not write F12 while the part streams.
-3. If the address phase works, confirm `f12 ctrl20 <- ... 00` and
-   `f12 ctrl28 <- 0x1f ack`, then run the tap test and decode X/Y.
-4. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
-5. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
+   RPM regulator request. Add `sweetouchgcall=1` only as a separate test.
+3. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
+   `f12 ctrl20 <- ... 00` and `f12 ctrl28 <- 0x1f ack`, then run the tap
+   test and decode X/Y.
+4. Press power after SpringBoard has presented. The expected ring is
+   `f01 ctrl ... (sleep)`, `display off, HID paused, DSX asleep`, then the
+   reverse (`f01 ctrl ... (normal)`, `display on, HID resumed`) on wake. This
+   proves the 0226 stayon change.
+5. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
+6. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
    ring header update fails while the boot is otherwise alive.
 
 
@@ -251,7 +294,7 @@ skipped. Rebuild pending.
 | `STATUS.md` | Longer status, artifact table |
 | `touch.md` | DSX probe, F12 setup, band map, boot args |
 | `history/` | Full engineering log, per month |
-| `../xnu/patches/0206-whyred-touch-pdt-record-reset.patch` | Latest patch (0206) |
+| `../xnu/patches/0226-whyred-fb-power-off.patch` | Latest patch (0226) |
 | `../tools/build-touch-diag.sh` | Pack a diag image from a CI kernel |
 | `../tools/sweet-log-pull.sh` | Pull the ring from SYSTEM |
 

@@ -1,0 +1,250 @@
+diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
+index f00bf60..a07e1ce 100644
+--- a/bsd/dev/whyred_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -1199,6 +1199,10 @@ static int dsx_f12_programmed;
+ static int dsx_f12_rec_size = 8;	/* status + x/y + z + wx/wy */
+ static int dsx_f12_fingers = 10;	/* ctrl23 max_reported_objects */
+ static int dsx_hid_started;
++static volatile int dsx_hid_busy;	/* a poll read owns the bus */
++static int dsx_hid_enabled = 1;	/* panel on: poll; panel off: idle */
++static int dsx_display_on = 1;
++static int dsx_probe_complete;	/* the late probe reached its end */
+ static int dsx_addressable;	/* F34 reads back twice after the reset */
+ static uint64_t dsx_early_start_ms;
+ static uint64_t dsx_early_end_ms;
+@@ -1270,6 +1274,60 @@ dsx_wake_normal(void)
+ 	return rc;
+ }
+ 
++/*
++ * 0225: the low three bits of F01 control are the sleep mode. The vendor's
++ * synaptics_rmi4_sleep_enable() clears them and writes SENSOR_SLEEP (bit 0)
++ * to sleep, or NORMAL_OPERATION plus no_sleep_setting (bit 2) to wake. While
++ * the panel is on this driver forces NO_SLEEP_ON so the DSX does not drop
++ * into LPWG on its own. CONFIGURED (bit 7) is preserved.
++ */
++static int
++dsx_no_sleep_enabled(void)
++{
++	uint32_t on = 1;
++
++	if (!PE_parse_boot_argn("sweetouchnosleep", &on, sizeof(on))) {
++		return 1;
++	}
++	return on != 0;
++}
++
++static int
++dsx_f01_set_sleep(int sleep)
++{
++	uint8_t v = 0, want, readback = 0;
++	int rc;
++
++	if (!dsx_f01_ctrl) {
++		return -1;
++	}
++	if (dsx_read_cached(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1) != 0) {
++		printf("WHYRED TOUCH: f01 ctrl read failed, cannot %s the DSX\n",
++		    sleep ? "sleep" : "wake");
++		return -1;
++	}
++	want = (uint8_t)(v & ~0x07u);
++	if (sleep) {
++		want |= 0x01u;		/* SENSOR_SLEEP */
++	} else if (dsx_no_sleep_enabled()) {
++		want |= 0x04u;		/* NO_SLEEP_ON */
++	} else {
++		want |= (uint8_t)(v & 0x04u);
++	}
++	printf("WHYRED TOUCH: f01 ctrl 0x%02x -> 0x%02x (%s)\n", v, want,
++	    sleep ? "sleep" : "normal");
++	if (want == v) {
++		return 0;
++	}
++	dsx_f01_normal = want;
++	rc = dsx_wake_normal();
++	if (rc == 0 && dsx_read_cached(DSX_ADDR, (uint16_t)dsx_f01_ctrl,
++	    &readback, 1) == 0) {
++		printf("WHYRED TOUCH: f01 ctrl readback 0x%02x\n", readback);
++	}
++	return rc;
++}
++
+ static int
+ dsx_sw_reset_at(uint16_t base)
+ {
+@@ -1301,6 +1359,42 @@ dsx_sw_reset(void)
+ 	return dsx_sw_reset_at(base);
+ }
+ 
++/*
++ * 0225: I2C general call (address 0x00, byte 0x06). The RMI4 software reset
++ * above needs the part to parse a register address, which is exactly what it
++ * stops doing in LPWG. The general call is the one reset that does not need
++ * the address phase; it is opt-in because it reaches every device on BLSP1
++ * QUP1.
++ */
++static int
++dsx_general_call_reset(void)
++{
++	uint32_t on = 0;
++	uint8_t cmd = 0x06;
++	int ack = 0;
++
++	if (!PE_parse_boot_argn("sweetouchgcall", &on, sizeof(on)) || !on) {
++		return 0;
++	}
++	if (dsx_qup) {
++		ack = sweet_i2c_xfer(0x00, &cmd, 1, NULL, 0) == 0;
++	} else {
++		i2c_start();
++		ack = i2c_write(0x00);
++		if (ack) {
++			ack = i2c_write(cmd);
++		}
++		i2c_stop();
++	}
++	printf("WHYRED TOUCH: i2c general call reset %s\n",
++	    ack ? "ack" : "nack");
++	if (ack) {
++		dsx_page = -1;
++		delay(100000);
++	}
++	return ack;
++}
++
+ /*
+  * The vendor scan: downwards from 0x00E9 in six-byte records, each one an
+  * addressed read. The record is query, command, control, data, interrupt
+@@ -1565,6 +1659,9 @@ dsx_reset_probe(void)
+ 		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
+ 	}
+ 	addressable = dsx_addr_works();
++	if (!addressable && dsx_general_call_reset()) {
++		addressable = dsx_addr_works();
++	}
+ 	if (!addressable) {
+ 		(void)dsx_sw_reset();
+ 		addressable = dsx_addr_works();
+@@ -1606,7 +1703,8 @@ dsx_reset_probe(void)
+ 	} else if (dsx_read_page(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1) ==
+ 	    0) {
+ 		uint8_t normal = (uint8_t)((v & ~0x07u) | 0x80u |
+-		    (v & 0x04u));
++		    (addressable && dsx_no_sleep_enabled() ? 0x04u :
++		    (v & 0x04u)));
+ 
+ 		printf("WHYRED TOUCH: f01 ctrl read 0x%02x -> 0x%02x\n",
+ 		    v, normal);
+@@ -1910,8 +2008,23 @@ dsx_hid_thread(void *arg, __unused wait_result_t wr)
+ 	for (;;) {
+ 		int fingers = dsx_f12_fingers;
+ 		int rec = dsx_f12_rec_size;
+-		int n;
++		int n, rc;
+ 
++		/*
++		 * 0225: the display owns the bus while the panel is off. Lift
++		 * any finger that was down before the pause, so a blanked panel
++		 * cannot leave a phantom touch behind on resume.
++		 */
++		if (!dsx_hid_enabled) {
++			for (i = 0; i < DSX_HID_MAX_FINGERS; i++) {
++				if (was[i]) {
++					sweet_hid_touch(i, 0, px[i], py[i]);
++					was[i] = 0;
++				}
++			}
++			delay(20000);
++			continue;
++		}
+ 		if (fingers < 1) {
+ 			fingers = 1;
+ 		}
+@@ -1925,8 +2038,11 @@ dsx_hid_thread(void *arg, __unused wait_result_t wr)
+ 			rec = 8;
+ 		}
+ 		n = fingers * rec;
+-		if (dsx_read_cached(DSX_ADDR, (uint16_t)dsx_f12_touch_reg,
+-		    buf, n) != 0) {
++		dsx_hid_busy = 1;
++		rc = dsx_read_cached(DSX_ADDR, (uint16_t)dsx_f12_touch_reg,
++		    buf, n);
++		dsx_hid_busy = 0;
++		if (rc != 0) {
+ 			if (errors++ == 0 || (errors % 100) == 0) {
+ 				printf("WHYRED TOUCH: HID poll read failed "
+ 				    "(%d)\n", errors);
+@@ -1984,6 +2100,63 @@ dsx_hid_start(void)
+ 	}
+ }
+ 
++/*
++ * 0225: one power story for panel and digitizer. SweetFramebuffer forwards
++ * backboardd's RequestPowerChange here (0226). The HID poll pauses first, then
++ * F01 follows the vendor's synaptics_rmi4_sleep_enable() sequence:
++ * SENSOR_SLEEP on display off, NORMAL_OPERATION plus NO_SLEEP_ON on display
++ * on, and F12 is programmed back to continuous reporting. A part that never
++ * reached the address phase has nothing to suspend, so leave the probe's
++ * result alone.
++ */
++void
++whyred_touch_display_power(int on)
++{
++	if (!dsx_probe_complete) {
++		return;
++	}
++	on = on ? 1 : 0;
++	if (dsx_display_on == on) {
++		return;
++	}
++	dsx_display_on = on;
++	if (!on) {
++		int i;
++
++		dsx_hid_enabled = 0;
++		/*
++		 * A poll read that started before the flag was cleared still
++		 * owns the bus. Wait for it instead of interleaving an F01
++		 * write with a half-finished register read.
++		 */
++		for (i = 0; i < 2000 && dsx_hid_busy; i++) {
++			delay(1000);
++		}
++		if (dsx_hid_busy) {
++			printf("WHYRED TOUCH: HID read still busy, DSX stays "
++			    "awake\n");
++			return;
++		}
++		if (dsx_addressable) {
++			(void)dsx_f01_set_sleep(1);
++		}
++		printf("WHYRED TOUCH: display off, HID paused%s\n",
++		    dsx_addressable ? ", DSX asleep" : "");
++		return;
++	}
++	if (dsx_addressable) {
++		(void)dsx_f01_set_sleep(0);
++		if (dsx_f12_program() != 0) {
++			printf("WHYRED TOUCH: F12 did not come back, HID "
++			    "stays paused\n");
++			return;
++		}
++	}
++	dsx_hid_enabled = 1;
++	printf("WHYRED TOUCH: display on, HID resumed%s\n",
++	    dsx_addressable ? ", DSX awake" : "");
++}
++
+ static void
+ touch_irq_setup(vm_offset_t north)
+ {
+@@ -2777,6 +2950,7 @@ whyred_touch_probe(void)
+ 	 * here rather than earlier because the bit-bang has no lock and
+ 	 * dsx_f12_poll()/dsx_touch_test() above must not race it.
+ 	 */
++	dsx_probe_complete = 1;
+ 	dsx_hid_start();
+ 	return acks ? 0 : ENXIO;
+ }

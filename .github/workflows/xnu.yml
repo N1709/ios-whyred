@@ -169,13 +169,13 @@ jobs:
           # 0190/0191 were missing from this range and silently skipped once
           # already: 0189 changed the page-select context that 0190 needed, and
           # every QUP image since was actually the bit-bang build.
-          # 0219..0224 are the touch rename, the F12 address gate, the power
-          # probe, the fast probe and the rail re-probe. 0219's bsd/conf/files
-          # hunk once lost its context when whyred_power.c landed next to
-          # sweet_i2c1.c, so dxb skipped 0219..0223 and every "latest" image
-          # still ran the old touch code. Treat any skip in that chain as fatal
-          # too.
-          if grep -E 'Skipping patch .*(014[2345689]|015[0-9]|016[0-9]|017[0-9]|01[89][0-9]|0219|022[0-4])-' build.log; then
+          # 0219..0226 are the touch rename, the F12 address gate, the power
+          # probe, the fast probe, the rail re-probe and the display-linked
+          # sleep/HID pause. 0219's bsd/conf/files hunk once lost its context
+          # when whyred_power.c landed next to sweet_i2c1.c, so dxb skipped
+          # 0219..0223 and every "latest" image still ran the old touch code.
+          # Treat any skip in that chain as fatal too.
+          if grep -E 'Skipping patch .*(014[2345689]|015[0-9]|016[0-9]|017[0-9]|01[89][0-9]|0219|022[0-6])-' build.log; then
             echo "::error::a critical patch was skipped by the build"
             exit 1
           fi
@@ -415,6 +415,11 @@ jobs:
               --require cs_enforcement_disable=1 \
               --require unentitled_ios_sim_launch=1 \
               --require launchd_unsecure_cache=1 $FB_VERIFY
+            # The default canvas stays iPhone X (1125x2436). Native 1080x2160
+            # is the opt-in SWEETFB_NATIVE=1 path and brings back UIKit's red
+            # unsupported-screen clock, so no workflow image may carry it.
+            python3 tools/payload_cmdline.py --image "$img" \
+              --reject sweetfb_native=1
             # ignition_level=<n> makes dyld's libignition search for the shared
             # cache somewhere our root does not have it: level 0 skips the
             # dyld_cache stage and level 1 searches System/Library/Caches/

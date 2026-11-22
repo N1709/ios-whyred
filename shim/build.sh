@@ -90,8 +90,10 @@ KPRINTF_SPAM="${KPRINTF_SPAM--enable_kprintf_spam}"
 # (lavender e72d3a5). With disable_kprintf_output=0 the framebuffer console
 # repaints the boot log over the graphical boot, so the panel shows scrolling
 # text and never the Apple logo; KPRINTF_MUTE=1 keeps the log off the panel and
-# adds sweetfb_stayon=1 (do not blank mid-boot) and sweetfb_hz=60. The SYSTEM
-# ring still records everything: 0143 appends in _cnputs before the mute check.
+# adds sweetfb_stayon=1 (do not blank mid-boot) and sweetfb_hz=60. 0226 limits
+# stayon to the window before the first userspace frame, so the power button
+# and auto-lock work once SpringBoard has presented. The SYSTEM ring still
+# records everything: 0143 appends in _cnputs before the mute check.
 # KPRINTF_MUTE=0 keeps today's exact command line, so a hand build and the
 # diagnostic image are unchanged; only the workflow sets it to 1.
 KPRINTF_MUTE="${KPRINTF_MUTE:-0}"
@@ -109,7 +111,20 @@ fi
 # not lost. Unset keeps the console on the panel.
 PANEL_NOCONSOLE="${PANEL_NOCONSOLE:-0}"
 [ "$PANEL_NOCONSOLE" = 1 ] && DISPLAY_ARGS="$DISPLAY_ARGS sweetfb_noconsole=1"
-CMDLINE="debug=0x14e serial=3 $DISPLAY_ARGS ${KPRINTF_SPAM}sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
+# Canvas. iOS only has status-bar and layout data for real iPhone screens:
+# presenting the 1080x2160 panel as 360x720 pt makes UIKit fall back to the red
+# "rdar:45025538" clock. The default is therefore the iPhone X canvas
+# (1125x2436), which SweetFramebuffer crops to the panel. SWEETFB_NATIVE=1
+# presents the real panel and advertises the same canvas in the ADT; it is
+# opt-in because it brings the red fallback back.
+SWEETFB_NATIVE="${SWEETFB_NATIVE:-0}"
+NATIVE_CMDLINE=""
+ADT_ARGS=(--board "$BOARD_LC")
+if [ "$SWEETFB_NATIVE" = 1 ]; then
+	NATIVE_CMDLINE="sweetfb_native=1 "
+	ADT_ARGS+=(--native)
+fi
+CMDLINE="debug=0x14e serial=3 $DISPLAY_ARGS ${KPRINTF_SPAM}${NATIVE_CMDLINE}sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
 
 # Ensure a minimal ramdisk.bin is always present
 if command -v cpio >/dev/null 2>&1; then
@@ -123,11 +138,12 @@ if [ -n "$PAYLOAD" ]; then
 	magic=$(python3 -c "import sys; f=open(sys.argv[1],'rb'); b=f.read(4); print(b.hex())" "$PAYLOAD" 2>/dev/null || true)
 	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
 		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
-		# --native: the canvas advertised to iOS must be the panel we
-		# actually scan out. Without it mkadt.py publishes the iPhone X
-		# canvas (1125x2436), backboardd then creates 1125x2436 surfaces,
-		# and the 1080x2160 panel stays black while SpringBoard "runs".
-		python3 ../tools/mkadt.py out/$BOARD_LC.adt --board "$BOARD_LC" --native
+		# The ADT canvas follows the same choice as sweetfb_native: by
+		# default mkadt.py publishes the iPhone X canvas (1125x2436) and
+		# SweetFramebuffer crops it to the 1080x2160 panel. --native is
+		# only passed with SWEETFB_NATIVE=1, which publishes the panel
+		# itself and brings back UIKit's red unsupported-screen clock.
+		python3 ../tools/mkadt.py out/$BOARD_LC.adt "${ADT_ARGS[@]}"
 		python3 ../tools/mkpayload.py "$PAYLOAD" out/$BOARD_LC.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
 	fi
 fi

@@ -256,12 +256,27 @@ assert mkadt.BOARDS['lavender']['panel_h'] == 2340
 PY
 echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
 
-# The canvas in the ADT is what iOS lays out for. mkadt.py defaults to the
-# iPhone X canvas unless --native is passed, and backboardd then creates
-# 1125x2436 surfaces while the panel is 1080x2160: SpringBoard runs, the screen
-# stays black. lavender's build already passes --native; whyred must too.
-grep -q 'mkadt.py out/\$BOARD_LC.adt --board "\$BOARD_LC" --native' shim/build.sh
-echo "ok   the ADT canvas is the panel itself (mkadt.py --native)"
+# Canvas. UIKit only has status-bar and layout data for real iPhone screens:
+# presenting native 1080x2160 (360x720 pt) makes it draw the red
+# "rdar:45025538" clock. The default is the iPhone X canvas; SWEETFB_NATIVE=1
+# is the opt-in path back to the panel canvas.
+grep -Fq 'SWEETFB_NATIVE="${SWEETFB_NATIVE:-0}"' shim/build.sh
+grep -Fq 'ADT_ARGS=(--board "$BOARD_LC")' shim/build.sh
+grep -Fq 'ADT_ARGS+=(--native)' shim/build.sh
+grep -Fq 'NATIVE_CMDLINE="sweetfb_native=1 "' shim/build.sh
+grep -Fq 'python3 ../tools/mkadt.py out/$BOARD_LC.adt "${ADT_ARGS[@]}"' shim/build.sh
+python3 - <<'PY'
+src = open('shim/build.sh', encoding='utf-8').read()
+cmdline = [l for l in src.splitlines() if l.startswith('CMDLINE=')]
+assert len(cmdline) == 1
+# The default line carries the variable, not the switch: sweetfb_native is
+# only added when SWEETFB_NATIVE=1.
+assert '${NATIVE_CMDLINE}' in cmdline[0]
+assert 'sweetfb_native=1' not in cmdline[0]
+assert '${NATIVE_CMDLINE}sweetcpufreq=0' in cmdline[0]
+assert 'NATIVE_CMDLINE="sweetfb_native=1 "' in src
+PY
+echo "ok   the default ADT canvas is iPhone X; --native is opt-in"
 
 # mockfs is the only filesystem that can mount the executable ram disk, and
 # sweet_hfs the only one for the iOS root. Missing them from FILESYS_BASE made
@@ -780,6 +795,10 @@ echo "ok   0182 paints the shim's own mark after the fbcon clear"
 # DSX page select.
 grep -q '01\[89\]\[0-9\]' .github/workflows/xnu.yml
 echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
+# The touch chain is gated the same way: a skipped 0219..0226 leaves the old
+# driver or half the display link behind, so name the whole range.
+grep -q '0219|022\[0-6\]' .github/workflows/xnu.yml
+echo "ok   a skipped 0219..0226 patch fails the build instead of shipping"
 
 echo "== SWIPE: 0183 proves the digitizer path without touch hardware =="
 P183="xnu/patches/0183-sweet-hid-synthetic-swipe.patch"
@@ -2129,6 +2148,95 @@ assert 'whyred_touch_power_cycle() > 0' in probe
 PY2
 echo "ok   0224 re-runs the address probe after a successful rail cycle"
 
+echo "== TOUCH: 0225 ties DSX sleep to the display and keeps it awake =="
+P225="xnu/patches/0225-whyred-touch-display-power.patch"
+python3 tools/check_patch.py "$P225" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchnosleep' \
+	--added-contains 'bsd/dev/whyred_touch.c:SENSOR_SLEEP' \
+	--added-contains 'bsd/dev/whyred_touch.c:NO_SLEEP_ON' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_f01_set_sleep' \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchgcall' \
+	--added-contains 'bsd/dev/whyred_touch.c:whyred_touch_display_power' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_hid_enabled' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_hid_busy' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_probe_complete'
+python3 - <<'PY'
+src = open('xnu/patches/0225-whyred-touch-display-power.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# Sleep preserves CONFIGURED (bit 7) and touches only bits 2:0, exactly like
+# the vendor's synaptics_rmi4_sleep_enable(). SENSOR_SLEEP is bit 0 and
+# NO_SLEEP_ON is bit 2.
+assert 'v & ~0x07u' in body
+assert 'want |= 0x01u' in body
+assert 'want |= 0x04u' in body
+assert 'dsx_f01_normal = want;' in body
+sleep_fn = body.split('dsx_f01_set_sleep(int sleep)', 1)[1]
+sleep_fn = sleep_fn.split('static int\ndsx_sw_reset_at', 1)[0]
+assert '0x80u' not in sleep_fn
+
+# A part that never reached the address phase has nothing to suspend, and a
+# failed F12 re-program must keep the HID poll paused.
+func = body.split('whyred_touch_display_power(int on)', 1)[1]
+func = func.split('static void\ntouch_irq_setup', 1)[0]
+assert 'if (!dsx_probe_complete)' in func
+assert 'if (dsx_addressable)' in func
+assert 'if (dsx_f12_program() != 0)' in func
+assert 'dsx_hid_enabled = 0;' in func
+assert 'dsx_hid_enabled = 1;' in func
+
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+assert 'whyred_touch_display_power(int on)' in mirror
+assert 'dsx_probe_complete = 1;' in mirror
+# The probe marks itself complete before the HID thread starts, so the first
+# display-off request cannot walk into a half-initialised driver.
+probe = mirror.split('whyred_touch_probe(void)', 1)[1]
+assert probe.index('dsx_probe_complete = 1;') < probe.index('dsx_hid_start();')
+# The HID poll releases a held finger before parking on a blanked panel.
+thread = mirror.split('dsx_hid_thread(void *arg', 1)[1]
+assert 'if (!dsx_hid_enabled)' in thread
+assert 'sweet_hid_touch(i, 0, px[i], py[i]);' in thread
+# A display write waits for an in-flight poll read instead of interleaving.
+assert 'for (i = 0; i < 2000 && dsx_hid_busy; i++)' in mirror
+PY
+echo "ok   0225 sleeps the DSX with the panel and resumes F12 on wake"
+
+echo "== DISPLAY: 0226 lets the power button blank the panel after boot =="
+P226="xnu/patches/0226-whyred-fb-power-off.patch"
+python3 tools/check_patch.py "$P226" -q \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:whyred_touch_display_power' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:sweet_fb_present_logged == 0' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:before the first frame' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:whyred_touch_display_power(off ? 0 : 1);'
+python3 - <<'PY'
+src = open('xnu/patches/0226-whyred-fb-power-off.patch',
+           encoding='utf-8').read()
+body = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('+') and not l.startswith('+++'))
+
+# The stayon veto is bounded by the first userspace present, not
+# unconditional: that was the reason the power button did nothing.
+assert 'off && sweet_fb_present_logged == 0' in body
+assert 'off && PE_parse_boot_argn("sweetfb_stayon"' not in body
+# weak_import keeps santoni/lavender linkable without the whyred symbol.
+assert '__attribute__((weak_import))' in body
+assert 'whyred_touch_display_power != NULL' in body
+assert 'if (changed && whyred_touch_display_power != NULL)' in body
+
+mirror = open('drivers/display/SweetFramebuffer.cpp', encoding='utf-8').read()
+args = mirror.split('kSweetFBRequestPowerChange:', 1)[1]
+args = args.split('kSweetFBSwapWait:', 1)[0]
+assert 'off && sweet_fb_present_logged == 0' in args
+assert 'off && PE_parse_boot_argn("sweetfb_stayon", &stayon, sizeof(stayon)) && stayon' not in args
+# Sleep the digitizer before the panel stops scanning.
+assert args.index('whyred_touch_display_power(off ? 0 : 1);') < \
+    args.index('fFB->setPanelOn(false);')
+PY
+echo "ok   0226 honours display-off after the first frame and wakes touch"
+
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
 python3 tools/check_patch.py "$P212" -q \
@@ -2349,6 +2457,10 @@ grep -Fq 'shim-boot-console.img' .github/workflows/xnu.yml
 grep -Fq 'KPRINTF_MUTE="${KPRINTF_MUTE:-0}"' shim/build.sh
 grep -Fq 'DISPLAY_ARGS="disable_kprintf_output=1 sweetfb_stayon=1 sweetfb_hz=60"' shim/build.sh
 grep -Fq 'DISPLAY_ARGS="disable_kprintf_output=0"' shim/build.sh
+# Every workflow image keeps the default iPhone X canvas; native 1080x2160
+# is the opt-in SWEETFB_NATIVE=1 path only.
+grep -Fq -- '--reject sweetfb_native=1' .github/workflows/xnu.yml
+grep -Fq 'SWEETFB_NATIVE="${SWEETFB_NATIVE:-0}"' shim/build.sh
 grep -Fq 'KPRINTF_MUTE="$4"' .github/workflows/xnu.yml
 # The panel console is a separate switch from the mute: disable_kprintf_output
 # is inert in this kernel, so the only thing that really stops the console
