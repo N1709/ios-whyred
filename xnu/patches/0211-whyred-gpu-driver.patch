@@ -2,7 +2,7 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 index 8dbcb4a..01975c7 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -112,6 +112,7 @@ bsd/dev/sweet_i2c1.c			standard
+@@ -112,6 +112,7 @@ bsd/dev/whyred_power.c			standard
  bsd/dev/sweet_cpufreq.c			standard
  bsd/dev/santoni_sdhci.c			standard
  bsd/dev/santoni_touch.c			standard

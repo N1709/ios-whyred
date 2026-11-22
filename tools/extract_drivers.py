@@ -40,8 +40,8 @@ DRIVERS = {
     "gpu": ["bsd/dev/whyred_gpu.c"],
     "audio": ["bsd/dev/whyred_audio.c"],
     "power": [
-        "iokit/Kernel/arm/SweetBattery.cpp",
-        "bsd/dev/sweet_i2c1.c",
+        "iokit/Kernel/arm/WhyredBattery.cpp",
+        "bsd/dev/whyred_power.c",
     ],
 }
 

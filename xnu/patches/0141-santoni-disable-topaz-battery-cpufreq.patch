@@ -36,11 +36,11 @@ index 94c7552..969c04c 100644
 +#endif
  }
  #endif /* ARM64_BOARD_CONFIG_SWEET */
-diff --git a/bsd/dev/sweet_i2c1.c b/bsd/dev/sweet_i2c1.c
+diff --git a/bsd/dev/whyred_power.c b/bsd/dev/whyred_power.c
 index 08cdc34..f5830b8 100644
---- a/bsd/dev/sweet_i2c1.c
-+++ b/bsd/dev/sweet_i2c1.c
-@@ -48,6 +48,27 @@ int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
+--- a/bsd/dev/whyred_power.c
++++ b/bsd/dev/whyred_power.c
+@@ -48,6 +48,27 @@ int whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
  #define SE_PACK0        0x0007f8feu
  #define SE_PACK1        0x000ffefeu
  
@@ -53,40 +53,40 @@ index 08cdc34..f5830b8 100644
 + */
 +#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 +int
-+sweet_i2c1_init(void)
++whyred_power_init(void)
 +{
 +	printf("SWEET I2C1: no QUP0 SE1 on this board; static battery fallback\n");
 +	return EIO;
 +}
 +
 +int
-+sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
++whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
 +{
 +	return ENXIO;
 +}
 +#else
  static vm_offset_t i2c1_se, i2c1_gcc, i2c1_west;
  static bool i2c1_ready;
- static LCK_GRP_DECLARE(sweet_i2c1_grp, "sweet_i2c1");
-@@ -225,4 +246,5 @@ sweet_i2c1_init(void)
+ static LCK_GRP_DECLARE(whyred_power_grp, "whyred_power");
+@@ -225,4 +246,5 @@ whyred_power_init(void)
  	printf("SWEET I2C1: SE1 ready (fw %#x vote %#x)\n", fw, rd(i2c1_gcc, I2C1_GCC_VOTE));
  	return 0;
  }
 +#endif /* ARM64_BOARD_CONFIG_SANTONI */
  #endif /* ARM64_BOARD_CONFIG_SWEET */
-diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+diff --git a/iokit/Kernel/arm/WhyredBattery.cpp b/iokit/Kernel/arm/WhyredBattery.cpp
 index 824c022..3a1da62 100644
---- a/iokit/Kernel/arm/SweetBattery.cpp
-+++ b/iokit/Kernel/arm/SweetBattery.cpp
-@@ -323,6 +323,14 @@ SweetBattery::start(IOService *provider)
+--- a/iokit/Kernel/arm/WhyredBattery.cpp
++++ b/iokit/Kernel/arm/WhyredBattery.cpp
+@@ -323,6 +323,14 @@ WhyredBattery::start(IOService *provider)
  	if (!IOPMPowerSource::start(provider)) {
  		return false;
  	}
 +	/*
 +	 * santoni (MSM8937): this board has neither the SM6225 cpufreq-hw
 +	 * block (0xf523000) nor the topaz QUP0 SE1 battery bus (0x4a84000),
-+	 * so sweet_cpufreq_max() and sweet_i2c1_init() are inert here (see
-+	 * bsd/dev/sweet_cpufreq.c and bsd/dev/sweet_i2c1.c). The gauge then
++	 * so sweet_cpufreq_max() and whyred_power_init() are inert here (see
++	 * bsd/dev/sweet_cpufreq.c and bsd/dev/whyred_power.c). The gauge then
 +	 * fails to initialise and the battery stays on the static fallback
 +	 * until a real MSM8937 fuel-gauge driver exists.
 +	 */

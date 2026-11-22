@@ -15,13 +15,13 @@
 /* bsd/dev/sweet_spmi.c */
 extern "C" int sweet_spmi_init(void);
 extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
-/* bsd/dev/sweet_i2c1.c: topaz battery bus (QUP0 SE1) */
-extern "C" int sweet_i2c1_init(void);
+/* bsd/dev/whyred_power.c: topaz battery bus (QUP0 SE1) */
+extern "C" int whyred_power_init(void);
 extern "C" int sweet_cpufreq_max(void);    /* bsd/dev/sweet_cpufreq.c */
-extern "C" int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
+extern "C" int whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
 
-class SweetBattery : public IOPMPowerSource {
-	OSDeclareDefaultStructors(SweetBattery);
+class WhyredBattery : public IOPMPowerSource {
+	OSDeclareDefaultStructors(WhyredBattery);
 public:
 	bool init(OSDictionary *dictionary = NULL) APPLE_KEXT_OVERRIDE;
 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
@@ -43,10 +43,10 @@ private:
 	static bool readWord(unsigned address, uint16_t *value);
 	static unsigned estimatePercent(unsigned mv);
 };
-OSDefineMetaClassAndStructors(SweetBattery, IOPMPowerSource);
+OSDefineMetaClassAndStructors(WhyredBattery, IOPMPowerSource);
 
 bool
-SweetBattery::init(OSDictionary *dictionary)
+WhyredBattery::init(OSDictionary *dictionary)
 {
 	/* IOCatalogue calls init(dictionary). This XNU's IOPMPowerSource only
 	 * overrides init(void): explicitly run it to allocate its PS dictionary
@@ -81,7 +81,7 @@ SweetBattery::init(OSDictionary *dictionary)
 }
 
 void
-SweetBattery::putNumber(const char *key, UInt32 value)
+WhyredBattery::putNumber(const char *key, UInt32 value)
 {
 	const OSSymbol *symbol = OSSymbol::withCString(key);
 	OSNumber *number = OSNumber::withNumber(value, 32);
@@ -93,7 +93,7 @@ SweetBattery::putNumber(const char *key, UInt32 value)
 }
 
 void
-SweetBattery::putBool(const char *key, bool value)
+WhyredBattery::putBool(const char *key, bool value)
 {
 	const OSSymbol *symbol = OSSymbol::withCString(key);
 	if (symbol) {
@@ -103,7 +103,7 @@ SweetBattery::putBool(const char *key, bool value)
 }
 
 void
-SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
+WhyredBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
     bool capable, bool charging, bool full, bool measured, bool currentValid)
 {
 	/* Use consistent mAh units (DT nominal=5020). powerd computes C*100/M. */
@@ -129,12 +129,12 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
 	putNumber("InstantAmperage", (UInt32)ma);
 	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
 	putNumber("Temperature", 2500);
-	putBool("SweetBatteryHardwareSampleValid", measured);
-	putBool("SweetBatteryCurrentValid", currentValid);
-	putBool("SweetBatterySOCEstimated", measured);
-	putBool("SweetBatteryTemperatureEstimated", true);
-	putBool("SweetBatteryFallback", !measured);
-	putNumber("SweetBatteryPercent", percent);
+	putBool("WhyredBatteryHardwareSampleValid", measured);
+	putBool("WhyredBatteryCurrentValid", currentValid);
+	putBool("WhyredBatterySOCEstimated", measured);
+	putBool("WhyredBatteryTemperatureEstimated", true);
+	putBool("WhyredBatteryFallback", !measured);
+	putNumber("WhyredBatteryPercent", percent);
 
 	/* IOPMCopyBatteryInfo's per-source compatibility dictionary. */
 	OSDictionary *legacy = OSDictionary::withCapacity(7);
@@ -169,7 +169,7 @@ SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
  * words to reject most torn ADC samples without writing the QG HOLD bit.
  * This is a bounded consistency check, not a hardware snapshot guarantee. */
 bool
-SweetBattery::readWord(unsigned address, uint16_t *value)
+WhyredBattery::readWord(unsigned address, uint16_t *value)
 {
 	uint16_t previous = 0;
 	for (unsigned attempt = 0; attempt < 4; ++attempt) {
@@ -189,7 +189,7 @@ SweetBattery::readWord(unsigned address, uint16_t *value)
 }
 
 unsigned
-SweetBattery::estimatePercent(unsigned mv)
+WhyredBattery::estimatePercent(unsigned mv)
 {
 	/* Generic single-cell curve, intentionally NOT advertised as QG SOC.
 	 * Load sag, temperature, aging and charging introduce large errors. */
@@ -214,25 +214,25 @@ SweetBattery::estimatePercent(unsigned mv)
  * Read-only: nothing is written to either chip; charging runs in hardware.
  */
 bool
-SweetBattery::pollTopaz(void)
+WhyredBattery::pollTopaz(void)
 {
 	uint8_t w[2], st = 0;
 	uint16_t soc, volt, cur, full;
-	if (sweet_i2c1_read(0x71, 0x05, w, 2)) {
+	if (whyred_power_read(0x71, 0x05, w, 2)) {
 		return false;
 	}
 	soc = (uint16_t)(w[0] | w[1] << 8);
-	if (sweet_i2c1_read(0x71, 0x07, w, 2)) {
+	if (whyred_power_read(0x71, 0x07, w, 2)) {
 		return false;
 	}
 	volt = (uint16_t)(w[0] | w[1] << 8);
-	if (sweet_i2c1_read(0x71, 0x08, w, 2)) {
+	if (whyred_power_read(0x71, 0x08, w, 2)) {
 		return false;
 	}
 	cur = (uint16_t)(w[0] | w[1] << 8);
-	bool fullOk = sweet_i2c1_read(0x71, 0x62, w, 2) == 0;
+	bool fullOk = whyred_power_read(0x71, 0x62, w, 2) == 0;
 	full = fullOk ? (uint16_t)(w[0] | w[1] << 8) : 0;
-	bool chgOk = sweet_i2c1_read(0x6a, 0x0b, &st, 1) == 0;
+	bool chgOk = whyred_power_read(0x6a, 0x0b, &st, 1) == 0;
 
 	unsigned percent = (soc & 0x8000u) ? 0 : ((soc >> 8) & 0x7fu);
 	unsigned mv = 1800u * (volt & 0x7fffu) / 19622u + 2700u;
@@ -258,7 +258,7 @@ SweetBattery::pollTopaz(void)
 }
 
 void
-SweetBattery::poll(void)
+WhyredBattery::poll(void)
 {
 	if (fReal && pollTopaz()) {
 		return;
@@ -308,9 +308,9 @@ SweetBattery::poll(void)
 }
 
 void
-SweetBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
+WhyredBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
 {
-	SweetBattery *self = OSDynamicCast(SweetBattery, owner);
+	WhyredBattery *self = OSDynamicCast(WhyredBattery, owner);
 	if (self && self->fRunning) {
 		self->poll();
 		sender->setTimeoutMS(10000);
@@ -318,7 +318,7 @@ SweetBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
 }
 
 bool
-SweetBattery::start(IOService *provider)
+WhyredBattery::start(IOService *provider)
 {
 	if (!IOPMPowerSource::start(provider)) {
 		return false;
@@ -326,20 +326,20 @@ SweetBattery::start(IOService *provider)
 	/*
 	 * santoni (MSM8937): this board has neither the SM6225 cpufreq-hw
 	 * block (0xf523000) nor the topaz QUP0 SE1 battery bus (0x4a84000),
-	 * so sweet_cpufreq_max() and sweet_i2c1_init() are inert here (see
-	 * bsd/dev/sweet_cpufreq.c and bsd/dev/sweet_i2c1.c). The gauge then
+	 * so sweet_cpufreq_max() and whyred_power_init() are inert here (see
+	 * bsd/dev/sweet_cpufreq.c and bsd/dev/whyred_power.c). The gauge then
 	 * fails to initialise and the battery stays on the static fallback
 	 * until a real MSM8937 fuel-gauge driver exists.
 	 */
 	(void)sweet_cpufreq_max();
 	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
-	fReal = real == 1 && sweet_i2c1_init() == 0;
+	fReal = real == 1 && whyred_power_init() == 0;
 	/* Publish a complete source BEFORE registerService wakes powerd. */
 	poll();
 	if (fReal) {
 		fLoop = IOWorkLoop::workLoop();
-		fTimer = IOTimerEventSource::timerEventSource(this, &SweetBattery::timerFired);
+		fTimer = IOTimerEventSource::timerEventSource(this, &WhyredBattery::timerFired);
 		if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
 			fTimerAdded = true;
 			fRunning = true;
@@ -355,11 +355,11 @@ SweetBattery::start(IOService *provider)
 }
 
 void
-SweetBattery::stop(IOService *provider)
+WhyredBattery::stop(IOService *provider)
 {
 	if (fLoop && fTimerAdded) {
 		/* Serialize against a running timer callback, including rearming. */
-		(void)fLoop->runAction(&SweetBattery::stopPolling, this);
+		(void)fLoop->runAction(&WhyredBattery::stopPolling, this);
 		fLoop->removeEventSource(fTimer);
 		fTimerAdded = false;
 	}
@@ -367,9 +367,9 @@ SweetBattery::stop(IOService *provider)
 }
 
 IOReturn
-SweetBattery::stopPolling(OSObject *owner, void *, void *, void *, void *)
+WhyredBattery::stopPolling(OSObject *owner, void *, void *, void *, void *)
 {
-	SweetBattery *self = OSDynamicCast(SweetBattery, owner);
+	WhyredBattery *self = OSDynamicCast(WhyredBattery, owner);
 	if (!self) {
 		return kIOReturnBadArgument;
 	}
@@ -380,7 +380,7 @@ SweetBattery::stopPolling(OSObject *owner, void *, void *, void *, void *)
 }
 
 void
-SweetBattery::free(void)
+WhyredBattery::free(void)
 {
 	OSSafeReleaseNULL(fTimer);
 	OSSafeReleaseNULL(fLoop);

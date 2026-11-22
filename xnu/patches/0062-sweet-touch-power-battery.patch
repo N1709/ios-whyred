@@ -89,7 +89,7 @@
  iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
  iokit/Kernel/arm/SweetSurface.cpp                                optional iokitcpp
  iokit/Kernel/arm/SweetFramebuffer.cpp                            optional iokitcpp
-+iokit/Kernel/arm/SweetBattery.cpp                                optional iokitcpp
++iokit/Kernel/arm/WhyredBattery.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/SweetHID.cpp                                optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
  iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
@@ -100,9 +100,9 @@
      "     'IOMatchCategory' = SweetHIDTouch;"
      "   },"
 +    "   {"
-+    "     'IOClass'         = SweetBattery;"
++    "     'IOClass'         = WhyredBattery;"
 +    "     'IOProviderClass' = IOResources;"
-+    "     'IOMatchCategory' = SweetBattery;"
++    "     'IOMatchCategory' = WhyredBattery;"
 +    "   },"
  #endif
      "   {"
@@ -475,7 +475,7 @@
 + * Battery-only adaptation of input/sweet_keys.c, observer EXT_READL.
 + * PMIC READ ONLY. The only MMIO store issues a one-byte read command.
 + * No interrupt clear, peripheral enable, charger config, or PMIC writes.
-+ * Init is serialized by the single built-in SweetBattery personality.
++ * Init is serialized by the single built-in WhyredBattery personality.
 + * Battery APIDs are disjoint from the existing keys' 008/4c1 APIDs.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -600,7 +600,7 @@
 --- /dev/null
 +++ b/bsd/dev/sweet_spmi.h
 @@ -0,0 +1,14 @@
-+/* Shared C/C++ interface. Init once, on the SweetBattery start thread. */
++/* Shared C/C++ interface. Init once, on the WhyredBattery start thread. */
 +#ifndef SWEET_BATTERY_SPMI_H
 +#define SWEET_BATTERY_SPMI_H
 +#include <stdint.h>
@@ -615,7 +615,7 @@
 +#endif
 +#endif
 --- /dev/null
-+++ b/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/WhyredBattery.cpp
 @@ -0,0 +1,319 @@
 +/*
 + * Built-in iOS battery bring-up service. Default: 100%, AC, not charging.
@@ -635,8 +635,8 @@
 +extern "C" int sweet_spmi_init(void);
 +extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
 +
-+class SweetBattery : public IOPMPowerSource {
-+	OSDeclareDefaultStructors(SweetBattery);
++class WhyredBattery : public IOPMPowerSource {
++	OSDeclareDefaultStructors(WhyredBattery);
 +public:
 +	bool init(OSDictionary *dictionary = NULL) APPLE_KEXT_OVERRIDE;
 +	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
@@ -657,10 +657,10 @@
 +	static bool readWord(unsigned address, uint16_t *value);
 +	static unsigned estimatePercent(unsigned mv);
 +};
-+OSDefineMetaClassAndStructors(SweetBattery, IOPMPowerSource);
++OSDefineMetaClassAndStructors(WhyredBattery, IOPMPowerSource);
 +
 +bool
-+SweetBattery::init(OSDictionary *dictionary)
++WhyredBattery::init(OSDictionary *dictionary)
 +{
 +	/* IOCatalogue calls init(dictionary). This XNU's IOPMPowerSource only
 +	 * overrides init(void): explicitly run it to allocate its PS dictionary
@@ -695,7 +695,7 @@
 +}
 +
 +void
-+SweetBattery::putNumber(const char *key, UInt32 value)
++WhyredBattery::putNumber(const char *key, UInt32 value)
 +{
 +	const OSSymbol *symbol = OSSymbol::withCString(key);
 +	OSNumber *number = OSNumber::withNumber(value, 32);
@@ -707,7 +707,7 @@
 +}
 +
 +void
-+SweetBattery::putBool(const char *key, bool value)
++WhyredBattery::putBool(const char *key, bool value)
 +{
 +	const OSSymbol *symbol = OSSymbol::withCString(key);
 +	if (symbol) {
@@ -717,7 +717,7 @@
 +}
 +
 +void
-+SweetBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
++WhyredBattery::publish(unsigned percent, unsigned mv, int ma, bool external,
 +    bool capable, bool charging, bool full, bool measured, bool currentValid)
 +{
 +	/* Use consistent mAh units (DT nominal=5020). powerd computes C*100/M. */
@@ -743,12 +743,12 @@
 +	putNumber("InstantAmperage", (UInt32)ma);
 +	/* iOS battery convention: centidegrees C; fixed 25 C, NOT measured. */
 +	putNumber("Temperature", 2500);
-+	putBool("SweetBatteryHardwareSampleValid", measured);
-+	putBool("SweetBatteryCurrentValid", currentValid);
-+	putBool("SweetBatterySOCEstimated", measured);
-+	putBool("SweetBatteryTemperatureEstimated", true);
-+	putBool("SweetBatteryFallback", !measured);
-+	putNumber("SweetBatteryPercent", percent);
++	putBool("WhyredBatteryHardwareSampleValid", measured);
++	putBool("WhyredBatteryCurrentValid", currentValid);
++	putBool("WhyredBatterySOCEstimated", measured);
++	putBool("WhyredBatteryTemperatureEstimated", true);
++	putBool("WhyredBatteryFallback", !measured);
++	putNumber("WhyredBatteryPercent", percent);
 +
 +	/* IOPMCopyBatteryInfo's per-source compatibility dictionary. */
 +	OSDictionary *legacy = OSDictionary::withCapacity(7);
@@ -783,7 +783,7 @@
 + * words to reject most torn ADC samples without writing the QG HOLD bit.
 + * This is a bounded consistency check, not a hardware snapshot guarantee. */
 +bool
-+SweetBattery::readWord(unsigned address, uint16_t *value)
++WhyredBattery::readWord(unsigned address, uint16_t *value)
 +{
 +	uint16_t previous = 0;
 +	for (unsigned attempt = 0; attempt < 4; ++attempt) {
@@ -803,7 +803,7 @@
 +}
 +
 +unsigned
-+SweetBattery::estimatePercent(unsigned mv)
++WhyredBattery::estimatePercent(unsigned mv)
 +{
 +	/* Generic single-cell curve, intentionally NOT advertised as QG SOC.
 +	 * Load sag, temperature, aging and charging introduce large errors. */
@@ -823,7 +823,7 @@
 +}
 +
 +void
-+SweetBattery::poll(void)
++WhyredBattery::poll(void)
 +{
 +	uint8_t type, present, usb, path, charger, error, temperature;
 +	uint16_t rawVoltage;
@@ -866,9 +866,9 @@
 +}
 +
 +void
-+SweetBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
++WhyredBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
 +{
-+	SweetBattery *self = OSDynamicCast(SweetBattery, owner);
++	WhyredBattery *self = OSDynamicCast(WhyredBattery, owner);
 +	if (self && self->fRunning) {
 +		self->poll();
 +		sender->setTimeoutMS(30000);
@@ -876,7 +876,7 @@
 +}
 +
 +bool
-+SweetBattery::start(IOService *provider)
++WhyredBattery::start(IOService *provider)
 +{
 +	if (!IOPMPowerSource::start(provider)) {
 +		return false;
@@ -888,7 +888,7 @@
 +	poll();
 +	if (fReal) {
 +		fLoop = IOWorkLoop::workLoop();
-+		fTimer = IOTimerEventSource::timerEventSource(this, &SweetBattery::timerFired);
++		fTimer = IOTimerEventSource::timerEventSource(this, &WhyredBattery::timerFired);
 +		if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
 +			fTimerAdded = true;
 +			fRunning = true;
@@ -904,11 +904,11 @@
 +}
 +
 +void
-+SweetBattery::stop(IOService *provider)
++WhyredBattery::stop(IOService *provider)
 +{
 +	if (fLoop && fTimerAdded) {
 +		/* Serialize against a running timer callback, including rearming. */
-+		(void)fLoop->runAction(&SweetBattery::stopPolling, this);
++		(void)fLoop->runAction(&WhyredBattery::stopPolling, this);
 +		fLoop->removeEventSource(fTimer);
 +		fTimerAdded = false;
 +	}
@@ -916,9 +916,9 @@
 +}
 +
 +IOReturn
-+SweetBattery::stopPolling(OSObject *owner, void *, void *, void *, void *)
++WhyredBattery::stopPolling(OSObject *owner, void *, void *, void *, void *)
 +{
-+	SweetBattery *self = OSDynamicCast(SweetBattery, owner);
++	WhyredBattery *self = OSDynamicCast(WhyredBattery, owner);
 +	if (!self) {
 +		return kIOReturnBadArgument;
 +	}
@@ -929,7 +929,7 @@
 +}
 +
 +void
-+SweetBattery::free(void)
++WhyredBattery::free(void)
 +{
 +	OSSafeReleaseNULL(fTimer);
 +	OSSafeReleaseNULL(fLoop);

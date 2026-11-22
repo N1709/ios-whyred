@@ -44,7 +44,7 @@ patch like every other driver.
 | `wifi/` | WCN3990 (SNOC) + BT SLIMbus | `TopazModem.cpp` (topaz reference) | none yet | not started |
 | `touch/` | Synaptics DSX / Novatek NT36672 (I2C) | `santoni_touch.c`, `sweet_touch.c` | `touch/dsx`, `touch/input`, `touch/hid` | probing (`0184`+) |
 | `audio/` | WCD9335 + ADSP | none in tree | `audio/dsp` | not started |
-| `power/` | PM660/PM660L charger and gauge | `SweetBattery.cpp`, `sweet_i2c1.c` | `power/pmic`, `power/pmgr`, `power/cpu` | not started |
+| `power/` | PM660/PM660L charger and gauge | `WhyredBattery.cpp`, `whyred_power.c` | `power/pmic`, `power/pmgr`, `power/cpu` | renamed, still disabled (`sweetbattery=0`) |
 | `key-store/` | board-independent key events | none in tree | `key-store/keystore` | not started |
 
 Hardware facts for the domains with no code yet are in `gpu/hw.md` and

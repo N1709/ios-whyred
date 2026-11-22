@@ -6,7 +6,7 @@ Subject: [PATCH] topaz-0094: gold cluster to max cpufreq
 ---
  bsd/conf/files                    |  1 +
  bsd/dev/sweet_cpufreq.c           | 54 +++++++++++++++++++++++++++++++
- iokit/Kernel/arm/SweetBattery.cpp |  2 ++
+ iokit/Kernel/arm/WhyredBattery.cpp |  2 ++
  3 files changed, 57 insertions(+)
  create mode 100644 bsd/dev/sweet_cpufreq.c
 
@@ -17,7 +17,7 @@ index 72a96d4..21cdb5c 100644
 @@ -109,6 +109,7 @@ bsd/dev/sweet_sample.c			standard
  bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_touch.c			standard
- bsd/dev/sweet_i2c1.c			standard
+ bsd/dev/whyred_power.c			standard
 +bsd/dev/sweet_cpufreq.c			standard
  bsd/dev/sweet_rpmh.c			standard
  bsd/dev/sweet_spmi.c			standard
@@ -82,26 +82,26 @@ index 0000000..94c7552
 +	return 0;
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
-diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+diff --git a/iokit/Kernel/arm/WhyredBattery.cpp b/iokit/Kernel/arm/WhyredBattery.cpp
 index 809857b..824c022 100644
---- a/iokit/Kernel/arm/SweetBattery.cpp
-+++ b/iokit/Kernel/arm/SweetBattery.cpp
+--- a/iokit/Kernel/arm/WhyredBattery.cpp
++++ b/iokit/Kernel/arm/WhyredBattery.cpp
 @@ -17,6 +17,7 @@ extern "C" int sweet_spmi_init(void);
  extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
- /* bsd/dev/sweet_i2c1.c: topaz battery bus (QUP0 SE1) */
- extern "C" int sweet_i2c1_init(void);
+ /* bsd/dev/whyred_power.c: topaz battery bus (QUP0 SE1) */
+ extern "C" int whyred_power_init(void);
 +extern "C" int sweet_cpufreq_max(void);    /* bsd/dev/sweet_cpufreq.c */
- extern "C" int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
+ extern "C" int whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
  
- class SweetBattery : public IOPMPowerSource {
-@@ -322,6 +323,7 @@ SweetBattery::start(IOService *provider)
+ class WhyredBattery : public IOPMPowerSource {
+@@ -322,6 +323,7 @@ WhyredBattery::start(IOService *provider)
  	if (!IOPMPowerSource::start(provider)) {
  		return false;
  	}
 +	(void)sweet_cpufreq_max();
  	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
  	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
- 	fReal = real == 1 && sweet_i2c1_init() == 0;
+ 	fReal = real == 1 && whyred_power_init() == 0;
 -- 
 2.43.0
 

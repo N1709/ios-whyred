@@ -6,20 +6,20 @@ index 6630131..72a96d4 100644
  bsd/dev/sweet_sample.c			standard
  bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_touch.c			standard
-+bsd/dev/sweet_i2c1.c			standard
++bsd/dev/whyred_power.c			standard
  bsd/dev/sweet_rpmh.c			standard
  bsd/dev/sweet_spmi.c			standard
  bsd/dev/sweet_usb.c			standard
-diff --git a/bsd/dev/sweet_i2c1.c b/bsd/dev/sweet_i2c1.c
+diff --git a/bsd/dev/whyred_power.c b/bsd/dev/whyred_power.c
 new file mode 100644
 index 0000000..08cdc34
 --- /dev/null
-+++ b/bsd/dev/sweet_i2c1.c
++++ b/bsd/dev/whyred_power.c
 @@ -0,0 +1,228 @@
 +/*
 + * topaz: polled FIFO I2C on QUP0 SE1 (battery bus: SM5602 fuel gauge 0x71,
 + * bq2589x-class charger 0x6a). Values from MakrSas/topaz-woa TopazBattery
-+ * (hw.h, hwio.c) and Linux i2c-qcom-geni.c. Read-only use by SweetBattery.
++ * (hw.h, hwio.c) and Linux i2c-qcom-geni.c. Read-only use by WhyredBattery.
 + * The SE1 RCG is not touched: DFS level 0 already runs from XO (TopazBattery).
 + */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -31,8 +31,8 @@ index 0000000..08cdc34
 +#include <machine/machine_routines.h>
 +
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
-+int sweet_i2c1_init(void);
-+int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
++int whyred_power_init(void);
++int whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
 +
 +#define I2C1_SE_PA      0x04a84000u
 +#define I2C1_GCC_PA     0x01400000u
@@ -68,8 +68,8 @@ index 0000000..08cdc34
 +
 +static vm_offset_t i2c1_se, i2c1_gcc, i2c1_west;
 +static bool i2c1_ready;
-+static LCK_GRP_DECLARE(sweet_i2c1_grp, "sweet_i2c1");
-+static LCK_MTX_DECLARE(sweet_i2c1_lock, &sweet_i2c1_grp);
++static LCK_GRP_DECLARE(whyred_power_grp, "whyred_power");
++static LCK_MTX_DECLARE(whyred_power_lock, &whyred_power_grp);
 +
 +static uint32_t
 +rd(vm_offset_t b, uint32_t o)
@@ -175,22 +175,22 @@ index 0000000..08cdc34
 +}
 +
 +int
-+sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
++whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
 +{
 +	if (!i2c1_ready || len == 0 || len > 64) {
 +		return ENXIO;
 +	}
-+	lck_mtx_lock(&sweet_i2c1_lock);
++	lck_mtx_lock(&whyred_power_lock);
 +	int err = i2c1_msg(addr, &reg, 1, NULL, 0, true);
 +	if (!err) {
 +		err = i2c1_msg(addr, NULL, 0, buf, len, false);
 +	}
-+	lck_mtx_unlock(&sweet_i2c1_lock);
++	lck_mtx_unlock(&whyred_power_lock);
 +	return err;
 +}
 +
 +int
-+sweet_i2c1_init(void)
++whyred_power_init(void)
 +{
 +	if (i2c1_ready) {
 +		return 0;
@@ -244,20 +244,20 @@ index 0000000..08cdc34
 +	return 0;
 +}
 +#endif /* ARM64_BOARD_CONFIG_SWEET */
-diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+diff --git a/iokit/Kernel/arm/WhyredBattery.cpp b/iokit/Kernel/arm/WhyredBattery.cpp
 index 9969739..809857b 100644
---- a/iokit/Kernel/arm/SweetBattery.cpp
-+++ b/iokit/Kernel/arm/SweetBattery.cpp
+--- a/iokit/Kernel/arm/WhyredBattery.cpp
++++ b/iokit/Kernel/arm/WhyredBattery.cpp
 @@ -15,6 +15,9 @@
  /* bsd/dev/sweet_spmi.c */
  extern "C" int sweet_spmi_init(void);
  extern "C" int sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out);
-+/* bsd/dev/sweet_i2c1.c: topaz battery bus (QUP0 SE1) */
-+extern "C" int sweet_i2c1_init(void);
-+extern "C" int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
++/* bsd/dev/whyred_power.c: topaz battery bus (QUP0 SE1) */
++extern "C" int whyred_power_init(void);
++extern "C" int whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
  
- class SweetBattery : public IOPMPowerSource {
- 	OSDeclareDefaultStructors(SweetBattery);
+ class WhyredBattery : public IOPMPowerSource {
+ 	OSDeclareDefaultStructors(WhyredBattery);
 @@ -33,6 +36,7 @@ private:
  	void publish(unsigned percent, unsigned mv, int ma, bool external,
  	    bool capable, bool charging, bool full, bool measured, bool currentValid);
@@ -266,7 +266,7 @@ index 9969739..809857b 100644
  	static void timerFired(OSObject *owner, IOTimerEventSource *sender);
  	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
  	static bool readWord(unsigned address, uint16_t *value);
-@@ -203,9 +207,65 @@ SweetBattery::estimatePercent(unsigned mv)
+@@ -203,9 +207,65 @@ WhyredBattery::estimatePercent(unsigned mv)
  	return 100;
  }
  
@@ -276,25 +276,25 @@ index 9969739..809857b 100644
 + * Read-only: nothing is written to either chip; charging runs in hardware.
 + */
 +bool
-+SweetBattery::pollTopaz(void)
++WhyredBattery::pollTopaz(void)
 +{
 +	uint8_t w[2], st = 0;
 +	uint16_t soc, volt, cur, full;
-+	if (sweet_i2c1_read(0x71, 0x05, w, 2)) {
++	if (whyred_power_read(0x71, 0x05, w, 2)) {
 +		return false;
 +	}
 +	soc = (uint16_t)(w[0] | w[1] << 8);
-+	if (sweet_i2c1_read(0x71, 0x07, w, 2)) {
++	if (whyred_power_read(0x71, 0x07, w, 2)) {
 +		return false;
 +	}
 +	volt = (uint16_t)(w[0] | w[1] << 8);
-+	if (sweet_i2c1_read(0x71, 0x08, w, 2)) {
++	if (whyred_power_read(0x71, 0x08, w, 2)) {
 +		return false;
 +	}
 +	cur = (uint16_t)(w[0] | w[1] << 8);
-+	bool fullOk = sweet_i2c1_read(0x71, 0x62, w, 2) == 0;
++	bool fullOk = whyred_power_read(0x71, 0x62, w, 2) == 0;
 +	full = fullOk ? (uint16_t)(w[0] | w[1] << 8) : 0;
-+	bool chgOk = sweet_i2c1_read(0x6a, 0x0b, &st, 1) == 0;
++	bool chgOk = whyred_power_read(0x6a, 0x0b, &st, 1) == 0;
 +
 +	unsigned percent = (soc & 0x8000u) ? 0 : ((soc >> 8) & 0x7fu);
 +	unsigned mv = 1800u * (volt & 0x7fffu) / 19622u + 2700u;
@@ -320,7 +320,7 @@ index 9969739..809857b 100644
 +}
 +
  void
- SweetBattery::poll(void)
+ WhyredBattery::poll(void)
  {
 +	if (fReal && pollTopaz()) {
 +		return;
@@ -332,8 +332,8 @@ index 9969739..809857b 100644
  	uint8_t type, present, usb, path, charger, error, temperature;
  	uint16_t rawVoltage;
  	bool valid = fReal &&
-@@ -252,7 +312,7 @@ SweetBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
- 	SweetBattery *self = OSDynamicCast(SweetBattery, owner);
+@@ -252,7 +312,7 @@ WhyredBattery::timerFired(OSObject *owner, IOTimerEventSource *sender)
+ 	WhyredBattery *self = OSDynamicCast(WhyredBattery, owner);
  	if (self && self->fRunning) {
  		self->poll();
 -		sender->setTimeoutMS(30000);
@@ -341,7 +341,7 @@ index 9969739..809857b 100644
  	}
  }
  
-@@ -262,9 +322,9 @@ SweetBattery::start(IOService *provider)
+@@ -262,9 +322,9 @@ WhyredBattery::start(IOService *provider)
  	if (!IOPMPowerSource::start(provider)) {
  		return false;
  	}
@@ -349,11 +349,11 @@ index 9969739..809857b 100644
 +	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
  	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
 -	fReal = real == 1 && sweet_spmi_init() == 0;
-+	fReal = real == 1 && sweet_i2c1_init() == 0;
++	fReal = real == 1 && whyred_power_init() == 0;
  	/* Publish a complete source BEFORE registerService wakes powerd. */
  	poll();
  	if (fReal) {
-@@ -273,7 +333,7 @@ SweetBattery::start(IOService *provider)
+@@ -273,7 +333,7 @@ WhyredBattery::start(IOService *provider)
  		if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
  			fTimerAdded = true;
  			fRunning = true;

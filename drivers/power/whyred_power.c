@@ -1,7 +1,7 @@
 /*
  * topaz: polled FIFO I2C on QUP0 SE1 (battery bus: SM5602 fuel gauge 0x71,
  * bq2589x-class charger 0x6a). Values from MakrSas/topaz-woa TopazBattery
- * (hw.h, hwio.c) and Linux i2c-qcom-geni.c. Read-only use by SweetBattery.
+ * (hw.h, hwio.c) and Linux i2c-qcom-geni.c. Read-only use by WhyredBattery.
  * The SE1 RCG is not touched: DFS level 0 already runs from XO (TopazBattery).
  */
 #if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -13,8 +13,8 @@
 #include <machine/machine_routines.h>
 
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
-int sweet_i2c1_init(void);
-int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
+int whyred_power_init(void);
+int whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
 
 #define I2C1_SE_PA      0x04a84000u
 #define I2C1_GCC_PA     0x01400000u
@@ -57,22 +57,22 @@ int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
  */
 #if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 int
-sweet_i2c1_init(void)
+whyred_power_init(void)
 {
 	printf("SWEET I2C1: no QUP0 SE1 on this board; static battery fallback\n");
 	return EIO;
 }
 
 int
-sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
+whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
 {
 	return ENXIO;
 }
 #else
 static vm_offset_t i2c1_se, i2c1_gcc, i2c1_west;
 static bool i2c1_ready;
-static LCK_GRP_DECLARE(sweet_i2c1_grp, "sweet_i2c1");
-static LCK_MTX_DECLARE(sweet_i2c1_lock, &sweet_i2c1_grp);
+static LCK_GRP_DECLARE(whyred_power_grp, "whyred_power");
+static LCK_MTX_DECLARE(whyred_power_lock, &whyred_power_grp);
 
 static uint32_t
 rd(vm_offset_t b, uint32_t o)
@@ -178,22 +178,22 @@ i2c1_msg(uint8_t addr, const uint8_t *tx, unsigned nt, uint8_t *rx, unsigned nr,
 }
 
 int
-sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
+whyred_power_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
 {
 	if (!i2c1_ready || len == 0 || len > 64) {
 		return ENXIO;
 	}
-	lck_mtx_lock(&sweet_i2c1_lock);
+	lck_mtx_lock(&whyred_power_lock);
 	int err = i2c1_msg(addr, &reg, 1, NULL, 0, true);
 	if (!err) {
 		err = i2c1_msg(addr, NULL, 0, buf, len, false);
 	}
-	lck_mtx_unlock(&sweet_i2c1_lock);
+	lck_mtx_unlock(&whyred_power_lock);
 	return err;
 }
 
 int
-sweet_i2c1_init(void)
+whyred_power_init(void)
 {
 	if (i2c1_ready) {
 		return 0;

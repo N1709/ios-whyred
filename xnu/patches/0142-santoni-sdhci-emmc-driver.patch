@@ -4,7 +4,7 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 @@ -108,7 +108,8 @@
  bsd/dev/sweet_keys.c			standard
  bsd/dev/sweet_touch.c			standard
- bsd/dev/sweet_i2c1.c			standard
+ bsd/dev/whyred_power.c			standard
  bsd/dev/sweet_cpufreq.c			standard
 +bsd/dev/santoni_sdhci.c			standard
  bsd/dev/sweet_rpmh.c			standard
