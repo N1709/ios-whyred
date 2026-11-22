@@ -1936,10 +1936,13 @@ P220="xnu/patches/0220-whyred-touch-power.patch"
 python3 tools/check_patch.py "$P220" -q \
 	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CORE_PA' \
 	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CHNL_PA' \
+	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CNFG_PA' \
+	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_OWNER' \
 	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_LDO11_PPID' \
 	--added-contains 'bsd/dev/whyred_touch.c:touch_spmi_write' \
 	--added-contains 'bsd/dev/whyred_touch.c:whyred_touch_power_cycle' \
 	--added-contains 'bsd/dev/whyred_touch.c:sweetouchpower' \
+	--added-contains 'bsd/dev/whyred_touch.c:not toggling' \
 	--added-contains 'bsd/dev/whyred_touch.c:(void)whyred_touch_power_cycle();' \
 	--added-contains 'bsd/dev/whyred_touch.c:dsx_f12_wg_off' \
 	--added-contains 'bsd/dev/whyred_touch.c:f12 ctrl20' \
@@ -1963,8 +1966,22 @@ assert 'dsx_f12_wg_off(q5n, q5)' in body
 assert 'wg_index = 2' in body
 assert 'f12 ctrl20 <-' in body
 assert '(v & ~0x07u) | 0x80u' in body
+# The rail toggle is opt-in and refuses an APID another EE owns, because
+# LDO11 is RPM-managed and the APPS write is what raised the early SError.
+assert '(owner & 7u) != 0' in body
+assert 'owner EE%u, not APPS' in body
+assert 'ldo11 enable unreadable, not toggling' in body
 PY2
 echo "ok   0220 toggles LDO11, clears F01 sleep and exits F12 LPWG"
+
+echo "== PANIC: 0221 names the faulting state =="
+P221="xnu/patches/0221-whyred-panic-context.patch"
+python3 tools/check_patch.py "$P221" -q \
+	--added-contains 'osfmk/arm64/sleh.c:arm_saved_state64_t *ss = saved_state64(state);' \
+	--added-contains 'osfmk/arm64/sleh.c:pc=%p' \
+	--added-contains 'osfmk/arm64/sleh.c:far=%p' \
+	--added-contains 'osfmk/arm64/sleh.c:esr=%08x'
+echo "ok   0221 prints pc/lr/sp/far/esr on an SError"
 
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
@@ -2184,7 +2201,8 @@ grep -Fq 'PANEL_NOCONSOLE="${PANEL_NOCONSOLE:-0}"' shim/build.sh
 grep -Fq 'DISPLAY_ARGS="$DISPLAY_ARGS sweetfb_noconsole=1"' shim/build.sh
 grep -Fq 'PANEL_NOCONSOLE="$5"' .github/workflows/xnu.yml
 grep -Fq 'NOCONSOLE=1' .github/workflows/xnu.yml
-grep -Fq 'sweetouchi2c=1 sweetouchpower=1 sweetouchwait=0 sweeti2c=1' .github/workflows/xnu.yml
+grep -Fq 'sweetouchi2c=1 sweetouchwait=0' .github/workflows/xnu.yml
+! grep -Fq 'sweetouchpower=1 sweetouchwait=0 sweeti2c=1' .github/workflows/xnu.yml
 grep -Fq 'sweetouchpower=1' tools/build-touch-diag.sh
 ! grep -Fq 'panel_console:' .github/workflows/xnu.yml
 grep -Fq -- '--require sweetfb_noconsole=1' .github/workflows/xnu.yml

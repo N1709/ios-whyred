@@ -17,7 +17,7 @@ Last updated: 2026-11-22.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | Added (0218), not booted |
+| Touch (as HID input) | Added (0218); 0220 rail toggle removed from the default boot |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -54,6 +54,26 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | iOS userland | launchd → backboardd → SpringBoard boots to the lock screen — **works**; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
 | Touch | DSX at `0x20` probed, F12 programmed, tap poll exists — **not in HID yet** |
 
+## Panic 0220/0221 (2026-11-22)
+
+The 0220 image stopped at `SWEET EARLY PANIC: Unhandled implementation
+specific error`. That text is XNU's SError path (`osfmk/arm64/sleh.c`), not
+a normal data abort: some MMIO access raised an asynchronous bus error. The
+new default cmdline forced `sweetouchpower=1` and `sweeti2c=1`; LDO11 is an
+RPM-managed regulator on whyred (`qcom,rpm-smd-regulator`), so the APPS
+does not own its SPMI APID. The direct rail toggle is the prime suspect.
+
+0220 now reads the arbiter ownership table and refuses a non-APPS APID;
+0221 prints `pc/lr/sp/far/esr` on this panic so the next failure names its
+PC. The normal image goes back to the proven bit-bang probe
+(`sweetouchi2c=1 sweetouchwait=0`); `sweetouchpower=1` and `sweeti2c=1`
+are opt-in diagnostics only. The F01 sleep clear and the F12 `ctrl20`
+wakeup-gesture clear stay, so the DSX can still leave LPWG.
+
+Next boot: confirm the panic is gone, then read `WHYRED TOUCH: address
+phase`, `f01 ctrl ... -> 0x80`, `f12 ctrl20 <- ... 00`, `f12 ctrl28 <-
+0x1f ack`, and a finger tap in the HID poll.
+
 ## New fixes 0207-0210 (2026-11-22, not booted)
 
 Four small SDM660 fixes from `pcorezzola/lavender-ios16` are now whyred
@@ -66,7 +86,7 @@ patches. They are local code only: no CI build and no boot yet.
 | 0209 | PM660 RTC through the same arbiter; skips the 30 s IORTC wait; calendar fallback | `sweetrtc`, `sweetrtcoff` |
 | 0210 | SDCC v5 exact PIO/cache state, post-write DAT0/CMD13 wait, DMA diagnostics, ADMA2 reads with PIO fallback | `sweetemmc_dma=0`, `sweetemmc_speed=1`, `sweetemmc_dmatest=1` |
 
-All 222 patches apply on the whyred series tip; `drivers/` mirrors are
+All 227 patches apply on the whyred series tip; `drivers/` mirrors are
 regenerated. The next boot must confirm the banner `driver 0210`, the
 ADMA2 self-test, `SWEET KEYS:` lines, `SWEET RTC:` raw/offset and the
 `SWEET FB: present ... us` budget.

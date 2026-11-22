@@ -65,18 +65,24 @@ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
     uint32_t flags);
 
 /*
- * PM660 LDO11 (vcc_i2c) powers the DSX and the I2C pull-ups. The part only
- * accepts register addresses for about 3 s after its own power-on, while XNU
- * reaches the touch probe minutes later, so toggling this rail is what
- * creates a fresh window. SDM660 uses PMIC arbiter v3: core 0x0800f000,
- * write channels 0x08400000, observer 0x09400000, per-APID offset 0x8000
- * for EE0. The command word only carries the low byte of the SPMI address;
- * LDO11 enable is 0x4a46, so the byte is 0x46.
+ * PM660 LDO11 (vcc_i2c) powers the DSX and the I2C pull-ups. On whyred the
+ * vendor DTS declares it as an RPM-managed regulator (qcom,rpm-smd-regulator
+ * in sdm660-regulator.dtsi), so the APPS normally does not own its APID.
+ * The toggle below is therefore opt-in (sweetouchpower=1) and refuses to
+ * touch an APID whose ownership word does not name APPS (EE0): writing
+ * another EE's rail is the kind of access that raises the SError the early
+ * panic reports. SDM660 uses PMIC arbiter v3: core 0x0800f000, write
+ * channels 0x08400000, observer 0x09400000, ownership table in cnfg
+ * 0x0800a000 at +0x700, per-APID offset 0x8000 for EE0. The command word
+ * only carries the low byte of the SPMI address; LDO11 enable is 0x4a46,
+ * so the byte is 0x46.
  */
 #define TOUCH_SPMI_CORE_PA	0x0800f000u
 #define TOUCH_SPMI_CHNL_PA	0x08400000u
 #define TOUCH_SPMI_OBS_PA	0x09400000u
+#define TOUCH_SPMI_CNFG_PA	0x0800a000u
 #define TOUCH_SPMI_APID_MAP	0x800u
+#define TOUCH_SPMI_OWNER(apid)	(0x700u + 4u * (apid))
 #define TOUCH_SPMI_MAX_APIDS	512
 #define TOUCH_LDO11_PPID	0x04au
 #define TOUCH_LDO11_ENABLE	0x46u
@@ -139,22 +145,35 @@ struct touch_pin {
 static struct touch_pin touch_sda, touch_scl;
 static int touch_probe_done;
 
+/*
+ * Prefer the APPS-owned mapping. One PPID can be mapped more than once (one
+ * APID per execution environment), and the first entry is not necessarily
+ * ours; the ownership table at cnfg + 0x700 says which EE may write it.
+ */
 static int
-touch_spmi_find_apid(vm_offset_t core, uint16_t ppid)
+touch_spmi_find_apid(vm_offset_t core, vm_offset_t cnfg, uint16_t ppid)
 {
-	uint32_t map;
-	int i;
+	uint32_t map, owner;
+	int first = -1, i;
 
 	for (i = 0; i < TOUCH_SPMI_MAX_APIDS; i++) {
 		map = *(volatile uint32_t *)(core +
 		    TOUCH_SPMI_APID_MAP + 4u * i);
-
 		__asm__ volatile("dmb oshld" ::: "memory");
-		if (map && ((map >> 8) & 0xfffu) == ppid) {
+		if (!map || ((map >> 8) & 0xfffu) != ppid) {
+			continue;
+		}
+		if (first < 0) {
+			first = i;
+		}
+		owner = *(volatile uint32_t *)(cnfg +
+		    TOUCH_SPMI_OWNER(i));
+		__asm__ volatile("dmb oshld" ::: "memory");
+		if ((owner & 7u) == 0) {
 			return i;
 		}
 	}
-	return -1;
+	return first;
 }
 
 static int
@@ -212,22 +231,30 @@ touch_spmi_write(vm_offset_t chan, uint8_t reg, uint8_t val)
 static int
 whyred_touch_power_cycle(void)
 {
-	vm_offset_t core, chnls, obs;
+	vm_offset_t core, cnfg, chnls, obs;
 	uint8_t before = 0, after = 0;
-	uint32_t on = 0;
+	uint32_t on = 0, owner;
 	int apid, rc;
 
 	if (!PE_parse_boot_argn("sweetouchpower", &on, sizeof(on)) || !on) {
 		return 0;
 	}
 	core = ml_io_map(TOUCH_SPMI_CORE_PA, 0x1000);
-	if (!core) {
-		printf("WHYRED TOUCH: ldo11 core map failed\n");
+	cnfg = ml_io_map(TOUCH_SPMI_CNFG_PA, 0x1000);
+	if (!core || !cnfg) {
+		printf("WHYRED TOUCH: ldo11 arbiter map failed\n");
 		return -1;
 	}
-	apid = touch_spmi_find_apid(core, TOUCH_LDO11_PPID);
+	apid = touch_spmi_find_apid(core, cnfg, TOUCH_LDO11_PPID);
 	if (apid < 0) {
 		printf("WHYRED TOUCH: ldo11 has no APID\n");
+		return -1;
+	}
+	owner = *(volatile uint32_t *)(cnfg + TOUCH_SPMI_OWNER(apid));
+	__asm__ volatile("dmb oshld" ::: "memory");
+	if ((owner & 7u) != 0) {
+		printf("WHYRED TOUCH: ldo11 apid %d owner EE%u, not APPS; "
+		    "not toggling\n", apid, owner & 7u);
 		return -1;
 	}
 	chnls = ml_io_map(TOUCH_SPMI_CHNL_PA + 0x8000u * (uint32_t)apid,
@@ -242,6 +269,10 @@ whyred_touch_power_cycle(void)
 	rc = touch_spmi_read(obs, TOUCH_LDO11_ENABLE, &before);
 	printf("WHYRED TOUCH: ldo11 apid %d enable before 0x%02x (%s)\n",
 	    apid, before, rc == 0 ? "ok" : "read failed");
+	if (rc != 0) {
+		printf("WHYRED TOUCH: ldo11 enable unreadable, not toggling\n");
+		return -1;
+	}
 	rc = touch_spmi_write(chnls, TOUCH_LDO11_ENABLE,
 	    before & (uint8_t)~TOUCH_LDO11_ENABLE_BIT);
 	printf("WHYRED TOUCH: ldo11 disable %s\n", rc == 0 ? "ack" : "nack");

@@ -1,0 +1,24 @@
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 5b9df19..07b2179 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -394,8 +394,17 @@ __dead2 __unused
+ static void
+ arm64_implementation_specific_error(arm_saved_state_t *state, uint32_t esr, vm_offset_t far)
+ {
+-#pragma unused (state, esr, far)
+-	panic_plain("Unhandled implementation specific error\n");
++	arm_saved_state64_t *ss = saved_state64(state);
++
++	/*
++	 * 0221: the generic text names no context. Print the state that
++	 * produced the SError, so the early panic screen (and the SYSTEM
++	 * ring, when the flusher has already started) names the faulting PC
++	 * and address instead of leaving only "implementation specific".
++	 */
++	panic_plain("Unhandled implementation specific error pc=%p lr=%p "
++	    "sp=%p far=%p esr=%08x\n", (void *)ss->pc, (void *)ss->lr,
++	    (void *)ss->sp, (void *)far, esr);
+ }
+ 
+ #if CONFIG_KERNEL_INTEGRITY
