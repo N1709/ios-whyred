@@ -2,15 +2,11 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 index dad7b12..a27a0a3 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -111,7 +111,7 @@ bsd/dev/sweet_touch.c			standard
- bsd/dev/sweet_i2c1.c			standard
- bsd/dev/sweet_cpufreq.c			standard
+@@ -113,3 +113,3 @@
  bsd/dev/santoni_sdhci.c			standard
 -bsd/dev/santoni_touch.c			standard
 +bsd/dev/whyred_touch.c			standard
  bsd/dev/whyred_gpu.c			standard
- bsd/dev/whyred_audio.c			standard
- bsd/dev/whyred_wlan.c			standard
 diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 index 199f572..bec292c 100644
 --- a/bsd/dev/santoni_sdhci.c

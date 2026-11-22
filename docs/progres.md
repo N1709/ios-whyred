@@ -17,7 +17,7 @@ Last updated: 2026-11-22.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | Added (0218); 0222 gates F12 on the address phase, 0223 adds `sweetouchfast`/`sweetouchscl` for a short probe |
+| Touch (as HID input) | Code 0218/0222/0223 exists, but the 2026-11-22 console image silently skipped 0219..0223 and still ran the old poll. Chain fixed locally, rebuild pending |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -52,7 +52,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Display | Kernel framebuffer + 4-bar test visible on panel — **works** |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | launchd → backboardd → SpringBoard boots to the lock screen — **works**; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
-| Touch | DSX at `0x20` probed, F12 programmed, tap poll exists — **not in HID yet** |
+| Touch | DSX at `0x20` streams the PDT; the address phase is still ignored. The old image polled random F12 bytes; the 0222 gate was not in it. Chain fixed locally, rebuild pending |
 
 ## Panic 0220/0221 (2026-11-22)
 
@@ -198,23 +198,42 @@ Image 0206: `shim-boot-touch-pdt-reset.img` (`SWEETREBOOT=0`),
 sha256 `4b55e7916dbda67c8835ecfefa105fdf4177862dd7954b1838a56636c9a42139`,
 6,119,424 B, CI run `44506155564` (kernel `23e59b3`).
 
+## The 2026-11-22 console ring: no hang, but a skipped touch chain
+
+The console image (`becdfbe`) was booted and the panel stopped at
+`Skywalk: sk_zero_128 ... PASSED`. The SYSTEM ring from that boot proves the
+kernel did **not** hang: it contains `exec launchd`, `fsck`,
+`exec SpringBoard`, `exec backboardd`, `exec watchdogd`, FIPSPOST
+`all tests PASSED`, and key/touch polling up to the reset. The panel text
+stops because the framebuffer console stops drawing after the userspace
+handoff; the ring keeps logging.
+
+The same boot exposed a build bug. CI skipped `0219` because its
+`bsd/conf/files` hunk still expected the old `sweet_i2c1.c` neighbour (the
+tree now has `whyred_power.c` there). `0220`, `0222` and `0223` then failed
+because `whyred_touch.c` did not exist. dxb only warns on a skip, so the
+"latest" image still ran the old touch code: it wrote F12 while
+`dsx_addressable == 0` and polled random bytes, which SweetHID reported as
+ten fingers at the screen edges. The `f12 ctrl28 <- 0x1f ack` and the edge
+touches in the ring are that old code, not the 0222 gate.
+
+`0219` now has a minimal three-line `bsd/conf/files` hunk, a host test keeps
+it free of the stale neighbour, and CI fails if any of `0219..0223` is
+skipped. Rebuild pending.
+
 ## Next actions (in order)
 
-1. **Build 0223 with `build_mode=console`**, boot
-   `shim-boot-console.img`, and watch the text on the panel; pull the ring
-   from recovery afterwards. Confirm the short-probe lines, the
-   `address phase still ignored, ...` lines, no `watchdog fired`, and whether
-   the boot reaches SpringBoard. For a quiet boot with the same log, use
-   `shim-boot-ring.img` instead.
-2. If the boot still stops before SpringBoard, fix the last ring line first;
-   touch is not the only remaining gate.
-3. Touch: build a diag with `sweetouchpower=1` and read the LDO11 APID
-   owner. Toggle only an APPS-owned APID; otherwise implement the RPM
-   regulator request. Do not write F12 while the part streams.
-4. If the address phase works, confirm `f12 ctrl20 <- ... 00` and
+1. Commit the `0219` context fix and CI guard, then build `build_mode=quick`.
+   Boot `shim-boot-ring.img` and pull the ring. Confirm
+   `address phase still ignored, not programming` and **no**
+   `SWEET HID: touch` phantom lines.
+2. If the gate holds, build a diag with `sweetouchpower=1` and read the
+   LDO11 APID owner. Toggle only an APPS-owned APID; otherwise implement the
+   RPM regulator request. Do not write F12 while the part streams.
+3. If the address phase works, confirm `f12 ctrl20 <- ... 00` and
    `f12 ctrl28 <- 0x1f ack`, then run the tap test and decode X/Y.
-5. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
-6. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
+4. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
+5. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
    ring header update fails while the boot is otherwise alive.
 
 

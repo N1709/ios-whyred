@@ -1928,6 +1928,13 @@ assert 'rename to bsd/dev/whyred_touch.c' in src
 # file no longer lists the old path.
 assert src.count('whyred_touch_probe(void)') >= 2
 assert 'bsd/dev/santoni_touch.c\t\t\tstandard' in src
+# The bsd/conf/files hunk must not require the old sweet_i2c1.c neighbour.
+# That line disappeared when whyred_power.c landed, so dxb silently skipped
+# 0219..0223 and every "latest" image kept the old touch code. Keep the hunk
+# anchored only on the sdhci/touch/gpu lines that actually exist.
+conf_hunk = src.split('diff --git a/bsd/dev/santoni_sdhci.c')[0]
+assert 'sweet_i2c1.c' not in conf_hunk
+assert conf_hunk.count('\n-bsd/dev/santoni_touch.c') == 1
 PY2
 echo "ok   0219 renames santoni_touch.c to whyred_touch.c"
 
