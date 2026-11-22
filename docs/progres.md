@@ -17,7 +17,7 @@ Last updated: 2026-11-22.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | Added (0218); 0220 rail toggle removed from the default boot |
+| Touch (as HID input) | Added (0218); 0222 gates F12 on the address phase and only arms the reboot watchdog for a diag reset |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -78,6 +78,27 @@ probe (`sweetouchi2c=1 sweetouchwait=0`). The F01 sleep clear and the F12
 Next boot: confirm the panic is gone, then read `WHYRED TOUCH: address
 phase`, `f01 ctrl ... -> 0x80`, `f12 ctrl20 <- ... 00`, `f12 ctrl28 <-
 0x1f ack`, and a finger tap in the HID poll.
+
+## Watchdog and F12 gate 0222 (2026-11-22)
+
+The `253d75e` normal image gave no usable log: the normal image has no
+SYSTEM ring, and `whyred_touch_early()` still armed a 300 s watchdog for
+every `sweetouchearly` boot. The late probe also wrote `ctrl20`/`ctrl28`
+through F12 bases parsed from the stream while `dsx_addressable == 0`, then
+started the HID thread on the same untrusted base.
+
+`0222` changes both:
+
+* The reboot watchdog is armed only when `sweetouchreboot=1` (the diag image
+  that intentionally returns to fastboot) and is cancelled at the end of the
+  probe. A normal or log boot cannot be reset by it.
+* `dsx_f12_program()`, the 12-sample `dsx_f12_poll()`, `dsx_touch_test()` and
+  `dsx_hid_start()` all require `dsx_addressable`. A still-streaming part is
+  left alone; the ring says `address phase still ignored, ...`.
+
+The next boot is the **log image** (`build_mode=log`): the ring records the
+touch lines and the userland path even if the panel stays on the Apple logo.
+Pull it from recovery with `tools/sweet-log-pull.sh`.
 
 ## New fixes 0207-0210 (2026-11-22, not booted)
 
@@ -154,22 +175,19 @@ sha256 `4b55e7916dbda67c8835ecfefa105fdf4177862dd7954b1838a56636c9a42139`,
 
 ## Next actions (in order)
 
-1. **Build 0211-0215 in CI** and boot once with no new boot arg: the four
-   probes must return without printing or touching hardware.
-2. Boot one arg at a time (`whyredgpu=1`, `whyredaud=1`, `whyredwlan=1`,
-   `whyredmodem=1`) and read the `WHYRED GPU/AUDIO/WLAN/MODEM` lines plus
-   the SDHCI `"modem" first block` line.
-3. **Build 0207-0210 in CI**, then boot and check the `driver 0210`
-   banner, the ADMA2 self-test, `SWEET KEYS:`, `SWEET RTC:` and
-   `SWEET FB: present ... us`.
-4. **Boot 0206** (`shim-boot-touch-pdt-reset.img`) and read the ring for
-   `pdt stream F01 ... cmd 26`, `addr test`, `address phase`, `f01 cmd
-   0x0026 <- 0x01` and `f12 ctrl28 <- 0x1f`.
-5. If the address phase works, confirm `f12 ctrl28 <- 0x1f ack` with a
-   read-back, then run the tap test.
-6. If it still streams, the next step is documented in `history/2026-11.md`.
-7. Decode X/Y and wire `SweetHIDTouch::touch(finger, down, x, y)`.
-8. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
+1. **Build 0222 with `build_mode=log`**, boot `shim-boot-log.img`, and pull
+   the ring from recovery. Confirm the `address phase still ignored, ...`
+   lines, no `watchdog fired`, and whether the boot reaches SpringBoard.
+2. If the boot still stops before SpringBoard, fix the last ring line first;
+   touch is not the only remaining gate.
+3. Touch: build a diag with `sweetouchpower=1` and read the LDO11 APID
+   owner. Toggle only an APPS-owned APID; otherwise implement the RPM
+   regulator request. Do not write F12 while the part streams.
+4. If the address phase works, confirm `f12 ctrl20 <- ... 00` and
+   `f12 ctrl28 <- 0x1f ack`, then run the tap test and decode X/Y.
+5. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
+6. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
+   ring header update fails while the boot is otherwise alive.
 
 
 ## Blockers / unknowns

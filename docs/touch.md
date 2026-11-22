@@ -47,17 +47,22 @@
 6. Software-resets the part at that command base, then reads two PDT
    registers twice to test whether the address phase works. Only an
    addressable part is walked and gets F12 programmed; a still-streaming part
-   tries the `0x06` base once more first.
+   tries the `0x06` base once more first. The streamed F12 bases are **not**
+   written to: while `dsx_addressable == 0`, `ctrl20`/`ctrl28` writes would
+   land on whatever register the stream pointer is on (0222).
 7. Clears the F01 sleep bits and the F12 `ctrl20` wakeup-gesture byte
    (`synaptics_rmi4_f12_wg(false)`), then programs F12 reporting:
    `RPT_DEFAULT (0x1F)` to control 28. The 2D data base is
    `F12 data base + data0 present`. `ctrl28` alone only selects the report
    type; a part left in LPWG keeps its 2D block inactive until the gesture
    byte is cleared, which is the state Android hands over on a warm reboot.
+   This whole step is skipped unless the address phase works.
 8. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result,
    re-attempts F12 programming if the early pass failed, and runs a
-   `sweetouchtouch` second poll of the F12 2D block. With
-   `sweetouchpower=1` this is also the only place that toggles LDO11.
+   `sweetouchtouch` second poll of the F12 2D block. The 12-sample poll, the
+   `sweetouchtouch` test and the HID thread all refuse to run while the part
+   still streams (0222). With `sweetouchpower=1` this is also the only place
+   that toggles LDO11.
 
 The F12 query block read on this unit:
 
@@ -74,7 +79,8 @@ The F12 query block read on this unit:
 | `sweetouchtouch=SEC` | poll the F12 2D block for `SEC` seconds after the late probe (max 60) |
 | `sweetouchreset=1` | drive reset GPIO 66 per the DT (low 20 ms, high 200 ms) |
 | `sweetouchwait=SEC` | hold the panel with the probe output for `SEC` seconds |
-| `sweetouchreboot=1` | reboot to the bootloader when the probe finishes |
+| `sweetouchreboot=1` | reboot to the bootloader when the probe finishes; also arms the reboot watchdog, because this is the only boot that intentionally leaves XNU |
+| `sweetouchwatchdog=SEC` | watchdog delay for `sweetouchreboot=1` (default 300 s, `0` disables). The probe cancels it once it finishes, so a normal or log boot is never reset |
 | `sweetouchpower=1` | late probe only: toggle PM660 LDO11 (`vcc_i2c`) through the SPMI arbiter, after refusing an APID another EE owns; off by default, a fault leaves `WHYRED TOUCH:` lines in the ring |
 
 ## Panel band map (diag images)
@@ -88,7 +94,7 @@ Bands 1–19, top to bottom, starting at row 40 with 70-row step:
 | # | Colour | Step |
 | --- | --- | --- |
 | 1 | red | probe entered |
-| 2 | orange | reboot watchdog armed |
+| 2 | orange | reboot watchdog armed (`sweetouchreboot=1` only; 0222) |
 | 3 | yellow | past the time wait |
 | 4 | green | TLMM mapped |
 | 5 | cyan | pins set |

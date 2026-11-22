@@ -1992,6 +1992,53 @@ python3 tools/check_patch.py "$P221" -q \
 	--added-contains 'osfmk/arm64/sleh.c:esr=%08x'
 echo "ok   0221 prints pc/lr/sp/far/esr on an SError"
 
+echo "== TOUCH: 0222 gates F12 on the address phase and disarms the watchdog =="
+P222="xnu/patches/0222-whyred-touch-address-watchdog.patch"
+python3 tools/check_patch.py "$P222" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:address phase still ignored, not' \
+	--added-contains 'bsd/dev/whyred_touch.c:whyred_disarm_reboot_watchdog' \
+	--added-contains 'bsd/dev/whyred_touch.c:whyred_reboot_watchdog_cancel' \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchreboot'
+python3 - <<'PY2'
+src = open('xnu/patches/0222-whyred-touch-address-watchdog.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The streamed bases are not trustworthy while the address phase is ignored,
+# so the F12 write, the 12-sample poll, the touch test and the HID thread all
+# have to refuse to run. Writing ctrl20/ctrl28 through the stream pointer was
+# the remaining way to disturb the part after the probe.
+assert body.count('!dsx_addressable') >= 4
+# The printf() strings are split across source lines, so match the second
+# half of each message rather than the whole sentence.
+assert 'programming F12' in body
+assert 'the F12 poll' in body
+assert 'starting the HID poll' in body
+assert 'the touch test' in body
+
+# The watchdog is a way out of a diag boot that walks itself back to
+# fastboot, not a timer for a normal or log boot. The early probe arms it
+# only when sweetouchreboot=1, and the probe disarms it once it is done.
+assert 'PE_parse_boot_argn("sweetouchreboot"' in body
+assert 'whyred_reboot_watchdog_cancel' in body
+assert 'wakeup(&whyred_reboot_watchdog);' in body
+assert 'whyred_disarm_reboot_watchdog();' in body
+
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+early = mirror.split('whyred_touch_early(void)', 1)[1]
+early = early[:early.index('\n}\n')]
+assert early.count('whyred_arm_reboot_watchdog();') == 1
+assert early.index('PE_parse_boot_argn("sweetouchreboot"') < \
+    early.index('whyred_arm_reboot_watchdog();')
+# The late probe keeps its own arm, gated by sweetouchreboot and the early
+# probe result, and the disarm runs once at the end.
+assert mirror.count('whyred_arm_reboot_watchdog();') == 2
+assert mirror.count('whyred_disarm_reboot_watchdog();') == 1
+PY2
+echo "ok   0222 gates F12 on the address phase and cancels the watchdog"
+
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
 python3 tools/check_patch.py "$P212" -q \

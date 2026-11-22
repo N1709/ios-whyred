@@ -1703,6 +1703,17 @@ dsx_f12_program(void)
 		return -1;
 	}
 	/*
+	 * 0222: the streamed bases are only a hint. Writing ctrl20/ctrl28
+	 * while the part ignores the address phase sends those bytes to
+	 * whatever register the stream pointer happens to be on, so require
+	 * the two-read address test before any F12 write.
+	 */
+	if (!dsx_addressable) {
+		printf("WHYRED TOUCH: address phase still ignored, not "
+		    "programming F12\n");
+		return -1;
+	}
+	/*
 	 * 0206: the stream is the authority while the part is suspended, so
 	 * the only requirement is a structurally valid F01/F12 pair. The MTP
 	 * style literal 00 06 0d 11 does not exist on this unit.
@@ -1802,6 +1813,11 @@ dsx_f12_poll(void)
 		printf("WHYRED TOUCH: no F12 in the PDT, cannot poll touch\n");
 		return;
 	}
+	if (!dsx_addressable) {
+		printf("WHYRED TOUCH: address phase still ignored, skipping "
+		    "the F12 poll\n");
+		return;
+	}
 	reg = dsx_f12_touch_reg ? (uint16_t)dsx_f12_touch_reg :
 	    (uint16_t)((dsx_f12_page << 8) | dsx_f12_data);
 	printf("WHYRED TOUCH: poll F12 0x%04x, 12 samples\n", reg);
@@ -1896,6 +1912,11 @@ dsx_hid_start(void)
 	if (dsx_hid_started || !dsx_f12_found || !dsx_f12_touch_reg) {
 		return;
 	}
+	if (!dsx_addressable) {
+		printf("WHYRED TOUCH: address phase still ignored, not "
+		    "starting the HID poll\n");
+		return;
+	}
 	if (PE_parse_boot_argn("sweetouchhid", &on, sizeof(on)) && !on) {
 		printf("WHYRED TOUCH: HID poll disabled\n");
 		return;
@@ -1927,6 +1948,11 @@ dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
 
 	if (!f->found_f12 || !f->f12_data) {
 		printf("WHYRED TOUCH: no F12 data base, cannot poll touch\n");
+		return;
+	}
+	if (!dsx_addressable) {
+		printf("WHYRED TOUCH: address phase still ignored, skipping "
+		    "the touch test\n");
 		return;
 	}
 	if (seconds > 60) {
@@ -2162,18 +2188,26 @@ whyred_reboot_bootloader(void)
  * the IMEM reason and PS_HOLD are outside the BLSP register window that
  * stalls. sweetouchwatchdog=<seconds> overrides the delay, 0 disables it.
  */
+static volatile int whyred_reboot_watchdog_armed;
+static volatile int whyred_reboot_watchdog_cancel;
+
 static void
 whyred_reboot_watchdog(void *arg, __unused wait_result_t wr)
 {
 	int seconds = (int)(uintptr_t)arg;
 
 	printf("WHYRED TOUCH: reboot watchdog armed, %d s\n", seconds);
-	while (seconds > 0) {
+	while (seconds > 0 && !whyred_reboot_watchdog_cancel) {
 		int chunk = seconds > 10 ? 10 : seconds;
 
 		(void)tsleep(&whyred_reboot_watchdog, PZERO, "sweetwd",
 		    chunk * hz);
 		seconds -= chunk;
+	}
+	if (whyred_reboot_watchdog_cancel) {
+		printf("WHYRED TOUCH: reboot watchdog cancelled\n");
+		whyred_reboot_watchdog_armed = 0;
+		return;
 	}
 	printf("WHYRED TOUCH: watchdog fired, probe did not finish\n");
 	whyred_reboot_bootloader();
@@ -2185,6 +2219,9 @@ whyred_arm_reboot_watchdog(void)
 	uint32_t seconds = 0;
 	thread_t thread;
 
+	if (whyred_reboot_watchdog_armed) {
+		return;
+	}
 	if (!PE_parse_boot_argn("sweetouchwatchdog", &seconds,
 	    sizeof(seconds))) {
 		seconds = 300;
@@ -2192,12 +2229,29 @@ whyred_arm_reboot_watchdog(void)
 	if (seconds == 0) {
 		return;
 	}
+	whyred_reboot_watchdog_cancel = 0;
 	if (kernel_thread_start(whyred_reboot_watchdog,
 	    (void *)(uintptr_t)seconds, &thread) == KERN_SUCCESS) {
+		whyred_reboot_watchdog_armed = 1;
 		thread_deallocate(thread);
 	} else {
 		printf("WHYRED TOUCH: cannot arm the reboot watchdog\n");
 	}
+}
+
+/*
+ * The probe reached its end, so the timer no longer has a job. Wake the
+ * thread out of its 10 s sleep instead of waiting for the next tick.
+ */
+static void
+whyred_disarm_reboot_watchdog(void)
+{
+	if (!whyred_reboot_watchdog_armed) {
+		return;
+	}
+	whyred_reboot_watchdog_cancel = 1;
+	wakeup(&whyred_reboot_watchdog);
+	printf("WHYRED TOUCH: reboot watchdog disarmed, probe finished\n");
 }
 
 /*
@@ -2342,7 +2396,7 @@ int
 whyred_touch_early(void)
 {
 	vm_offset_t south, north;
-	uint32_t on = 0, at = 0;
+	uint32_t on = 0, at = 0, reboot = 0;
 
 	if (dsx_early_ran) {
 		return 0;
@@ -2358,8 +2412,17 @@ whyred_touch_early(void)
 	}
 	dsx_early_ran = 1;
 	touch_early_mark(1, 0xffff0000);	/* red: entered */
-	whyred_arm_reboot_watchdog();
-	touch_early_mark(2, 0xffff8000);	/* orange: watchdog armed */
+	/*
+	 * Only a diagnostic boot that walks itself back to fastboot needs the
+	 * timer. A normal or log boot must keep running: the old unconditional
+	 * arm fired 300 s after a successful SpringBoard boot and reset the
+	 * phone to fastboot with no log left behind.
+	 */
+	if (PE_parse_boot_argn("sweetouchreboot", &reboot, sizeof(reboot)) &&
+	    reboot) {
+		whyred_arm_reboot_watchdog();
+		touch_early_mark(2, 0xffff8000); /* orange: watchdog armed */
+	}
 	touch_wait_until_ms(at);
 	dsx_early_start_ms = touch_now_ms();
 	printf("WHYRED TOUCH: early probe requested %u ms, starts at %llu ms "
@@ -2600,6 +2663,11 @@ whyred_touch_probe(void)
 		}
 	}
 
+	/*
+	 * The probe is done. A normal or log boot must not be reset by the
+	 * timer, and a diag boot reaches its own halt/reset below.
+	 */
+	whyred_disarm_reboot_watchdog();
 	/*
 	 * Hold the panel so the answer is readable without a serial cable:
 	 * the first iOS frame clears the console, and these lines print
