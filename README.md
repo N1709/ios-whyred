@@ -12,18 +12,33 @@ userland of the iPhone X: launchd, backboardd, SpringBoard.
 
 ## What works
 
-| Area | State |
+| Feature | State |
 | --- | --- |
-| Boot | **Works** — `fastboot boot` of the shim, boot partitions untouched |
+| Boot (`fastboot boot`) | **Works** — shim starts, boot partitions untouched |
 | CPU / memory | **Works** — 4× Cortex-A73 Gold, 16K pages, GICv3, timers |
-| Storage | **Works** — eMMC 5.1 at 8-bit high-speed, GPT, HFSX root read-write |
-| Display | **Works** — kernel framebuffer, four colour bars visible on the panel |
-| Console log | **Works** — persistent ring on SYSTEM, pulled from recovery |
-| Touch | Probe finds the streamed PDT and resets at the real F01 base; F12 reporting awaits the 0206 ring, no HID input |
-| iOS userland | `launchd` starts, then dies at code signing (`CS_KILLED`) |
-| GPU / Wi-Fi / audio / cellular | Drivers added (`whyred_*`, 0211-0215), not booted |
-| Wallpaper / PosterBoard | Isolation lever added (`sweetnopb=1`, 0216), not booted; userland fixes pending |
-| Bluetooth / charging | Not implemented |
+| Display / framebuffer | **Works** — kernel framebuffer, four colour bars on the panel |
+| Storage (eMMC + HFSX root) | **Works** — eMMC 5.1 at 8-bit high-speed, GPT, HFSX read-write |
+| Console log ring | **Works** — persistent ring on SYSTEM, pulled from recovery |
+| Kernel log / panic dump | **Works** |
+| Touch (probe) | **Works** — DSX at `0x20`, PDT and F12 bases read |
+| Touch (as HID input) | No |
+| Buttons | Added (0208), not booted |
+| RTC / date | Added (0209), not booted |
+| eMMC ADMA2 reads | Added (0210), not booted |
+| Panel 60 Hz / present timing | Added (0207), not booted |
+| GPU / Metal | Added (0211), not booted |
+| Wi-Fi | Added (0214), not booted |
+| Bluetooth | No |
+| Audio | Added (0213), not booted |
+| Cellular | Added (0215), not booted |
+| Wallpaper / PosterBoard | Lever added (0216), not booted; userland fixes pending |
+| Charging | Static 100% fallback; no PM660 gauge |
+| iOS userland (launchd → SpringBoard) | No (code signing) |
+
+Legend: **Works** = verified on the phone; **Added** = code exists but has
+not booted; **No** = not implemented or known blocked; **Static** = a fixed
+fallback value, not a measurement. This table is kept in sync with
+[`docs/progres.md`](docs/progres.md).
 
 Patches `0207`-`0210` add a 60 Hz display default with `present()` timing,
 PM660/PM660L keys, the PM660 RTC with a calendar fallback, and ADMA2 eMMC

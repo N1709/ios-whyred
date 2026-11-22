@@ -11,6 +11,7 @@ Last updated: 2026-11-22.
 | Feature | State |
 | --- | --- |
 | Boot (`fastboot boot`) | **Works** |
+| CPU / memory | **Works** |
 | Display / framebuffer | **Works** |
 | Storage (eMMC + HFSX root) | **Works** |
 | Console log ring | **Works** |
@@ -23,15 +24,16 @@ Last updated: 2026-11-22.
 | Panel 60 Hz / present timing | Added (0207), not booted |
 | GPU / Metal | Added (0211), not booted |
 | Wi-Fi | Added (0214), not booted |
-| Bluetooth | ? |
+| Bluetooth | No |
 | Audio | Added (0213), not booted |
 | Cellular | Added (0215), not booted |
 | Wallpaper / PosterBoard | Lever added (0216), not booted |
-| Charging | ? |
+| Charging | Static 100% fallback; no PM660 gauge |
 | iOS userland (launchd → SpringBoard) | No (code signing) |
 
-Legend: **Works** = verified on the phone; No = not implemented or known
-blocked; ? = not tested yet.
+Legend: **Works** = verified on the phone; **Added** = code exists but has
+not booted; **No** = not implemented or known blocked; **Static** = a fixed
+fallback value, not a measurement.
 
 ## Goal
 
