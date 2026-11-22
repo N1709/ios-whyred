@@ -21,12 +21,17 @@ userland of the iPhone X: launchd, backboardd, SpringBoard.
 | Console log | **Works** — persistent ring on SYSTEM, pulled from recovery |
 | Touch | Probe finds the streamed PDT and resets at the real F01 base; F12 reporting awaits the 0206 ring, no HID input |
 | iOS userland | `launchd` starts, then dies at code signing (`CS_KILLED`) |
-| GPU / Wi-Fi / Bluetooth / audio / cellular / charging | Not implemented |
+| GPU / Wi-Fi / audio / cellular | Drivers added (`whyred_*`, 0211-0215), not booted |
+| Bluetooth / charging | Not implemented |
 
 Patches `0207`-`0210` add a 60 Hz display default with `present()` timing,
 PM660/PM660L keys, the PM660 RTC with a calendar fallback, and ADMA2 eMMC
-reads with a PIO fallback. They apply on the series tip but have not been
-built or booted yet.
+reads with a PIO fallback. Patches `0211`-`0215` add the large SDM660
+drivers as `whyred_gpu.c`, `whyred_audio.c`, `whyred_wlan.c` and
+`whyred_modem.c`, each behind its own boot arg and off by default; the
+audio/modem loaders read the GPT `modem` partition instead of lavender's
+fixed LBA. All 221 patches apply on the series tip, but none of the new
+code has been built or booted yet.
 
 ## Quick start
 

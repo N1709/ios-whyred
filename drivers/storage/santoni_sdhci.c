@@ -460,6 +460,7 @@ static struct {
 	char part[64];                          /* GPT partition name */
 	uint64_t first_block, nblocks;          /* root partition, 512-byte sectors */
 	uint64_t sys_first_block, sys_nblocks;  /* "system" partition, 512-byte sectors */
+	uint64_t modem_first_block, modem_nblocks; /* "modem" partition, 512-byte sectors */
 	uint32_t sec_count;                     /* EXT_CSD SEC_COUNT, 512-byte units */
 	uint32_t rca;                           /* RCA the card answered with */
 	int cmd1_error;                         /* last CMD1 result (probe) */
@@ -3998,6 +3999,28 @@ santoni_sdhci_read_blocks(uint64_t lba, uint32_t count, void *buf)
 	return error;
 }
 
+/*
+ * 0212: read-only access to absolute eMMC LBAs for the audio and modem
+ * loaders. The write path stays private and partition-fenced.
+ */
+int santoni_emmc_read(uint64_t lba, uint32_t count, void *buf);
+
+int
+santoni_emmc_read(uint64_t lba, uint32_t count, void *buf)
+{
+	if (!se.ready) {
+		return ENXIO;
+	}
+	return santoni_sdhci_read_blocks(lba, count, buf);
+}
+
+/* 0212: base LBA of the GPT "modem" partition, 0 when it is absent. */
+uint64_t
+santoni_emmc_modem_lba(void)
+{
+	return se.modem_first_block;
+}
+
 static int
 santoni_sdhci_write_blocks(uint64_t lba, uint32_t count, const void *buf)
 {
@@ -4094,6 +4117,8 @@ santoni_sdhci_find_partition(const char *want)
 	bool root_found = false;
 	uint64_t sys_first = 0, sys_count = 0;
 	bool sys_found = false;
+	uint64_t modem_first = 0, modem_count = 0;
+	bool modem_found = false;
 	int error;
 
 	error = santoni_sdhci_read_blocks(1, 1, (void *)b);
@@ -4168,12 +4193,26 @@ santoni_sdhci_find_partition(const char *want)
 			sys_found = true;
 			continue;
 		}
+		if (strcmp(name, "modem") == 0) {
+			modem_first = first;
+			modem_count = last - first + 1;
+			modem_found = true;
+			continue;
+		}
 		if (strcmp(name, want) == 0) {
 			se.first_block = first;
 			se.nblocks = last - first + 1;
 			root_found = true;
 		}
 	}
+	se.modem_first_block = modem_found ? modem_first : 0;
+	se.modem_nblocks = modem_found ? modem_count : 0;
+	if (modem_found) {
+		printf("WHYRED SDHCI: \"modem\" first block 0x%llx, %llu MiB\n",
+		    (unsigned long long)modem_first,
+		    (unsigned long long)(modem_count * SDHCI_BLOCK >> 20));
+	}
+
 	if (!root_found) {
 		printf("WHYRED SDHCI: no GPT partition named \"%s\"\n", want);
 		return ENOENT;
@@ -5045,6 +5084,26 @@ santoni_sdhci_init(void)
 #if defined(ARM64_BOARD_CONFIG_WHYRED)
 	/* Boot-arg sweetouchi2c=1: does the touch controller answer at all? */
 	santoni_touch_probe();
+	/* 0211: boot-arg whyredgpu=N, Adreno 512 ladder (off by default) */
+	{
+		extern int whyred_gpu_probe(void);
+		(void)whyred_gpu_probe();
+	}
+	/* 0213: boot-arg whyredaud=N, SDM660 audio probe (read only) */
+	{
+		extern int whyred_audio_probe(void);
+		(void)whyred_audio_probe();
+	}
+	/* 0214: boot-arg whyredwlan=1, WCN3990 platform probe (read only) */
+	{
+		extern int whyred_wlan_probe(void);
+		(void)whyred_wlan_probe();
+	}
+	/* 0215: boot-arg whyredmodem=N, MSS/QDSP6 bring-up (off by default) */
+	{
+		extern int whyred_modem_probe(void);
+		(void)whyred_modem_probe();
+	}
 #endif
 	return 0;
 }

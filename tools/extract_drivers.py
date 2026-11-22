@@ -32,7 +32,13 @@ DRIVERS = {
         "iokit/Kernel/arm/SweetSurface.cpp",
     ],
     "touch": ["bsd/dev/sweet_touch.c"],
-    "wifi": ["iokit/Kernel/arm/TopazModem.cpp"],
+    "wifi": [
+        "iokit/Kernel/arm/TopazModem.cpp",
+        "bsd/dev/whyred_wlan.c",
+    ],
+    "modem": ["bsd/dev/whyred_modem.c"],
+    "gpu": ["bsd/dev/whyred_gpu.c"],
+    "audio": ["bsd/dev/whyred_audio.c"],
     "power": [
         "iokit/Kernel/arm/SweetBattery.cpp",
         "bsd/dev/sweet_i2c1.c",

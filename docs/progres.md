@@ -21,11 +21,11 @@ Last updated: 2026-11-22.
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
 | Panel 60 Hz / present timing | Added (0207), not booted |
-| GPU / Metal | No |
-| Wi-Fi | ? |
+| GPU / Metal | Added (0211), not booted |
+| Wi-Fi | Added (0214), not booted |
 | Bluetooth | ? |
-| Audio | ? |
-| Cellular | ? |
+| Audio | Added (0213), not booted |
+| Cellular | Added (0215), not booted |
 | Charging | ? |
 | iOS userland (launchd → SpringBoard) | No (code signing) |
 
@@ -63,10 +63,29 @@ patches. They are local code only: no CI build and no boot yet.
 | 0209 | PM660 RTC through the same arbiter; skips the 30 s IORTC wait; calendar fallback | `sweetrtc`, `sweetrtcoff` |
 | 0210 | SDCC v5 exact PIO/cache state, post-write DAT0/CMD13 wait, DMA diagnostics, ADMA2 reads with PIO fallback | `sweetemmc_dma=0`, `sweetemmc_speed=1`, `sweetemmc_dmatest=1` |
 
-All 216 patches apply on the whyred series tip; `drivers/` mirrors are
+All 221 patches apply on the whyred series tip; `drivers/` mirrors are
 regenerated. The next boot must confirm the banner `driver 0210`, the
 ADMA2 self-test, `SWEET KEYS:` lines, `SWEET RTC:` raw/offset and the
 `SWEET FB: present ... us` budget.
+
+## Big drivers 0211-0215 (2026-11-22, not booted)
+
+The four large SDM660 drivers from `pcorezzola/lavender-ios16` are now
+whyred sources, renamed `whyred_*` and gated by their own boot args (all
+off by default). Lavender's fixed modem LBA is gone: both loaders ask the
+GPT for the `modem` entry.
+
+| Patch | What it adds | Boot-arg |
+| --- | --- | --- |
+| 0211 | Adreno 512 ladder: GCC/GPUCC, BIMC votes, CX/GX GDSC, GFX3D root, resets, GPU zap query | `whyredgpu=N`, `whyredgpudelay=S` |
+| 0212 | Read-only `santoni_emmc_read()` and the GPT modem LBA | none |
+| 0213 | LPASS/ADSP audio: maps, GDSC/SMMU order, PAS auth, firmware from the modem FAT | `whyredaud=N`, `whyredauddelay=S`, `whyredaudforce=1` |
+| 0214 | WCN3990 platform probe through the ANOC2 SMMU | `whyredwlan=1`, `whyredwlandelay=S` |
+| 0215 | MSS/QDSP6 modem: clocks, RMB, reset, MBA/MDT segments, PAS auth | `whyredmodem=N`, `whyredmodemdelay=S`, `whyredmodemclk=MASK` |
+
+None of this has run on the phone. The first boot must show the SDHCI
+`"modem" first block` line before the loaders touch eMMC; without it they
+stop and log `no "modem" GPT partition`.
 
 ## Latest ring (patch 0205)
 
@@ -94,17 +113,22 @@ sha256 `4b55e7916dbda67c8835ecfefa105fdf4177862dd7954b1838a56636c9a42139`,
 
 ## Next actions (in order)
 
-1. **Build 0207-0210 in CI**, then boot the new image and check
-   `WHYRED SDHCI: driver 0210`, the ADMA2 self-test, `SWEET KEYS:`,
-   `SWEET RTC:` and `SWEET FB: present ... us`.
-2. **Boot 0206** (`shim-boot-touch-pdt-reset.img`) and read the ring for
+1. **Build 0211-0215 in CI** and boot once with no new boot arg: the four
+   probes must return without printing or touching hardware.
+2. Boot one arg at a time (`whyredgpu=1`, `whyredaud=1`, `whyredwlan=1`,
+   `whyredmodem=1`) and read the `WHYRED GPU/AUDIO/WLAN/MODEM` lines plus
+   the SDHCI `"modem" first block` line.
+3. **Build 0207-0210 in CI**, then boot and check the `driver 0210`
+   banner, the ADMA2 self-test, `SWEET KEYS:`, `SWEET RTC:` and
+   `SWEET FB: present ... us`.
+4. **Boot 0206** (`shim-boot-touch-pdt-reset.img`) and read the ring for
    `pdt stream F01 ... cmd 26`, `addr test`, `address phase`, `f01 cmd
    0x0026 <- 0x01` and `f12 ctrl28 <- 0x1f`.
-3. If the address phase works, confirm `f12 ctrl28 <- 0x1f ack` with a
+5. If the address phase works, confirm `f12 ctrl28 <- 0x1f ack` with a
    read-back, then run the tap test.
-4. If it still streams, the next step is documented in `history/2026-11.md`.
-5. Decode X/Y and wire `SweetHIDTouch::touch(finger, down, x, y)`.
-6. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
+6. If it still streams, the next step is documented in `history/2026-11.md`.
+7. Decode X/Y and wire `SweetHIDTouch::touch(finger, down, x, y)`.
+8. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
 
 
 ## Blockers / unknowns

@@ -656,11 +656,19 @@ if [ -e drivers/unixnu ] || [ -e drivers/WhyredDisplay ] \
 	echo "drivers/: display/storage stay built-in; no wrapper directory or checksums" >&2
 	exit 1
 fi
-if find drivers -iname '*whyred*' | grep -q .; then
-	echo "drivers/: a driver still carries the board name" >&2
+if find drivers -iname '*lavender*' | grep -q .; then
+	echo "drivers/: a driver still carries the donor board name" >&2
 	exit 1
 fi
-echo "ok   drivers/ is one folder per subsystem, one per driver, no board names"
+# whyred_gpu/audio/wlan/modem are board drivers, named like lavender_*.
+for d in gpu/whyred_gpu.c audio/whyred_audio.c wifi/whyred_wlan.c \
+	modem/whyred_modem.c; do
+	if [ ! -f "drivers/$d" ]; then
+		echo "drivers/: missing $d" >&2
+		exit 1
+	fi
+done
+echo "ok   drivers/ is one folder per subsystem, whyred_* board drivers, no donor names"
 
 echo "== FB TEST: 0176 paints the boot framebuffer without the console =="
 P176="xnu/patches/0176-whyred-framebuffer-test-pattern.patch"
@@ -1686,7 +1694,7 @@ python3 tools/check_patch.py "$P207" -q \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:if ((count % fb->fFlushTicks) == 0) {' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:sweet_fb_present_log(get32(rec, 0x50), start, true);' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:sweet_fb_present_log(get32(rec, 0x50), start, false);' \
-	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:absolutetime_to_microseconds(mach_absolute_time() - start, &us);' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:us > SWEET_FB_VSYNC_US ? " OVER" : ""' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:PE_parse_boot_argn("sweetfblog", &logn, sizeof(logn));' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:SWEET FB: layer set mask'
@@ -1821,6 +1829,124 @@ assert 'WHYRED SDHCI: driver 0210' in body
 assert 'WHYRED SDHCI: driver 0184' in gone
 PY2
 echo "ok   0210 arms ADMA2 only after a self-test and falls back to PIO"
+
+echo "== GPU: 0211 adds the boot-arg gated Adreno 512 ladder =="
+P211="xnu/patches/0211-whyred-gpu-driver.patch"
+python3 tools/check_patch.py "$P211" -q \
+	--added-contains 'bsd/conf/files:bsd/dev/whyred_gpu.c' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:(void)whyred_gpu_probe();' \
+	--added-contains 'bsd/dev/whyred_gpu.c:#define GCC_PA          0x00100000u' \
+	--added-contains 'bsd/dev/whyred_gpu.c:#define GPUCC_PA        0x05065000u' \
+	--added-contains 'bsd/dev/whyred_gpu.c:PE_parse_boot_argn("whyredgpu", &step, sizeof(step))' \
+	--added-contains 'bsd/dev/whyred_gpu.c:whyred_gpu_probe(void)' \
+	--added-contains 'bsd/dev/whyred_gpu.c:#if defined(ARM64_BOARD_CONFIG_WHYRED)'
+python3 - <<'PY2'
+src = open('xnu/patches/0211-whyred-gpu-driver.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# Default must be off: without whyredgpu the ladder does nothing.
+assert 'step == 0' in body
+assert 'kernel_thread_start(whyred_gpu_thread' in body
+# No lavender names may survive the rename.
+for old in ('lavender', 'LAVENDER', 'lavgpu', 'LAVGPU'):
+    assert old not in body, old
+PY2
+echo "ok   0211 ships the Adreno ladder, gated by whyredgpu and off by default"
+
+echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
+P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
+python3 tools/check_patch.py "$P212" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:int santoni_emmc_read(uint64_t lba, uint32_t count, void *buf)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:return santoni_sdhci_read_blocks(lba, count, buf);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:uint64_t modem_first_block, modem_nblocks;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:strcmp(name, "modem")' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_emmc_modem_lba(void)'
+python3 - <<'PY2'
+src = open('xnu/patches/0212-whyred-emmc-read-helper.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# The new entry points are read-only; the fenced write path stays private.
+assert 'santoni_sdhci_write_blocks' not in body
+assert 'se.modem_first_block = modem_found ? modem_first : 0;' in body
+PY2
+echo "ok   0212 adds only reads and parses the modem GPT entry"
+
+echo "== AUDIO: 0213 adds the boot-arg gated SDM660 audio probe =="
+P213="xnu/patches/0213-whyred-audio-driver.patch"
+python3 tools/check_patch.py "$P213" -q \
+	--added-contains 'bsd/conf/files:bsd/dev/whyred_audio.c' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:(void)whyred_audio_probe();' \
+	--added-contains 'bsd/dev/whyred_audio.c:extern uint64_t santoni_emmc_modem_lba(void);' \
+	--added-contains 'bsd/dev/whyred_audio.c:modem_lba = santoni_emmc_modem_lba();' \
+	--added-contains 'bsd/dev/whyred_audio.c:WHYRED AUDIO: no \"modem\" GPT partition; eMMC read skipped' \
+	--added-contains 'bsd/dev/whyred_audio.c:PE_parse_boot_argn("whyredaud", &step, sizeof(step))'
+python3 - <<'PY2'
+src = open('xnu/patches/0213-whyred-audio-driver.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# The modem partition offset comes from the GPT, never a fixed LBA.
+assert 'MODEM_LBA' not in body
+assert 'modem_lba = santoni_emmc_modem_lba();' in body
+assert 'if (modem_lba == 0)' in body
+# Default must be off.
+assert 'step == 0' in body
+for old in ('lavender', 'LAVENDER', 'lavaud'):
+    assert old not in body, old
+PY2
+echo "ok   0213 loads from the GPT modem partition, gated by whyredaud"
+
+echo "== WLAN: 0214 adds the boot-arg gated WCN3990 probe =="
+P214="xnu/patches/0214-whyred-wlan-driver.patch"
+python3 tools/check_patch.py "$P214" -q \
+	--added-contains 'bsd/conf/files:bsd/dev/whyred_wlan.c' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:(void)whyred_wlan_probe();' \
+	--added-contains 'bsd/dev/whyred_wlan.c:PE_parse_boot_argn("whyredwlan", &on, sizeof(on))' \
+	--added-contains 'bsd/dev/whyred_wlan.c:WCN3990' \
+	--added-contains 'bsd/dev/whyred_wlan.c:whyred_wlan_probe(void)'
+python3 - <<'PY2'
+src = open('xnu/patches/0214-whyred-wlan-driver.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# Default must be off.
+assert 'on == 0' in body
+for old in ('lavender', 'LAVENDER', 'sweetwlan'):
+    assert old not in body, old
+PY2
+echo "ok   0214 probes WCN3990 only with whyredwlan=1"
+
+echo "== MODEM: 0215 adds the boot-arg gated MSS/QDSP6 bring-up =="
+P215="xnu/patches/0215-whyred-modem-driver.patch"
+python3 tools/check_patch.py "$P215" -q \
+	--added-contains 'bsd/conf/files:bsd/dev/whyred_modem.c' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:(void)whyred_modem_probe();' \
+	--added-contains 'bsd/dev/whyred_modem.c:extern uint64_t santoni_emmc_modem_lba(void);' \
+	--added-contains 'bsd/dev/whyred_modem.c:modem_lba = santoni_emmc_modem_lba();' \
+	--added-contains 'bsd/dev/whyred_modem.c:modem_load_segments(void)' \
+	--added-contains 'bsd/dev/whyred_modem.c:PE_parse_boot_argn("whyredmodem", &step, sizeof(step))'
+python3 - <<'PY2'
+src = open('xnu/patches/0215-whyred-modem-driver.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# The lavender LBA 786432 must not be hardcoded on whyred.
+assert '786432' not in body
+assert 'modem_lba = santoni_emmc_modem_lba();' in body
+assert 'if (modem_lba == 0)' in body
+# Default must be off.
+assert 'step == 0' in body
+for old in ('lavender', 'LAVENDER', 'sweetmodem'):
+    assert old not in body, old
+PY2
+echo "ok   0215 brings up MSS only with whyredmodem=N and uses the GPT LBA"
 
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old

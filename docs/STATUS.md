@@ -1,9 +1,9 @@
 # Current status
 
-Last updated: 2026-11-22. Patches `0207`-`0210` (display 60 Hz/telemetry,
-PM660 keys, PM660 RTC, ADMA2 reads) are committed locally and not built or
-booted. Last verified kernel/image: `23e59b3` (patch 0206),
-`shim-boot-touch-pdt-reset.img`.
+Last updated: 2026-11-22. Patches `0207`-`0215` (display 60 Hz/telemetry,
+PM660 keys, PM660 RTC, ADMA2 reads, GPU/audio/WLAN/modem drivers) are
+committed locally and not built or booted. Last verified kernel/image:
+`23e59b3` (patch 0206), `shim-boot-touch-pdt-reset.img`.
 
 ## One-paragraph summary
 
@@ -13,6 +13,10 @@ console log flusher on SYSTEM and paints the four-bar framebuffer test.
 The **touch controller** (Synaptics DSX at I2C `0x20`) is probed before eMMC,
 its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 **not yet wired into HID**, so SpringBoard still ignores the panel.
+
+The four large SDM660 drivers (GPU, audio, WLAN, modem) are now whyred
+sources named `whyred_*`, each behind its own boot arg and off by default.
+None has run on the phone yet.
 
 ## Where the boot stands (2026-11-19)
 
@@ -38,12 +42,15 @@ its F12 2D reporting is programmed, and a 30 s tap poll runs later. Touch is
 
 ## Next actions
 
-1. **Boot 0206** and read the ring for `pdt stream F01 ... cmd 26`,
+1. **Build 0211-0215 in CI** and boot once with no new boot arg: all four
+   probes must stay silent. Then enable one at a time and read the
+   `WHYRED GPU/AUDIO/WLAN/MODEM` lines and the `"modem" first block` line.
+2. **Boot 0206** and read the ring for `pdt stream F01 ... cmd 26`,
    `addr test`, `address phase works`, `f01 cmd 0x0026 <- 0x01` and
    `f12 ctrl28 <- 0x1f`.
-2. Confirm the ctrl28 read-back, then run the tap test.
-3. Decode X/Y and feed `SweetHIDTouch::touch(finger, down, x, y)`.
-4. Keep `sweetouchreboot` off while debugging so the phone stays put.
+3. Confirm the ctrl28 read-back, then run the tap test.
+4. Decode X/Y and feed `SweetHIDTouch::touch(finger, down, x, y)`.
+5. Keep `sweetouchreboot` off while debugging so the phone stays put.
 
 ## Touch: what is known
 

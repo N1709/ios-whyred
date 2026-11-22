@@ -1,0 +1,295 @@
+/*
+ * whyred: Wi-Fi (WCN3990) platform probe, F0b. Boot-arg gated, read only.
+ *
+ *   whyredwlan=1       run the probe
+ *   whyredwlandelay=S  seconds to wait after boot before it (default 25), so
+ *                     the console ring flusher and the USB live log are up
+ *
+ * The WCN3990 is an icnss child of the ANOC2 SMMU (SIDs 0x1a00/0x1a01), not
+ * of the apps SMMU: in the DTB the icnss iommus phandle resolves to
+ * /soc/arm,smmu-anoc2@16c0000. The modem DSP runs wlanmdsp.mbn and talks to
+ * the chip over the CE/HTC transport. Before writing any of that, this probe
+ * answers the questions that decide the port:
+ *
+ *   - did the bootloader leave the MSS GCC branches on (0x8a000 cfg_ahb,
+ *     0x8a004 mnoc_bimc_axi, 0x8a03c snoc_axi, 0x8a040 q6_bimc_axi)?
+ *   - what does the ANOC2 SMMU have for stream IDs 0x1a00/0x1a01, and is it
+ *     translating, in bypass or faulting?
+ *   - is the SMEM header at 0x86000000 intact?
+ *   - is the WLAN MSA carve-out at 0x85700000 still zero, or did the
+ *     bootloader leave something there?
+ *
+ * It READS ONLY. The QDSP6 (0x04080000) and RMB (0x04180000) blocks are not
+ * touched: the modem is still in reset, and a read there can hang the bus or
+ * reset the SoC. Every step is announced before the access and spaced 2 s so
+ * the log leaves the machine even if the access kills it.
+ *
+ * Register meanings: Linux gcc-sdm660.c and arm-smmu.c, read as a behaviour
+ * reference (values only, no code copied); DTB values from
+ * work/briefs/wifi-wcn3990-brief.md section 1.
+ */
+#if defined(ARM64_BOARD_CONFIG_WHYRED)
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/errno.h>
+#include <kern/clock.h>
+#include <kern/thread.h>
+#include <kern/sched_prim.h>
+#include <machine/machine_routines.h>
+#include <pexpert/pexpert.h>
+
+extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+
+#define GCC_PA          0x00100000u
+#define GCC_SIZE        0x94000u
+#define ANOC2_PA        0x016c0000u
+#define ANOC2_SIZE      0x40000u
+#define SMEM_PA         0x86000000u
+#define SMEM_SIZE       0x00001000u
+#define MSA_PA          0x85700000u
+#define MSA_SIZE        0x00001000u
+
+/* GCC byte offsets from GCC_PA (gcc-sdm660.c) */
+#define GCC_MSS_CFG_AHB         0x8a000u
+#define GCC_MSS_MNOC_BIMC_AXI   0x8a004u
+#define GCC_MSS_SNOC_AXI        0x8a03cu
+#define GCC_MSS_Q6_BIMC_AXI     0x8a040u
+#define CBCR_EN                 (1u << 0)
+#define CBCR_OFF                (1u << 31)
+
+/* ANOC2 SMMU GR0 (arm-smmu.c, qcom,smmu-v2) */
+#define SMMU_SCR0               0x0000u
+#define SMMU_SACR               0x0010u
+#define SMMU_IDR0               0x0020u
+#define SMMU_IDR1               0x0024u
+#define SMMU_IDR7               0x003cu
+#define SMMU_SGFAR              0x0040u
+#define SMMU_SGFSR              0x0048u
+#define SMMU_SMR(n)             (0x0800u + ((n) << 2))
+#define SMMU_S2CR(n)            (0x0c00u + ((n) << 2))
+#define SMMU_SMR_VALID          (1u << 31)
+#define SMMU_SMR_MASK_SHIFT     16
+#define SMMU_SMR_MASK           0x7fffu
+#define SMMU_SMR_ID             0x7fffu
+#define SMMU_S2CR_TYPE_SHIFT    16
+#define SMMU_S2CR_CBNDX         0xffu
+#define SMMU_MAX_SMRS           128
+#define WLAN_SID0               0x1a00u
+#define WLAN_SID1               0x1a01u
+
+static vm_offset_t gcc, smmu, smem, msa;
+static int wlan_chan;
+
+static inline uint32_t
+wlan_rd(vm_offset_t base, uint32_t off)
+{
+	uint32_t v = *(volatile uint32_t *)(base + off);
+	__asm__ volatile("dsb ld" ::: "memory");
+	return v;
+}
+
+static void
+wlan_wait(unsigned ms)
+{
+	uint64_t deadline;
+
+	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
+	(void)assert_wait_deadline(&wlan_chan, THREAD_UNINT, deadline);
+	thread_block(THREAD_CONTINUE_NULL);
+}
+
+/* Announce, then give the log 2 s to leave the machine. */
+static void
+wlan_announce(const char *what)
+{
+	printf("WHYRED WLAN: about to %s\n", what);
+	wlan_wait(2000);
+}
+
+static void
+wlan_gcc(void)
+{
+	static const struct {
+		const char *name;
+		uint32_t off;
+	} branches[] = {
+		{ "mss_cfg_ahb",      GCC_MSS_CFG_AHB },
+		{ "mss_mnoc_bimc_axi", GCC_MSS_MNOC_BIMC_AXI },
+		{ "mss_snoc_axi",     GCC_MSS_SNOC_AXI },
+		{ "mss_q6_bimc_axi",  GCC_MSS_Q6_BIMC_AXI },
+	};
+	unsigned on = 0;
+
+	wlan_announce("read the GCC MSS branches (read only)");
+	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); i++) {
+		uint32_t v = wlan_rd(gcc, branches[i].off);
+
+		if (!(v & CBCR_OFF)) {
+			on++;
+		}
+		printf("WHYRED WLAN: gcc %s %08x (en %u, %s)\n", branches[i].name,
+		    v, v & CBCR_EN, (v & CBCR_OFF) ? "OFF" : "on");
+	}
+	printf("WHYRED WLAN: %u of 4 MSS branches are on\n", on);
+}
+
+static const char *
+wlan_smmu_type(uint32_t s2cr)
+{
+	switch ((s2cr >> SMMU_S2CR_TYPE_SHIFT) & 3u) {
+	case 0:
+		return "translate";
+	case 1:
+		return "bypass";
+	case 2:
+		return "fault";
+	default:
+		return "reserved";
+	}
+}
+
+static void
+wlan_smmu(void)
+{
+	uint32_t idr0, idr1, n, valid = 0, wlan = 0;
+
+	wlan_announce("read the ANOC2 SMMU global registers");
+	idr0 = wlan_rd(smmu, SMMU_IDR0);
+	idr1 = wlan_rd(smmu, SMMU_IDR1);
+	printf("WHYRED WLAN: ANOC2 sCR0 %08x sACR %08x IDR0 %08x IDR1 %08x "
+	    "IDR7 %08x\n", wlan_rd(smmu, SMMU_SCR0), wlan_rd(smmu, SMMU_SACR),
+	    idr0, idr1, wlan_rd(smmu, SMMU_IDR7));
+	printf("WHYRED WLAN: ANOC2 sGFAR %08x sGFSR %08x\n",
+	    wlan_rd(smmu, SMMU_SGFAR), wlan_rd(smmu, SMMU_SGFSR));
+
+	/*
+	 * IDR0[7:0] is NUMSMRG. The architecture maximum is 128; a zero or a
+	 * bogus count falls back to the full table so a WLAN SMR cannot hide.
+	 */
+	n = idr0 & 0xffu;
+	if (n == 0 || n > SMMU_MAX_SMRS) {
+		n = SMMU_MAX_SMRS;
+	}
+	wlan_announce("scan the SMMU stream-mapping table (SMR/S2CR)");
+	for (uint32_t i = 0; i < n; i++) {
+		uint32_t smr = wlan_rd(smmu, SMMU_SMR(i));
+		uint32_t s2cr, id, mask;
+
+		if (!(smr & SMMU_SMR_VALID)) {
+			continue;
+		}
+		valid++;
+		id = smr & SMMU_SMR_ID;
+		mask = (smr >> SMMU_SMR_MASK_SHIFT) & SMMU_SMR_MASK;
+		s2cr = wlan_rd(smmu, SMMU_S2CR(i));
+		printf("WHYRED WLAN: SMR[%u] %08x sid %04x mask %04x -> "
+		    "S2CR %08x %s cb %u\n", i, smr, id, mask, s2cr,
+		    wlan_smmu_type(s2cr), s2cr & SMMU_S2CR_CBNDX);
+		if (((WLAN_SID0 & ~mask) == (id & ~mask)) ||
+		    ((WLAN_SID1 & ~mask) == (id & ~mask))) {
+			wlan++;
+			printf("WHYRED WLAN: SMR[%u] covers WLAN sid %04x\n", i,
+			    id);
+		}
+	}
+	printf("WHYRED WLAN: SMMU %u SMRs scanned, %u valid, %u cover the "
+	    "WLAN SIDs\n", n, valid, wlan);
+}
+
+/* Count nonzero words over the whole mapping, then dump the first 0x200. */
+static void
+wlan_region(const char *name, vm_offset_t base, uint32_t size)
+{
+	uint32_t off, nonzero = 0;
+
+	for (off = 0; off < size; off += 4) {
+		if (wlan_rd(base, off) != 0) {
+			nonzero++;
+		}
+	}
+	printf("WHYRED WLAN: %s: %u of %u words are nonzero\n", name, nonzero,
+	    size / 4);
+	for (off = 0; off < 0x200 && off < size; off += 32) {
+		printf("WHYRED WLAN: %s %03x: %08x %08x %08x %08x %08x %08x "
+		    "%08x %08x\n", name, off, wlan_rd(base, off),
+		    wlan_rd(base, off + 4), wlan_rd(base, off + 8),
+		    wlan_rd(base, off + 12), wlan_rd(base, off + 16),
+		    wlan_rd(base, off + 20), wlan_rd(base, off + 24),
+		    wlan_rd(base, off + 28));
+	}
+}
+
+static void
+whyred_wlan_thread(__unused void *arg, __unused wait_result_t wr_)
+{
+	uint32_t delay_s = 25;
+
+	(void)PE_parse_boot_argn("whyredwlandelay", &delay_s, sizeof(delay_s));
+	if (delay_s > 300) {
+		delay_s = 300;
+	}
+	printf("WHYRED WLAN: F0b platform probe in %u s\n", delay_s);
+	wlan_wait(delay_s * 1000);
+
+	gcc = ml_io_map(GCC_PA, GCC_SIZE);
+	if (gcc == 0) {
+		printf("WHYRED WLAN: GCC map failed\n");
+		return;
+	}
+	wlan_gcc();
+
+	smmu = ml_io_map(ANOC2_PA, ANOC2_SIZE);
+	if (smmu == 0) {
+		printf("WHYRED WLAN: ANOC2 SMMU map failed\n");
+	} else {
+		wlan_smmu();
+	}
+
+	smem = ml_io_map(SMEM_PA, SMEM_SIZE);
+	if (smem == 0) {
+		printf("WHYRED WLAN: SMEM map failed\n");
+	} else {
+		wlan_announce("dump the SMEM header");
+		wlan_region("SMEM", smem, SMEM_SIZE);
+	}
+
+	msa = ml_io_map(MSA_PA, MSA_SIZE);
+	if (msa == 0) {
+		printf("WHYRED WLAN: MSA map failed\n");
+	} else {
+		wlan_announce("dump the WLAN MSA carve-out");
+		wlan_region("MSA", msa, MSA_SIZE);
+	}
+	printf("WHYRED WLAN: F0b probe done\n");
+}
+
+int
+whyred_wlan_probe(void)
+{
+	static int started;
+	uint32_t on = 0;
+	thread_t thread;
+
+	if (started ||
+	    !PE_parse_boot_argn("whyredwlan", &on, sizeof(on)) || on == 0) {
+		return 0;
+	}
+	started = 1;
+	if (kernel_thread_start(whyred_wlan_thread, NULL, &thread) ==
+	    KERN_SUCCESS) {
+		thread_deallocate(thread);
+	}
+	return 0;
+}
+
+#else /* !ARM64_BOARD_CONFIG_WHYRED */
+
+int whyred_wlan_probe(void);
+int
+whyred_wlan_probe(void)
+{
+	return 0;
+}
+
+#endif

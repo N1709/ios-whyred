@@ -92,7 +92,7 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
  	}
  }
  
-@@ -954,9 +995,43 @@ AppleCLCD::directPresent(const uint8_t *rec)
+@@ -954,9 +995,44 @@ AppleCLCD::directPresent(const uint8_t *rec)
  	return ok;
  }
  
@@ -110,9 +110,10 @@ diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFrame
 +static void
 +sweet_fb_present_log(uint32_t swap, uint64_t start, bool direct)
 +{
-+	uint64_t us;
++	uint64_t ns, us;
 +
-+	absolutetime_to_microseconds(mach_absolute_time() - start, &us);
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++	us = ns / 1000;
 +	if (!sweet_fb_present_log_ready) {
 +		uint32_t logn = 2000;
 +

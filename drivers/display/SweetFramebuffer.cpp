@@ -1009,9 +1009,10 @@ static bool sweet_fb_present_log_ready;
 static void
 sweet_fb_present_log(uint32_t swap, uint64_t start, bool direct)
 {
-	uint64_t us;
+	uint64_t ns, us;
 
-	absolutetime_to_microseconds(mach_absolute_time() - start, &us);
+	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
+	us = ns / 1000;
 	if (!sweet_fb_present_log_ready) {
 		uint32_t logn = 2000;
 

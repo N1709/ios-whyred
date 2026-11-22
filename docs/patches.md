@@ -49,6 +49,11 @@ the reason it exists. Tests for every row live in `tests/run_tests.sh`.
 | 0208 | SDM660 PM660/PM660L keys over the SPMI arbiter v2/v3: PON power/volume-down, PM660L GPIO7 volume-up with an input-enable check, and start the poller from `santoni_sdhci.c` (`sweetkeys=0` disables it) |
 | 0209 | Skip the 30 s IORTC wait on whyred, read the PM660 RTC (`PPID 0x060`, `RTC_RDATA0..3`) through the same arbiter, and fall back to `sweetrtc=<unix seconds>` / `sweetrtcoff=<seconds>` when the raw counter is not Unix time |
 | 0210 | Add the SDCC v5 exact-PIO/cache-state work, the post-write DAT0/CMD13 wait, the DMA diagnostics and the ADMA2 read path; reads use ADMA2 only after a PIO-vs-ADMA2 self-test, writes stay PIO, and failures fall back automatically (`sweetemmc_dma=0` forces PIO) |
+| 0211 | Add `whyred_gpu.c`, the Adreno 512 ladder: read GCC/GPUCC state, vote the GPU BIMC clocks, bring up the CX/GX GDSC, force the GFX3D RCG root on XO, put the LDO in BHS mode, pulse the GX/AON resets and query the TrustZone GPU zap shader (PAS 13); off unless `whyredgpu=N` |
+| 0212 | Add read-only `santoni_emmc_read()` for the audio/modem loaders and parse the GPT `modem` entry into `santoni_emmc_modem_lba()`; the fenced write path stays private |
+| 0213 | Add `whyred_audio.c`: map LPASS Q6/SMMU/codec/pinctrl/AVTIMER/SMEM, vote the ADSP GDSC before the SMMU branch, authenticate the ADSP through PAS and read its firmware from the modem FAT16 `IMAGE/` directory; off unless `whyredaud=N` |
+| 0214 | Add `whyred_wlan.c`: probe WCN3990 through the ANOC2 SMMU (SIDs `0x1a00`/`0x1a01`), read icnss/QUP/TLMM state; read only, off unless `whyredwlan=1` |
+| 0215 | Add `whyred_modem.c`: enable the MSS clocks, program RMB, reset QDSP6, load PBL/MBA from the modem FAT, then authenticate the MDT and its segments through SCM PAS; off unless `whyredmodem=N` |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

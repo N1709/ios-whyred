@@ -89,8 +89,12 @@ Build the lavender image with `BOARD=lavender shim/build.sh`.
 | `sweetrtc=<unix seconds>` | Calendar base when the platform clock answers 0 |
 | `sweetrtcoff=<seconds>` | Add this offset to the raw PM660 RTC counter when it is not Unix time |
 | `sweetemmc_dma=0` | Keep eMMC reads on PIO; ADMA2 is the default after its self-test |
+| `whyredgpu=N` | Run GPU ladder step N after `whyredgpudelay` seconds (default 25); off by default |
+| `whyredaud=N` | Run the ADSP audio step N after `whyredauddelay` seconds; `whyredaudforce=1` overrides its checks; off by default |
+| `whyredwlan=1` | Probe WCN3990 after `whyredwlandelay` seconds (default 25); read only |
+| `whyredmodem=N` | Run the MSS/QDSP6 step N after `whyredmodemdelay` seconds; `whyredmodemclk=<mask>` selects the MSS clocks; off by default |
 | `sweettouch=0` | Disable the touch driver |
-| `sweethw=1` | Also start sweet's SM7150 key and USB drivers (**unsafe on topaz**, not ported) |
+| `sweethw=1` | Also start sweet's SM7150 key and USB drivers (**unsafe on topaz**, not added) |
 | `launchd_unsecure_cache=1`, `wdt=-1 wdt_test=no_user_checkin` | launchd without AMFI; no hardware watchdog |
 
 ### 4. Flash the root and boot
