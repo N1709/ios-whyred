@@ -1,9 +1,10 @@
 # Current status
 
-Last updated: 2026-11-22. Patches `0207`-`0215` (display 60 Hz/telemetry,
-PM660 keys, PM660 RTC, ADMA2 reads, GPU/audio/WLAN/modem drivers) are
-committed locally and not built or booted. Last verified kernel/image:
-`23e59b3` (patch 0206), `shim-boot-touch-pdt-reset.img`.
+Last updated: 2026-11-22. Patches `0207`-`0217` (display 60 Hz/telemetry,
+PM660 keys, PM660 RTC, ADMA2 reads, GPU/audio/WLAN/modem drivers, the
+PosterBoard lever and the GPU IOKit service) are committed and not built or
+booted. Last verified kernel/image: `23e59b3` (patch 0206),
+`shim-boot-touch-pdt-reset.img`.
 
 ## One-paragraph summary
 
@@ -42,9 +43,10 @@ None has run on the phone yet.
 
 ## Next actions
 
-1. **Build 0211-0215 in CI** and boot once with no new boot arg: all four
+1. **Build 0211-0217 in CI** and boot once with no new boot arg: all four
    probes must stay silent. Then enable one at a time and read the
-   `WHYRED GPU/AUDIO/WLAN/MODEM` lines and the `"modem" first block` line.
+   `WHYREDGPU/AUDIO/WLAN/MODEM` lines and the `"modem" first block` line.
+   The GPU service only appears at `whyredgpu=30`.
 2. **Boot 0206** and read the ring for `pdt stream F01 ... cmd 26`,
    `addr test`, `address phase works`, `f01 cmd 0x0026 <- 0x01` and
    `f12 ctrl28 <- 0x1f`.

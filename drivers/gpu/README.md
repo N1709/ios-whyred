@@ -1,22 +1,23 @@
 # gpu
 
 - **Hardware:** Adreno 509, `qcom,chipid = <0x05000900>`
-  (`refs/whyred-android/dts_sdm636_whyred.dtsi`), GPU clock controller at
-  `0x05065000` and `gpucc` at `0x05090000` on the SDM660/636 DTS.
-- **Code:** none. This port draws only through `AppleCLCD`/`sweetfb`.
-- **Not started:** no IOAccelerator, no firmware, no ringbuffer.
+  (`refs/whyred-android/dts_sdm636_whyred.dtsi`), GPU block `0x05000000`,
+  GPUCC `0x05065000`, kgsl SMMU `0x05040000`, zap pas-id 13.
+- **Code:** `whyred_gpu.c` is the boot-arg-gated bring-up ladder (patch
+  `0211`, extended by `0217`): GCC/GPUCC state, GDSC and RCG power-up, SCM
+  zap query, ring, PM4/PFP microcode and fence. `WhyredGPU.cpp` is the
+  IOKit service (`WhyredGPU`/`WhyredGPUUserClient`) with four selectors:
+  info, contiguous buffer new/free, and synchronous PM4 submit.
+- **State:** compiled and host-checked, **not booted on whyred**. The ladder
+  is off unless `whyredgpu=N`; `30` starts the service, `31` also runs its
+  self-test.
 - **Next, in order:**
-  1. Copy the Adreno firmware out of the phone's vendor partition and record
-     the exact file names in this folder.
-  2. Read the `msm_gpu`/`kgsl` nodes and the `a5xx` register layout from the
-     whyred Android kernel (`refs/whyred-android/`) before writing IOKit code.
-  3. Decide whether a minimal `IOAccelerator` that only satisfies the
-     `IOSurface` users is enough for SpringBoard first; full 3D is a later,
-     much larger project.
+  1. Extract the Adreno firmware from the phone's own vendor partition and
+     record the exact names and hashes in `hw.md`.
+  2. Boot `whyredgpu=4` and confirm the GX GDSC and RBBM/CP registers.
+  3. Boot `whyredgpu=12`, then `30`, and check the service appears and the
+     self-test fence completes.
+  4. Only then add the userland A5xx/Metal layer and an `IOAccelerator`
+     that serves SpringBoard.
 
-Reference: `adreno/` (read `../THIRD_PARTY.md` first):
-- `native/Gpu.cpp` and `GpuRegs.h` - the Adreno 509 clock/chip-ID bring-up for
-  this board; the register names match the SDM636 `gpucc` block;
-- `native/GpuCore.h` - the core split to extend with the a5xx ringbuffer,
-  firmware and GMU/zap steps before writing an `IOAccelerator`;
-- `native/tests/gpu_host.cpp` - the host model of the same constants.
+Reference: `adreno/` (read `../THIRD_PARTY.md` first).

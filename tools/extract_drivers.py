@@ -37,7 +37,10 @@ DRIVERS = {
         "bsd/dev/whyred_wlan.c",
     ],
     "modem": ["bsd/dev/whyred_modem.c"],
-    "gpu": ["bsd/dev/whyred_gpu.c"],
+    "gpu": [
+        "bsd/dev/whyred_gpu.c",
+        "bsd/dev/WhyredGPU.cpp",
+    ],
     "audio": ["bsd/dev/whyred_audio.c"],
     "power": [
         "iokit/Kernel/arm/WhyredBattery.cpp",

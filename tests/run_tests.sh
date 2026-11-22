@@ -1855,6 +1855,36 @@ for old in ('lavender', 'LAVENDER', 'lavgpu', 'LAVGPU'):
 PY2
 echo "ok   0211 ships the Adreno ladder, gated by whyredgpu and off by default"
 
+echo "== GPU: 0217 adds the IOKit service and its submit path =="
+P217="xnu/patches/0217-whyred-gpu-service.patch"
+python3 tools/check_patch.py "$P217" -q \
+	--added-contains 'bsd/conf/files:bsd/dev/WhyredGPU.cpp' \
+	--added-contains 'bsd/dev/WhyredGPU.cpp:OSDefineMetaClassAndStructors(WhyredGPU, IOService)' \
+	--added-contains 'bsd/dev/WhyredGPU.cpp:WhyredGPUUserClient' \
+	--added-contains 'bsd/dev/WhyredGPU.cpp:kWhyredSubmit' \
+	--added-contains 'bsd/dev/WhyredGPU.cpp:#if defined(ARM64_BOARD_CONFIG_WHYRED)' \
+	--added-contains 'bsd/dev/WhyredGPU.cpp:inTaskWithPhysicalMask' \
+	--added-contains 'bsd/dev/whyred_gpu.c:whyred_gpu_service_submit' \
+	--added-contains 'bsd/dev/whyred_gpu.c:WhyredGPUStart();' \
+	--added-contains 'bsd/dev/whyred_gpu.c:if (step >= 30)'
+python3 - <<'PY2'
+src = open('xnu/patches/0217-whyred-gpu-service.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# The service only starts after the ladder brought the CP up.
+assert 'whyred_service_start(step == 31)' in body
+assert 'whyredgpu=30' in body
+assert 'WhyredGPUStart(void)' in body
+# The C++ file must be inert on the other boards that share bsd/conf/files.
+assert '#else /* !ARM64_BOARD_CONFIG_WHYRED */' in body
+# No lavender names may survive the merge.
+for old in ('lavender', 'LAVENDER', 'lavgpu', 'LAVGPU'):
+    assert old not in body, old
+PY2
+echo "ok   0217 merges the IOKit service, gated by whyredgpu=30"
+
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
 python3 tools/check_patch.py "$P212" -q \

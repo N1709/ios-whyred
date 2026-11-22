@@ -1,5 +1,5 @@
 /*
- * whyred: Adreno 512 bring-up ladder (M1). Boot-arg gated, off by default.
+ * whyred: Adreno 509 bring-up ladder. Boot-arg gated, off by default.
  *
  *   whyredgpu=N        run the ladder up to step N (0 or absent: nothing happens)
  *   whyredgpudelay=S   seconds to wait after boot before step 1 (default 25), so
@@ -46,7 +46,7 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
 extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 
 #define GCC_PA          0x00100000u
-#define GCC_SIZE        0x80000u
+#define GCC_SIZE        0x94000u
 #define GPUCC_PA        0x05065000u
 #define GPUCC_SIZE      0x10000u
 #define GPU_PA          0x05000000u
@@ -138,7 +138,7 @@ whyred_wait(unsigned ms)
 static void
 whyred_announce(const char *what)
 {
-	printf("WHYRED GPU: about to %s\n", what);
+	printf("WHYREDGPU: about to %s\n", what);
 	whyred_wait(2000);
 }
 
@@ -172,21 +172,21 @@ step1_reads(void)
 
 	whyred_announce("step 1: read GCC GPU branches (read only)");
 	ahb = rd(gcc, GCC_GPU_CFG_AHB);
-	printf("WHYRED GPU: GCC cfg_ahb %08x bimc_gfx %08x gcc_bimc_gfx %08x "
+	printf("WHYREDGPU: GCC cfg_ahb %08x bimc_gfx %08x gcc_bimc_gfx %08x "
 	    "gpll0_vote %08x\n", ahb, rd(gcc, GCC_GPU_BIMC_GFX),
 	    rd(gcc, GCC_BIMC_GFX), rd(gcc, GCC_GPLL0_VOTE));
 	if (ahb & CBCR_OFF) {
-		printf("WHYRED GPU: gcc_gpu_cfg_ahb_clk is OFF, GPUCC not read "
+		printf("WHYREDGPU: gcc_gpu_cfg_ahb_clk is OFF, GPUCC not read "
 		    "(it would be an unclocked access)\n");
 		return;
 	}
 	whyred_announce("step 1: read GPUCC (AHB clock is on)");
-	printf("WHYRED GPU: pll0 mode %08x pll1 mode %08x\n",
+	printf("WHYREDGPU: pll0 mode %08x pll1 mode %08x\n",
 	    rd(gpucc, CC_GPU_PLL0_MODE), rd(gpucc, CC_GPU_PLL1_MODE));
-	printf("WHYRED GPU: CX gdscr %08x hwctrl %08x GX gdscr %08x clamp %08x\n",
+	printf("WHYREDGPU: CX gdscr %08x hwctrl %08x GX gdscr %08x clamp %08x\n",
 	    rd(gpucc, CC_CX_GDSCR), rd(gpucc, CC_CX_GDS_HW_CTRL),
 	    rd(gpucc, CC_GX_GDSCR), rd(gpucc, CC_GX_CLAMP_IO));
-	printf("WHYRED GPU: gfx3d clk %08x rcg cmd %08x cfg %08x; rbbmtimer clk "
+	printf("WHYREDGPU: gfx3d clk %08x rcg cmd %08x cfg %08x; rbbmtimer clk "
 	    "%08x rcg %08x; rbcpr clk %08x rcg %08x; cx_gfx3d %08x\n",
 	    rd(gpucc, CC_GFX3D_CLK), rd(gpucc, CC_GFX3D_RCG_CMD),
 	    rd(gpucc, CC_GFX3D_RCG_CFG), rd(gpucc, CC_RBBMTIMER_CLK),
@@ -199,10 +199,10 @@ static void
 vote_branch(const char *name, uint32_t off)
 {
 	uint32_t v = rd(gcc, off);
-	printf("WHYRED GPU: %s before %08x\n", name, v);
+	printf("WHYREDGPU: %s before %08x\n", name, v);
 	wr(gcc, off, v | CBCR_EN);
 	v = whyred_poll(gcc, off, CBCR_OFF, 0);
-	printf("WHYRED GPU: %s after %08x (%s)\n", name, v,
+	printf("WHYREDGPU: %s after %08x (%s)\n", name, v,
 	    (v & CBCR_OFF) ? "STILL OFF" : "on");
 }
 
@@ -220,13 +220,13 @@ gdsc_on_n(const char *name, uint32_t off, int polls)
 	uint32_t v = rd(gpucc, off);
 
 	if (v & GDSC_PWR_ON) {
-		printf("WHYRED GPU: %s GDSC already on (%08x)\n", name, v);
+		printf("WHYREDGPU: %s GDSC already on (%08x)\n", name, v);
 		return 0;
 	}
-	printf("WHYRED GPU: %s GDSC off (%08x), clearing SW_COLLAPSE\n", name, v);
+	printf("WHYREDGPU: %s GDSC off (%08x), clearing SW_COLLAPSE\n", name, v);
 	wr(gpucc, off, v & ~GDSC_COLLAPSE);
 	v = whyred_poll_n(gpucc, off, GDSC_PWR_ON, GDSC_PWR_ON, polls);
-	printf("WHYRED GPU: %s GDSC now %08x (%s)\n", name, v,
+	printf("WHYREDGPU: %s GDSC now %08x (%s)\n", name, v,
 	    (v & GDSC_PWR_ON) ? "on" : "STILL OFF");
 	return (v & GDSC_PWR_ON) ? 0 : EIO;
 }
@@ -250,10 +250,10 @@ step3_cx(void)
 static void
 dump_gpu(void)
 {
-	printf("WHYRED GPU: RBBM_STATUS %08x STATUS3 %08x INT_0 %08x AHB_ERR %08x\n",
+	printf("WHYREDGPU: RBBM_STATUS %08x STATUS3 %08x INT_0 %08x AHB_ERR %08x\n",
 	    rd(gpu, A5_RBBM_STATUS), rd(gpu, A5_RBBM_STATUS3),
 	    rd(gpu, A5_RBBM_INT_0_STATUS), rd(gpu, A5_RBBM_AHB_ERR_STATUS));
-	printf("WHYRED GPU: SECVID_TRUST_CNTL %08x CLOCK_CNTL %08x SW_RESET %08x "
+	printf("WHYREDGPU: SECVID_TRUST_CNTL %08x CLOCK_CNTL %08x SW_RESET %08x "
 	    "CP_RB_BASE %08x CP_RB_CNTL %08x\n", rd(gpu, A5_RBBM_SECVID_TRUST),
 	    rd(gpu, A5_RBBM_CLOCK_CNTL), rd(gpu, A5_RBBM_SW_RESET_CMD),
 	    rd(gpu, A5_CP_RB_BASE), rd(gpu, A5_CP_RB_CNTL));
@@ -262,12 +262,12 @@ dump_gpu(void)
 static void
 dump_ldo(const char *when)
 {
-	printf("WHYRED GPU: gfx ldo (%s): atest %08x cfg0 %08x cfg1 %08x cfg2 %08x "
+	printf("WHYREDGPU: gfx ldo (%s): atest %08x cfg0 %08x cfg1 %08x cfg2 %08x "
 	    "ld %08x vreftest %08x vref %08x\n", when, rd(gpucc, CC_LDO),
 	    rd(gpucc, CC_LDO + 0x4), rd(gpucc, CC_LDO + 0x8),
 	    rd(gpucc, CC_LDO + 0xc), rd(gpucc, CC_LDO + 0x10),
 	    rd(gpucc, CC_LDO + 0x14), rd(gpucc, CC_LDO + 0x18));
-	printf("WHYRED GPU: gfx ldo (%s): pwrswitch_ctrl %08x status1 %08x "
+	printf("WHYREDGPU: gfx ldo (%s): pwrswitch_ctrl %08x status1 %08x "
 	    "pwrswitch_status %08x\n", when, rd(gpucc, CC_LDO_PWRSWITCH_CTRL),
 	    rd(gpucc, CC_LDO_STATUS1), rd(gpucc, CC_LDO_PWRSWITCH_STATUS));
 }
@@ -302,19 +302,18 @@ step4_gx(void)
 	uint32_t v, ldo_ctl_saved;
 
 	/*
-	 * Run 3 of the ladder (0211): the GX GDSC left the off state
-	 * (GDSCR 08222000) but never reported PWR_ON. The DT marks it
-	 * qcom,force-enable-root-clk with core_root_clk = the GFX3D RCG, which
-	 * was still ROOT_OFF. Turn the root on first; its source is XO (cfg 0,
-	 * 19.2 MHz), no PLL and no rail involved.
+	 * Run 3: the GX GDSC left the off state (GDSCR 08222000) but never
+	 * reported PWR_ON. The DT marks it qcom,force-enable-root-clk with
+	 * core_root_clk = the GFX3D RCG, which was still ROOT_OFF. Turn the root on
+	 * first; its source is XO (cfg 0, 19.2 MHz), no PLL and no rail involved.
 	 */
 	whyred_announce("step 4: force the GFX3D RCG root on (XO source)");
 	v = rd(gpucc, CC_GFX3D_RCG_CMD);
-	printf("WHYRED GPU: gfx3d rcg cmd before %08x cfg %08x\n", v,
+	printf("WHYREDGPU: gfx3d rcg cmd before %08x cfg %08x\n", v,
 	    rd(gpucc, CC_GFX3D_RCG_CFG));
 	wr(gpucc, CC_GFX3D_RCG_CMD, v | RCG_ROOT_EN);
 	v = whyred_poll(gpucc, CC_GFX3D_RCG_CMD, RCG_ROOT_OFF, 0);
-	printf("WHYRED GPU: gfx3d rcg cmd after %08x (%s)\n", v,
+	printf("WHYREDGPU: gfx3d rcg cmd after %08x (%s)\n", v,
 	    (v & RCG_ROOT_OFF) ? "root STILL OFF" : "root on");
 	dump_ldo("before");
 	whyred_announce("step 4: put the GFX LDO block in BHS mode under GDSC control");
@@ -322,10 +321,9 @@ step4_gx(void)
 	ldo_bhs_mode();
 	dump_ldo("after bhs");
 	/*
-	 * Run 5 of the ladder (0211): the LDO bits were already in BHS
-	 * state and the GX GDSC still stayed at 08222000. The vendor GDSC
-	 * driver does three more things BEFORE it clears SW_COLLAPSE
-	 * (gdsc-regulator.c, behaviour reference):
+	 * Run 5: the LDO bits were already in BHS state and the GX GDSC
+	 * still stayed at 08222000. The vendor GDSC driver does three more things
+	 * BEFORE it clears SW_COLLAPSE (gdsc-regulator.c, behaviour reference):
 	 * pulse the GX block reset (sw-reset = GPUCC+0x1090 bit 0), pulse the
 	 * AON/GMEM reset (domain-addr = GPUCC+0x130 bit 4, reset-aon-logic) and
 	 * release the GMEM clamp (same register, bit 0). Until now the clamp was
@@ -333,7 +331,7 @@ step4_gx(void)
 	 */
 	whyred_announce("step 4: GX block reset pulse, AON reset pulse, release clamp");
 	v = rd(gpucc, CC_GX_BCR);
-	printf("WHYRED GPU: GX bcr %08x clamp/domain %08x\n", v,
+	printf("WHYREDGPU: GX bcr %08x clamp/domain %08x\n", v,
 	    rd(gpucc, CC_GX_CLAMP_IO));
 	wr(gpucc, CC_GX_BCR, v | 1u);
 	for (int i = 0; i < 20; i++) {
@@ -347,12 +345,12 @@ step4_gx(void)
 	}
 	wr(gpucc, CC_GX_CLAMP_IO, v & ~GX_GMEM_RESET);
 	wr(gpucc, CC_GX_CLAMP_IO, rd(gpucc, CC_GX_CLAMP_IO) & ~1u);
-	printf("WHYRED GPU: GX bcr %08x clamp/domain %08x\n", rd(gpucc, CC_GX_BCR),
+	printf("WHYREDGPU: GX bcr %08x clamp/domain %08x\n", rd(gpucc, CC_GX_BCR),
 	    rd(gpucc, CC_GX_CLAMP_IO));
 	whyred_announce("step 4: GX GDSC on");
 	if (gdsc_on_n("GX", CC_GX_GDSCR, 300)) {
 		whyred_wait(1000);
-		printf("WHYRED GPU: GX after 1 more s: gdscr %08x cfg(0x1098) %08x\n",
+		printf("WHYREDGPU: GX after 1 more s: gdscr %08x cfg(0x1098) %08x\n",
 		    rd(gpucc, CC_GX_GDSCR), rd(gpucc, CC_GFX3D_CLK));
 		/* leave the domain as found: collapse it, drop the forced root,
 		 * restore the LDO block */
@@ -362,12 +360,12 @@ step4_gx(void)
 		wr(gpucc, CC_GFX3D_RCG_CMD,
 		    rd(gpucc, CC_GFX3D_RCG_CMD) & ~RCG_ROOT_EN);
 		whyred_wait(100);
-		printf("WHYRED GPU: GX collapsed again: gdscr %08x rcg %08x\n",
+		printf("WHYREDGPU: GX collapsed again: gdscr %08x rcg %08x\n",
 		    rd(gpucc, CC_GX_GDSCR), rd(gpucc, CC_GFX3D_RCG_CMD));
 		return;
 	}
 	v = rd(gpucc, CC_GX_CLAMP_IO);
-	printf("WHYRED GPU: GMEM clamp before %08x, clearing bit 0\n", v);
+	printf("WHYREDGPU: GMEM clamp before %08x, clearing bit 0\n", v);
 	wr(gpucc, CC_GX_CLAMP_IO, v & ~1u);
 	whyred_announce("step 4: enable gfx3d and rbbmtimer branches");
 	for (int i = 0; i < 2; i++) {
@@ -375,17 +373,17 @@ step4_gx(void)
 		v = rd(gpucc, off);
 		wr(gpucc, off, v | CBCR_EN);
 		v = whyred_poll(gpucc, off, CBCR_OFF, 0);
-		printf("WHYRED GPU: %s clk %08x (%s)\n", i ? "rbbmtimer" : "gfx3d",
+		printf("WHYREDGPU: %s clk %08x (%s)\n", i ? "rbbmtimer" : "gfx3d",
 		    v, (v & CBCR_OFF) ? "STILL OFF" : "on");
 	}
 	whyred_announce("step 4: READ the GPU block at 0x05000000");
 	dump_gpu();
 	gx_on = 1;
-	printf("WHYRED GPU: step 4 done, the GPU block answered\n");
+	printf("WHYREDGPU: step 4 done, the GPU block answered\n");
 }
 
 /*
- * Step 5: does the SDM660 TrustZone take our SCM call, and does it know the
+ * Step 5: does the SDM636 TrustZone take our SCM call, and does it know the
  * GPU zap shader (PAS id 13)? Questions only, no state change. The calling
  * convention is the one 0113 uses for the modem (SMC64, owner SIP, yielding
  * call, resumed while x0 == 1); Linux qcom_scm-smc.c as behaviour reference.
@@ -438,13 +436,13 @@ step5_scm(void)
 	whyred_announce("step 5: SCM INFO is_call_available(PIL IS_SUPPORTED)");
 	ret = whyred_scm(SCM_FN(SCM_SVC_INFO, SCM_INFO_IS_CALL_AVAIL), 1,
 	    SCM_FN(SCM_SVC_PIL, PIL_IS_SUPPORTED), 0, 0, &res);
-	printf("WHYRED GPU: SCM is_call_available: ret %llx res %llx\n",
+	printf("WHYREDGPU: SCM is_call_available: ret %llx res %llx\n",
 	    (unsigned long long)ret, (unsigned long long)res);
 	for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
 		whyred_announce("step 5: SCM PIL IS_SUPPORTED for the next id");
 		ret = whyred_scm(SCM_FN(SCM_SVC_PIL, PIL_IS_SUPPORTED), 1, ids[i], 0, 0,
 		    &res);
-		printf("WHYRED GPU: SCM PAS id %u (%s) supported: ret %llx res %llx\n",
+		printf("WHYREDGPU: SCM PAS id %u (%s) supported: ret %llx res %llx\n",
 		    ids[i], names[i], (unsigned long long)ret,
 		    (unsigned long long)res);
 	}
@@ -513,14 +511,14 @@ whyred_read_file(const char *name, void *buf, uint32_t max, uint32_t *len)
 	snprintf(path, sizeof(path), "%s%s", GPU_FW_DIR, name);
 	err = vnode_open(path, FREAD, 0, 0, &vp, ctx);
 	if (err) {
-		printf("WHYRED GPU: open %s failed: %d\n", path, err);
+		printf("WHYREDGPU: open %s failed: %d\n", path, err);
 		return err;
 	}
 	err = vn_rdwr(UIO_READ, vp, (caddr_t)buf, (int)max, 0, UIO_SYSSPACE,
 	    IO_NODELOCKED, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
 	(void)vnode_close(vp, FREAD, ctx);
 	if (err) {
-		printf("WHYRED GPU: read %s failed: %d\n", path, err);
+		printf("WHYREDGPU: read %s failed: %d\n", path, err);
 		return err;
 	}
 	*len = max - (uint32_t)resid;
@@ -540,7 +538,7 @@ step6_zap(void)
 	whyred_announce("step 6: read the zap firmware from the root filesystem");
 	if (whyred_alloc(ZAP_META_MAX, PAGE_MASK, &meta, &meta_pa) ||
 	    whyred_alloc(ZAP_CODE_MAX, PAGE_MASK, &code, &code_pa)) {
-		printf("WHYRED GPU: no contiguous memory for the zap image\n");
+		printf("WHYREDGPU: no contiguous memory for the zap image\n");
 		return;
 	}
 	if (whyred_read_file("a512_zap.mdt", (void *)meta, ZAP_META_MAX, &meta_len) ||
@@ -550,15 +548,15 @@ step6_zap(void)
 	/* The microcode is only checked and counted here; it is loaded later. */
 	if (whyred_read_file("a530_pm4.fw", (void *)(code + 0x8000), 0x8000,
 	    &fw_len) == 0) {
-		printf("WHYRED GPU: a530_pm4.fw %u bytes\n", fw_len);
+		printf("WHYREDGPU: a530_pm4.fw %u bytes\n", fw_len);
 	}
-	printf("WHYRED GPU: a512_zap.mdt %u bytes, a512_zap.b02 %u bytes, "
+	printf("WHYREDGPU: a512_zap.mdt %u bytes, a512_zap.b02 %u bytes, "
 	    "meta pa %llx\n", meta_len, code_len, (unsigned long long)meta_pa);
 	eh = (const struct whyred_elf32_ehdr *)meta;
 	if (meta_len < sizeof(*eh) || memcmp(eh->e_ident, "\177ELF", 4) != 0 ||
 	    eh->e_phentsize != sizeof(*ph) || eh->e_phnum == 0 ||
 	    eh->e_phoff + (uint32_t)eh->e_phnum * sizeof(*ph) > meta_len) {
-		printf("WHYRED GPU: a512_zap.mdt is not the expected ELF\n");
+		printf("WHYREDGPU: a512_zap.mdt is not the expected ELF\n");
 		return;
 	}
 	ph = (const struct whyred_elf32_phdr *)(meta + eh->e_phoff);
@@ -578,28 +576,28 @@ step6_zap(void)
 	}
 	if (load == NULL || load->p_filesz != code_len ||
 	    load->p_memsz < load->p_filesz) {
-		printf("WHYRED GPU: zap segment does not match a512_zap.b02\n");
+		printf("WHYREDGPU: zap segment does not match a512_zap.b02\n");
 		return;
 	}
 	min_addr &= ~0xfffu;
 	max_addr = (max_addr + 0xfffu) & ~0xfffu;
 	size = max_addr - min_addr;
-	printf("WHYRED GPU: zap region 0x%x..0x%x (%u bytes), load offset 0x%x\n",
+	printf("WHYREDGPU: zap region 0x%x..0x%x (%u bytes), load offset 0x%x\n",
 	    min_addr, max_addr, size, load->p_paddr - min_addr);
 	if (size > 0x100000 ||
 	    (whyred_alloc(size, 0xfffff, &region, &region_pa) &&
 	    whyred_alloc(size, PAGE_MASK, &region, &region_pa))) {
-		printf("WHYRED GPU: no contiguous region for the zap\n");
+		printf("WHYREDGPU: no contiguous region for the zap\n");
 		return;
 	}
-	printf("WHYRED GPU: zap region pa %llx, SECVID_TRUST_CNTL before %08x\n",
+	printf("WHYREDGPU: zap region pa %llx, SECVID_TRUST_CNTL before %08x\n",
 	    (unsigned long long)region_pa, gx_on ? rd(gpu, A5_RBBM_SECVID_TRUST) : 0);
 
 	flush_dcache64((addr64_t)meta_pa, meta_len, TRUE);
 	whyred_announce("step 6: SCM PIL INIT_IMAGE (metadata)");
 	ret = whyred_scm(SCM_FN(SCM_SVC_PIL, PIL_INIT_IMAGE),
 	    2 | (SCM_ARG_RW << 6), PAS_ID_GPU_ZAP, meta_pa, 0, &res);
-	printf("WHYRED GPU: init_image: ret %llx res %llx\n", (unsigned long long)ret,
+	printf("WHYREDGPU: init_image: ret %llx res %llx\n", (unsigned long long)ret,
 	    (unsigned long long)res);
 	if (ret != 0) {
 		return;
@@ -607,7 +605,7 @@ step6_zap(void)
 	whyred_announce("step 6: SCM PIL MEM_SETUP (region)");
 	ret = whyred_scm(SCM_FN(SCM_SVC_PIL, PIL_MEM_SETUP), 3, PAS_ID_GPU_ZAP,
 	    region_pa, size, &res);
-	printf("WHYRED GPU: mem_setup: ret %llx res %llx\n", (unsigned long long)ret,
+	printf("WHYREDGPU: mem_setup: ret %llx res %llx\n", (unsigned long long)ret,
 	    (unsigned long long)res);
 	if (ret != 0) {
 		return;
@@ -618,11 +616,11 @@ step6_zap(void)
 	whyred_announce("step 6: SCM PIL AUTH_AND_RESET (loads the zap)");
 	ret = whyred_scm(SCM_FN(SCM_SVC_PIL, PIL_AUTH_RESET), 1, PAS_ID_GPU_ZAP, 0,
 	    0, &res);
-	printf("WHYRED GPU: auth_and_reset: ret %llx res %llx\n",
+	printf("WHYREDGPU: auth_and_reset: ret %llx res %llx\n",
 	    (unsigned long long)ret, (unsigned long long)res);
 	whyred_wait(100);
 	if (gx_on) {
-		printf("WHYRED GPU: after the zap: RBBM_STATUS %08x SECVID_TRUST_CNTL "
+		printf("WHYREDGPU: after the zap: RBBM_STATUS %08x SECVID_TRUST_CNTL "
 		    "%08x\n", rd(gpu, A5_RBBM_STATUS), rd(gpu, A5_RBBM_SECVID_TRUST));
 	}
 }
@@ -646,7 +644,7 @@ step7_smmu(void)
 
 	smmu = ml_io_map(SMMU_PA, SMMU_SIZE);
 	if (smmu == 0) {
-		printf("WHYRED GPU: SMMU map failed\n");
+		printf("WHYREDGPU: SMMU map failed\n");
 		return;
 	}
 	whyred_announce("step 7: READ the SMMU global registers");
@@ -654,30 +652,30 @@ step7_smmu(void)
 	idr1 = rd(smmu, 0x24);
 	idr2 = rd(smmu, 0x28);
 	idr7 = rd(smmu, 0x3c);
-	printf("WHYRED GPU: SMMU sCR0 %08x sCR1 %08x sCR2 %08x sACR %08x\n",
+	printf("WHYREDGPU: SMMU sCR0 %08x sCR1 %08x sCR2 %08x sACR %08x\n",
 	    rd(smmu, 0x0), rd(smmu, 0x4), rd(smmu, 0x8), rd(smmu, 0x10));
-	printf("WHYRED GPU: SMMU IDR0 %08x IDR1 %08x IDR2 %08x IDR7 %08x\n", idr0,
+	printf("WHYREDGPU: SMMU IDR0 %08x IDR1 %08x IDR2 %08x IDR7 %08x\n", idr0,
 	    idr1, idr2, idr7);
 	pgsz = (idr1 & (1u << 31)) ? 0x10000u : 0x1000u;
 	npage = 1u << (((idr1 >> 28) & 7) + 1);
 	cbbase = (npage * pgsz) / 2;
-	printf("WHYRED GPU: SMMU page size %x, %u pages, %u context banks, "
+	printf("WHYREDGPU: SMMU page size %x, %u pages, %u context banks, "
 	    "%u stream-mapping groups, CB base +%x\n", pgsz, npage,
 	    idr1 & 0xff, (idr0 >> 0) & 0xff, cbbase);
 
 	whyred_announce("step 7: READ stream mapping groups 0..3");
 	for (uint32_t i = 0; i < 4; i++) {
-		printf("WHYRED GPU: SMMU SMR%u %08x S2CR%u %08x\n", i,
+		printf("WHYREDGPU: SMMU SMR%u %08x S2CR%u %08x\n", i,
 		    rd(smmu, 0x800 + 4 * i), i, rd(smmu, 0xc00 + 4 * i));
 	}
 	if (cbbase + 4 * pgsz > SMMU_SIZE) {
-		printf("WHYRED GPU: context banks are outside the mapped block\n");
+		printf("WHYREDGPU: context banks are outside the mapped block\n");
 		return;
 	}
 	whyred_announce("step 7: READ context banks 0 and 4 (1..3 hang the reader)");
 	for (uint32_t cb = 0; cb < 5; cb += 4) {
 		vm_offset_t b = smmu + cbbase + cb * pgsz;
-		printf("WHYRED GPU: CB%u SCTLR %08x TTBR0 %08x%08x TCR %08x FSR %08x "
+		printf("WHYREDGPU: CB%u SCTLR %08x TTBR0 %08x%08x TCR %08x FSR %08x "
 		    "FAR %08x\n", cb, rd(b, 0x0), rd(b, 0x24), rd(b, 0x20),
 		    rd(b, 0x30), rd(b, 0x58), rd(b, 0x60));
 	}
@@ -702,7 +700,7 @@ step8_smmu_bypass(void)
 	wr(smmu_va, 0xc00, (1u << 16) | 0u);
 	smr = rd(smmu_va, 0x800);
 	s2cr = rd(smmu_va, 0xc00);
-	printf("WHYRED GPU: SMMU SMR0 now %08x S2CR0 now %08x (%s)\n", smr, s2cr,
+	printf("WHYREDGPU: SMMU SMR0 now %08x S2CR0 now %08x (%s)\n", smr, s2cr,
 	    (smr == ((1u << 31)) && ((s2cr >> 16) & 3) == 1) ? "bypass stuck" :
 	    "did not take");
 }
@@ -740,7 +738,7 @@ step9_smmu_s1(void)
 		return;
 	}
 	if (whyred_alloc(0x1000, PAGE_MASK, &pt, &pa)) {
-		printf("WHYRED GPU: no page for the SMMU table\n");
+		printf("WHYREDGPU: no page for the SMMU table\n");
 		return;
 	}
 	for (unsigned i = 0; i < 4; i++) {
@@ -766,7 +764,7 @@ step9_smmu_s1(void)
 	for (int i = 0; i < 1000 && (rd(cb, CB_TLBSTATUS) & 1); i++) {
 		whyred_wait(1);
 	}
-	printf("WHYRED GPU: CB4 before enable: CBAR %08x CBA2R %08x TCR %08x TCR2 %08x "
+	printf("WHYREDGPU: CB4 before enable: CBAR %08x CBA2R %08x TCR %08x TCR2 %08x "
 	    "TTBR0 %08x%08x MAIR0 %08x\n", rd(smmu_va, SMMU_CBAR(SMMU_CB)),
 	    rd(smmu_va, SMMU_CBA2R(SMMU_CB)), rd(cb, CB_TCR), rd(cb, CB_TCR2),
 	    rd(cb, CB_TTBR0 + 4), rd(cb, CB_TTBR0), rd(cb, CB_MAIR0));
@@ -776,7 +774,7 @@ step9_smmu_s1(void)
 	wr(cb, CB_SCTLR, (1u << 0) | (1u << 1) | (1u << 2) | (1u << 5) | (1u << 6));
 	wr(smmu_va, 0xc00, SMMU_CB);                           /* S2CR0: translate via CB4 */
 	wr(smmu_va, 0x800, 1u << 31);                          /* SMR0: valid, ID 0 */
-	printf("WHYRED GPU: CB4 SCTLR %08x FSR %08x; SMR0 %08x S2CR0 %08x (%s)\n",
+	printf("WHYREDGPU: CB4 SCTLR %08x FSR %08x; SMR0 %08x S2CR0 %08x (%s)\n",
 	    rd(cb, CB_SCTLR), rd(cb, CB_FSR), rd(smmu_va, 0x800),
 	    rd(smmu_va, 0xc00),
 	    (rd(smmu_va, 0xc00) & 0x3ffffu) == SMMU_CB ? "stream 0 -> CB4" :
@@ -817,12 +815,12 @@ whyred_load_ucode(const char *name, uint64_t *pa)
 		return -1;
 	}
 	if (len < 8 || len > UCODE_BYTES) {
-		printf("WHYRED GPU: %s has an unexpected size %u\n", name, len);
+		printf("WHYREDGPU: %s has an unexpected size %u\n", name, len);
 		return -1;
 	}
 	memmove((void *)va, (void *)(va + 4), len - 4);
 	flush_dcache64((addr64_t)*pa, UCODE_BYTES, TRUE);
-	printf("WHYRED GPU: %s: %u bytes of microcode at pa %llx\n", name, len - 4,
+	printf("WHYREDGPU: %s: %u bytes of microcode at pa %llx\n", name, len - 4,
 	    (unsigned long long)*pa);
 	return 0;
 }
@@ -833,7 +831,7 @@ step10_ucode_ring(void)
 	uint64_t pm4_pa, pfp_pa;
 
 	if (!gx_on || smmu_pt_pa == 0) {
-		printf("WHYRED GPU: step 10 needs the GX power-up and the SMMU table\n");
+		printf("WHYREDGPU: step 10 needs the GX power-up and the SMMU table\n");
 		return;
 	}
 	whyred_announce("step 10: read the microcode files");
@@ -841,16 +839,16 @@ step10_ucode_ring(void)
 	    whyred_load_ucode("a530_pfp.fw", &pfp_pa) ||
 	    whyred_alloc(RING_BYTES, PAGE_MASK, &ring_va, &ring_pa) ||
 	    whyred_alloc(0x1000, PAGE_MASK, &rptr_va, &rptr_pa)) {
-		printf("WHYRED GPU: step 10: buffers not available\n");
+		printf("WHYREDGPU: step 10: buffers not available\n");
 		return;
 	}
 	fence_pa = rptr_pa + 0x100;
 	ucode_pm4_pa = pm4_pa;
 	ucode_pfp_pa = pfp_pa;
-	printf("WHYRED GPU: ring pa %llx, rptr shadow pa %llx, fence pa %llx\n",
+	printf("WHYREDGPU: ring pa %llx, rptr shadow pa %llx, fence pa %llx\n",
 	    (unsigned long long)ring_pa, (unsigned long long)rptr_pa,
 	    (unsigned long long)fence_pa);
-	printf("WHYRED GPU: CP_CNTL %08x CP_PFP_ME_CNTL %08x before\n",
+	printf("WHYREDGPU: CP_CNTL %08x CP_PFP_ME_CNTL %08x before\n",
 	    rd(gpu, A5_CP_CNTL), rd(gpu, A5_CP_PFP_ME_CNTL));
 
 	whyred_announce("step 10: WRITE CP microcode base and ring registers");
@@ -864,10 +862,10 @@ step10_ucode_ring(void)
 	wr(gpu, A5_CP_RB_BASE + 4, (uint32_t)(ring_pa >> 32));
 	wr(gpu, A5_CP_RB_RPTR_ADDR, (uint32_t)rptr_pa);
 	wr(gpu, A5_CP_RB_RPTR_ADDR + 4, (uint32_t)(rptr_pa >> 32));
-	printf("WHYRED GPU: PFP base %08x%08x ME base %08x%08x\n",
+	printf("WHYREDGPU: PFP base %08x%08x ME base %08x%08x\n",
 	    rd(gpu, A5_CP_PFP_INSTR_BASE + 4), rd(gpu, A5_CP_PFP_INSTR_BASE),
 	    rd(gpu, A5_CP_ME_INSTR_BASE + 4), rd(gpu, A5_CP_ME_INSTR_BASE));
-	printf("WHYRED GPU: RB_CNTL %08x RB_BASE %08x%08x RPTR_ADDR %08x%08x RPTR %08x "
+	printf("WHYREDGPU: RB_CNTL %08x RB_BASE %08x%08x RPTR_ADDR %08x%08x RPTR %08x "
 	    "WPTR %08x\n", rd(gpu, A5_CP_RB_CNTL), rd(gpu, A5_CP_RB_BASE + 4),
 	    rd(gpu, A5_CP_RB_BASE), rd(gpu, A5_CP_RB_RPTR_ADDR + 4),
 	    rd(gpu, A5_CP_RB_RPTR_ADDR), rd(gpu, A5_CP_RB_RPTR),
@@ -937,13 +935,13 @@ ring_submit(const char *what)
 	for (int i = 0; i < 300; i++) {
 		rptr = rd(gpu, A5_CP_RB_RPTR);
 		if (rptr == ring_wptr) {
-			printf("WHYRED GPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
+			printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
 			    what, rptr, ring_wptr, i * 10);
 			return 0;
 		}
 		whyred_wait(10);
 	}
-	printf("WHYRED GPU: %s NOT consumed: RPTR %u WPTR %u, RBBM_STATUS %08x INT_0 "
+	printf("WHYREDGPU: %s NOT consumed: RPTR %u WPTR %u, RBBM_STATUS %08x INT_0 "
 	    "%08x AHB_ERR %08x\n", what, rptr, ring_wptr, rd(gpu, A5_RBBM_STATUS),
 	    rd(gpu, A5_RBBM_INT_0_STATUS), rd(gpu, A5_RBBM_AHB_ERR_STATUS));
 	return -1;
@@ -955,7 +953,7 @@ step11_cp_start(void)
 	volatile uint32_t *fence;
 
 	if (ring_va == 0 || ring_pa == 0) {
-		printf("WHYRED GPU: step 11 needs the ring of step 10\n");
+		printf("WHYREDGPU: step 11 needs the ring of step 10\n");
 		return;
 	}
 	whyred_announce("step 11: WRITE the CP/RBBM setup registers");
@@ -972,13 +970,13 @@ step11_cp_start(void)
 	wr(gpu, A5_CP_CHICKEN_DBG, 0x02000000);
 	wr(gpu, A5_RBBM_INT_0_MASK, 0);
 	wr(gpu, A5_CP_RB_CNTL, 12u | (2u << 8) | RB_NO_UPDATE);
-	printf("WHYRED GPU: RB_CNTL %08x CP_ADDR_MODE %08x\n", rd(gpu, A5_CP_RB_CNTL),
+	printf("WHYREDGPU: RB_CNTL %08x CP_ADDR_MODE %08x\n", rd(gpu, A5_CP_RB_CNTL),
 	    rd(gpu, A5_CP_ADDR_MODE_CNTL));
 
 	whyred_announce("step 11: clear the PFP/ME halt");
 	wr(gpu, A5_CP_PFP_ME_CNTL, 0);
 	whyred_wait(50);
-	printf("WHYRED GPU: CP_PFP_ME_CNTL %08x RBBM_STATUS %08x RPTR %u WPTR %u\n",
+	printf("WHYREDGPU: CP_PFP_ME_CNTL %08x RBBM_STATUS %08x RPTR %u WPTR %u\n",
 	    rd(gpu, A5_CP_PFP_ME_CNTL), rd(gpu, A5_RBBM_STATUS),
 	    rd(gpu, A5_CP_RB_RPTR), rd(gpu, A5_CP_RB_WPTR));
 
@@ -989,7 +987,7 @@ step11_cp_start(void)
 	ring_put(0x20000000);	/* error detection */
 	ring_put(0);
 	ring_put(0);
-	ring_put(0);		/* no microcode workarounds (a512) */
+	ring_put(0);		/* no microcode workarounds (a509) */
 	ring_put(0);
 	ring_put(0);
 	if (ring_submit("ME_INIT") != 0) {
@@ -1002,7 +1000,7 @@ step11_cp_start(void)
 	if (ring_submit("SET_SECURE_MODE") != 0) {
 		return;
 	}
-	printf("WHYRED GPU: SECVID_TRUST_CNTL now %08x RBBM_STATUS %08x\n",
+	printf("WHYREDGPU: SECVID_TRUST_CNTL now %08x RBBM_STATUS %08x\n",
 	    rd(gpu, A5_RBBM_SECVID_TRUST), rd(gpu, A5_RBBM_STATUS));
 
 	whyred_announce("step 11: submit CP_MEM_WRITE (fence word)");
@@ -1017,7 +1015,7 @@ step11_cp_start(void)
 		return;
 	}
 	flush_dcache64((addr64_t)fence_pa, 64, TRUE);
-	printf("WHYRED GPU: fence word %08x (%s)\n", *fence,
+	printf("WHYREDGPU: fence word %08x (%s)\n", *fence,
 	    *fence == 0xcafe0001u ? "CP WROTE IT" : "not written");
 }
 
@@ -1107,7 +1105,7 @@ step12_fence_reset(void)
 	uint32_t trust;
 
 	if (ring_va == 0 || ring_pa == 0) {
-		printf("WHYRED GPU: step 12 needs steps 10 and 11\n");
+		printf("WHYREDGPU: step 12 needs steps 10 and 11\n");
 		return;
 	}
 	whyred_announce("step 12: 16 fences with different values");
@@ -1115,10 +1113,10 @@ step12_fence_reset(void)
 		if (fence_test(0xcafe0100u + i, 100) == 0) {
 			ok++;
 		} else {
-			printf("WHYRED GPU: fence %u did not land\n", i);
+			printf("WHYREDGPU: fence %u did not land\n", i);
 		}
 	}
-	printf("WHYRED GPU: fence burst: %u of 16 landed, RPTR %u WPTR %u\n", ok,
+	printf("WHYREDGPU: fence burst: %u of 16 landed, RPTR %u WPTR %u\n", ok,
 	    rd(gpu, A5_CP_RB_RPTR), rd(gpu, A5_CP_RB_WPTR));
 	if (ok != 16) {
 		return;
@@ -1129,10 +1127,10 @@ step12_fence_reset(void)
 	ring_put(0);
 	ring_put(0);
 	if (fence_test(0xdead0001u, 500) == 0) {
-		printf("WHYRED GPU: the hang did NOT hang the CP, stopping\n");
+		printf("WHYREDGPU: the hang did NOT hang the CP, stopping\n");
 		return;
 	}
-	printf("WHYRED GPU: CP is stuck as intended: RPTR %u WPTR %u RBBM_STATUS %08x "
+	printf("WHYREDGPU: CP is stuck as intended: RPTR %u WPTR %u RBBM_STATUS %08x "
 	    "INT_0 %08x\n", rd(gpu, A5_CP_RB_RPTR), rd(gpu, A5_CP_RB_WPTR),
 	    rd(gpu, A5_RBBM_STATUS), rd(gpu, A5_RBBM_INT_0_STATUS));
 
@@ -1143,21 +1141,21 @@ step12_fence_reset(void)
 	wr(gpu, A5_RBBM_SW_RESET_CMD, 0);
 	whyred_wait(5);
 	trust = rd(gpu, A5_RBBM_SECVID_TRUST);
-	printf("WHYRED GPU: after reset: RBBM_STATUS %08x SECVID_TRUST_CNTL %08x "
+	printf("WHYREDGPU: after reset: RBBM_STATUS %08x SECVID_TRUST_CNTL %08x "
 	    "RPTR %u WPTR %u CP_PFP_ME_CNTL %08x\n", rd(gpu, A5_RBBM_STATUS),
 	    trust, rd(gpu, A5_CP_RB_RPTR), rd(gpu, A5_CP_RB_WPTR),
 	    rd(gpu, A5_CP_PFP_ME_CNTL));
 
 	whyred_announce("step 12: bring the CP up again");
 	if (cp_bringup() != 0) {
-		printf("WHYRED GPU: recovery failed in the bring-up\n");
+		printf("WHYREDGPU: recovery failed in the bring-up\n");
 		return;
 	}
 	if (fence_test(0xcafe0200u, 200) == 0) {
-		printf("WHYRED GPU: RECOVERED: a fence landed after the reset, "
+		printf("WHYREDGPU: RECOVERED: a fence landed after the reset, "
 		    "SECVID_TRUST_CNTL %08x\n", rd(gpu, A5_RBBM_SECVID_TRUST));
 	} else {
-		printf("WHYRED GPU: recovery failed: the fence did not land\n");
+		printf("WHYREDGPU: recovery failed: the fence did not land\n");
 	}
 }
 
@@ -1243,11 +1241,11 @@ step13_compute(int mode)
 	uint32_t *sh;
 
 	if (ring_va == 0 || ring_pa == 0) {
-		printf("WHYRED GPU: step 13 needs steps 10-12\n");
+		printf("WHYREDGPU: step 13 needs steps 10-12\n");
 		return;
 	}
 	if (whyred_alloc(0x1000, PAGE_MASK, &sh_va, &sh_pa)) {
-		printf("WHYRED GPU: no page for the shader\n");
+		printf("WHYREDGPU: no page for the shader\n");
 		return;
 	}
 	sh = (uint32_t *)sh_va;
@@ -1329,18 +1327,18 @@ step13_compute(int mode)
 		}
 	}
 	flush_dcache64((addr64_t)sh_pa, 0x1000, TRUE);
-	printf("WHYRED GPU: shader pa %llx, output pa %llx\n",
+	printf("WHYREDGPU: shader pa %llx, output pa %llx\n",
 	    (unsigned long long)sh_pa, (unsigned long long)out_pa);
 	for (int i = 0; i < 32; i += 2) {
-		printf("WHYRED GPU: shader dwords %08x %08x\n", sh[i], sh[i + 1]);
+		printf("WHYREDGPU: shader dwords %08x %08x\n", sh[i], sh[i + 1]);
 	}
 
 	if (mode) {
 		/* the SP/UCHE loads may come from other stream ids than the CP: match every id to CB4 */
-		printf("WHYRED GPU: SMMU before: GFSR %08x CB4 FSR %08x SMR0 %08x\n", rd(smmu_va, 0x48),
+		printf("WHYREDGPU: SMMU before: GFSR %08x CB4 FSR %08x SMR0 %08x\n", rd(smmu_va, 0x48),
 		    rd(cb, CB_FSR), rd(smmu_va, 0x800));
 		wr(smmu_va, 0x800, (1u << 31) | (0x7fffu << 16));
-		printf("WHYRED GPU: SMR0 now %08x\n", rd(smmu_va, 0x800));
+		printf("WHYREDGPU: SMR0 now %08x\n", rd(smmu_va, 0x800));
 	}
 	whyred_announce("step 13: WRITE the 64-bit address-mode and UCHE registers");
 	for (unsigned i = 0; i < sizeof(addr_mode_regs) / sizeof(addr_mode_regs[0]); i++) {
@@ -1440,7 +1438,7 @@ step13_compute(int mode)
 	ring_put(0x1234u);
 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
 	if (ring_submit("compute dispatch") != 0) {
-		printf("WHYRED GPU: the CP did not consume the dispatch, resetting\n");
+		printf("WHYREDGPU: the CP did not consume the dispatch, resetting\n");
 		goto recover;
 	}
 	for (int i = 0; i < 100; i++) {
@@ -1458,30 +1456,30 @@ step13_compute(int mode)
 				}
 			}
 			if (good == nthreads || (i == 99 && written)) {
-				printf("WHYRED GPU: %u threads: %u of %u outputs correct, %u written%s after %d ms, RBBM_STATUS %08x\n",
+				printf("WHYREDGPU: %u threads: %u of %u outputs correct, %u written%s after %d ms, RBBM_STATUS %08x\n",
 				    nthreads, good, nthreads, written, good == nthreads ? " (ALL CORRECT)" : "", i * 5,
 				    rd(gpu, A5_RBBM_STATUS));
 				for (uint32_t t = 0; t < nthreads && good != nthreads && t < 8; t++) {
-					printf("WHYRED GPU: out[%u] %08x in[%u] %08x\n", t, out[t], t, in[t]);
+					printf("WHYREDGPU: out[%u] %08x in[%u] %08x\n", t, out[t], t, in[t]);
 				}
 				return;
 			}
 		} else if (*out == want) {
-			printf("WHYRED GPU: SHADER WROTE IT: %08x after %d ms, RBBM_STATUS %08x\n",
+			printf("WHYREDGPU: SHADER WROTE IT: %08x after %d ms, RBBM_STATUS %08x\n",
 			    *out, i * 5, rd(gpu, A5_RBBM_STATUS));
 			return;
 		}
 	}
-	printf("WHYRED GPU: the shader output did not land (%08x): RBBM_STATUS %08x "
+	printf("WHYREDGPU: the shader output did not land (%08x): RBBM_STATUS %08x "
 	    "INT_0 %08x AHB_ERR %08x RPTR %u WPTR %u\n", *out, rd(gpu, A5_RBBM_STATUS),
 	    rd(gpu, A5_RBBM_INT_0_STATUS), rd(gpu, A5_RBBM_AHB_ERR_STATUS),
 	    rd(gpu, A5_CP_RB_RPTR), rd(gpu, A5_CP_RB_WPTR));
 	flush_dcache64((addr64_t)((fence_pa + 0x80) & ~63ull), 64, TRUE);
-	printf("WHYRED GPU: cache flush event word %08x (expect 00001234 if the event ran)\n",
+	printf("WHYREDGPU: cache flush event word %08x (expect 00001234 if the event ran)\n",
 	    *(volatile uint32_t *)(rptr_va + 0x180));
 	flush_dcache64((addr64_t)(in_pa & ~63ull), 64, TRUE);
-	printf("WHYRED GPU: input buffer now %08x\n", *in);
-	printf("WHYRED GPU: SMMU after: GFSR %08x CB4 FSR %08x\n", rd(smmu_va, 0x48), rd(cb, CB_FSR));
+	printf("WHYREDGPU: input buffer now %08x\n", *in);
+	printf("WHYREDGPU: SMMU after: GFSR %08x CB4 FSR %08x\n", rd(smmu_va, 0x48), rd(cb, CB_FSR));
 recover:
 	whyred_announce("step 13: RBBM software reset after the failed dispatch");
 	wr(gpu, A5_RBBM_SW_RESET_CMD, 1);
@@ -1490,14 +1488,14 @@ recover:
 	wr(gpu, A5_RBBM_SW_RESET_CMD, 0);
 	whyred_wait(5);
 	if (cp_bringup() == 0 && fence_test(0xcafe0300u, 200) == 0) {
-		printf("WHYRED GPU: recovered after the failed dispatch\n");
+		printf("WHYREDGPU: recovered after the failed dispatch\n");
 	} else {
-		printf("WHYRED GPU: no recovery after the failed dispatch\n");
+		printf("WHYREDGPU: no recovery after the failed dispatch\n");
 	}
 }
 
 /*
- * Step 18 (M4.0): a 2D blit through the A5xx 2D core (RB_2D_*, CP_BLIT), the
+ * Step 18: a 2D blit through the A5xx 2D core (RB_2D_*, CP_BLIT), the
  * path Mesa's fd5 blitter takes for buffer copies: a 64 byte R8 linear
  * "image" of one row is copied src -> dst, then compared by the CPU. Register
  * values come from a5xx.xml / adreno_pm4.xml / adreno_common.xml; the order is
@@ -1515,7 +1513,7 @@ step18_blit2d(void)
 	uint32_t good = 0;
 
 	if (ring_va == 0 || ring_pa == 0) {
-		printf("WHYRED GPU: step 18 needs steps 10-12\n");
+		printf("WHYREDGPU: step 18 needs steps 10-12\n");
 		return;
 	}
 	for (uint32_t i = 0; i < 64; i++) {
@@ -1595,7 +1593,7 @@ step18_blit2d(void)
 	ring_put(0x1234u);
 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
 	if (ring_submit("2D blit") != 0) {
-		printf("WHYRED GPU: the CP did not consume the 2D blit\n");
+		printf("WHYREDGPU: the CP did not consume the 2D blit\n");
 		return;
 	}
 	for (int i = 0; i < 100; i++) {
@@ -1609,16 +1607,16 @@ step18_blit2d(void)
 			break;
 		}
 	}
-	printf("WHYRED GPU: 2D blit: %u of 64 bytes copied%s, RBBM_STATUS %08x\n", good,
+	printf("WHYREDGPU: 2D blit: %u of 64 bytes copied%s, RBBM_STATUS %08x\n", good,
 	    good == 64 ? " (ALL CORRECT)" : "", rd(gpu, A5_RBBM_STATUS));
 	if (good != 64) {
-		printf("WHYRED GPU: dst %02x %02x %02x %02x %02x %02x %02x %02x (src starts 01 04 07 0a ..)\n",
+		printf("WHYREDGPU: dst %02x %02x %02x %02x %02x %02x %02x %02x (src starts 01 04 07 0a ..)\n",
 		    dst[0], dst[1], dst[2], dst[3], dst[4], dst[5], dst[6], dst[7]);
 	}
 }
 
 /*
- * Step 19 (M4.1): a 2D copy of a rectangle between two RGBA8 linear images
+ * Step 19: a 2D copy of a rectangle between two RGBA8 linear images
  * (32x16, pitch 128): the 16x8 box at (4,2) goes to (8,4). The CPU checks every
  * pixel of the box and that the rest of the destination was left alone.
  */
@@ -1643,11 +1641,11 @@ step19_blit_rgba(void)
 	const uint32_t sx = 4, sy = 2, bw = 16, bh = 8, dx = 8, dy = 4;
 
 	if (ring_va == 0 || ring_pa == 0) {
-		printf("WHYRED GPU: step 19 needs steps 10-12\n");
+		printf("WHYREDGPU: step 19 needs steps 10-12\n");
 		return;
 	}
 	if (whyred_alloc(0x2000, PAGE_MASK, &va, &pa)) {
-		printf("WHYRED GPU: no pages for the images\n");
+		printf("WHYREDGPU: no pages for the images\n");
 		return;
 	}
 	src_pa = pa;
@@ -1730,7 +1728,7 @@ step19_blit_rgba(void)
 	ring_put(0x1234u);
 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
 	if (ring_submit("RGBA blit") != 0) {
-		printf("WHYRED GPU: the CP did not consume the RGBA blit\n");
+		printf("WHYREDGPU: the CP did not consume the RGBA blit\n");
 		return;
 	}
 	whyred_wait(50);
@@ -1750,18 +1748,18 @@ step19_blit_rgba(void)
 			}
 		}
 	}
-	printf("WHYRED GPU: RGBA blit: %u of %u box pixels right, %u of %u outside pixels untouched%s\n",
+	printf("WHYREDGPU: RGBA blit: %u of %u box pixels right, %u of %u outside pixels untouched%s\n",
 	    inside, bw * bh, outside, IMG_W * IMG_H - bw * bh,
 	    (inside == bw * bh && outside == IMG_W * IMG_H - bw * bh) ? " (ALL CORRECT)" : "");
 	if (wrong_first != 0xffffffffu) {
-		printf("WHYRED GPU: first wrong pixel %u: got %08x want %08x\n", wrong_first,
+		printf("WHYREDGPU: first wrong pixel %u: got %08x want %08x\n", wrong_first,
 		    dst[wrong_first],
 		    img_pixel((wrong_first % IMG_W) - dx + sx, (wrong_first / IMG_W) - dy + sy));
 	}
 }
 
 /*
- * Step 20 (M4.2): a solid colour fill of a 16x8 box in an RGBA8 image with the
+ * Step 20: a solid colour fill of a 16x8 box in an RGBA8 image with the
  * 2D core. Mesa's fd5 does not use a 2D fill, so the register recipe is tried in
  * variants (a5xx.xml: RB_2D_SRC_SOLID_DW0..3, "0x86000000 for copy, 0x00000000 for
  * fill?"): 0 = copy control word, op FILL, integer components; 1 = control word 0;
@@ -1782,11 +1780,11 @@ step20_blit_fill(void)
 	uint64_t pa = 0;
 
 	if (ring_va == 0 || ring_pa == 0) {
-		printf("WHYRED GPU: step 20 needs steps 10-12\n");
+		printf("WHYREDGPU: step 20 needs steps 10-12\n");
 		return;
 	}
 	if (whyred_alloc(0x2000, PAGE_MASK, &va, &pa)) {
-		printf("WHYRED GPU: no pages for the images\n");
+		printf("WHYREDGPU: no pages for the images\n");
 		return;
 	}
 	for (int v = 0; v < 3; v++) {
@@ -1869,7 +1867,7 @@ step20_blit_fill(void)
 		ring_put(0x1234u);
 		ring_pkt7(CP_WAIT_FOR_IDLE, 0);
 		if (ring_submit("solid fill") != 0) {
-			printf("WHYRED GPU: variant %d: the CP did not consume the fill\n", v);
+			printf("WHYREDGPU: variant %d: the CP did not consume the fill\n", v);
 			return;
 		}
 		whyred_wait(50);
@@ -1889,7 +1887,7 @@ step20_blit_fill(void)
 				}
 			}
 		}
-		printf("WHYRED GPU: fill variant %d: %u of %u box pixels right, %u of %u outside untouched%s"
+		printf("WHYREDGPU: fill variant %d: %u of %u box pixels right, %u of %u outside untouched%s"
 		    "; first wrong %08x, pixel(8,4) %08x\n", v, inside, bw * bh, outside,
 		    IMG_W * IMG_H - bw * bh,
 		    (inside == bw * bh && outside == IMG_W * IMG_H - bw * bh) ? " (ALL CORRECT)" : "",
@@ -1898,7 +1896,7 @@ step20_blit_fill(void)
 }
 
 /*
- * Step 21 (M4.3): the first 3D draw. One triangle (TRILIST, 3 vertices from a
+ * Step 21: the first 3D draw. One triangle (TRILIST, 3 vertices from a
  * vertex buffer) is drawn in sysmem mode (no binning, RB_CNTL BYPASS) into a
  * 64x64 RGBA8 linear target with a hand-assembled VS (position passes straight
  * from the fetched r0.xyzw to the output) and FS (four immediate moves into
@@ -1913,6 +1911,9 @@ step20_blit_fill(void)
 #define D_BYTES (D_PITCH * D_H)
 #define D_COLOUR 0xff9933ffu	/* R 1.0, G 0.2, B 0.6, A 1.0 as RGBA8 */
 #define D_SENTINEL 0xdeadbeefu
+static volatile uint32_t *whyred_rt_tex, *whyred_rt_blend;	/* last render targets of modes 2 and 4, for the on-screen step */
+#define D_DST 0xff208040u	/* blend test background: R 0x40, G 0x80, B 0x20, A 0xff */
+#define D_BLENDED 0x805d599fu	/* D_COLOUR with alpha 0.5, SRC_ALPHA/ONE_MINUS_SRC_ALPHA over D_DST; alpha ONE/ZERO -> 0.5 */
 
 static int
 chan_ok(uint32_t got, uint32_t want)
@@ -1956,12 +1957,12 @@ draw_mark(const char *what)
 	for (int k = 0; k < 40; k++) {
 		flush_dcache64((addr64_t)(fence_pa + 0x80), 64, TRUE);
 		if (*m == want) {
-			printf("WHYRED GPU: mark %s ok\n", what);
+			printf("WHYREDGPU: mark %s ok\n", what);
 			return 0;
 		}
 		whyred_wait(5);
 	}
-	printf("WHYRED GPU: the ME is stuck BEFORE mark %s (fence %08x)\n", what, *m);
+	printf("WHYREDGPU: the ME is stuck BEFORE mark %s (fence %08x)\n", what, *m);
 	return -1;
 }
 
@@ -2003,16 +2004,20 @@ step21_draw(int mode)
 	const uint32_t texel_want = 0xff905077u;	/* texel (2,1) of the 4x4 texture */
 	const bool dbg = mode == 3;	/* colour = the interpolated (u, v), no texture */
 	const bool tex = mode == 1 || mode == 2;
-	const bool vary = mode >= 2;
-	const uint32_t want = tex ? texel_want : D_COLOUR;
+	const bool blend = mode >= 4;	/* flat colour with alpha 0.5 blended over D_DST: 4 SRC_ALPHA/1-SRC_ALPHA, 5 ONE/ZERO, 6 ONE/ONE */
+	const uint32_t blend_ctl = mode == 4 ? 0x00010706u : mode == 5 ? 0x00010001u : 0x00010101u;
+	const uint32_t blend_want = mode == 4 ? D_BLENDED : mode == 5 ? 0x809933ffu : 0x80b9b3ffu;
+	const bool vary = mode >= 2 && mode <= 3;
+	const uint32_t fill = blend ? D_DST : D_SENTINEL;
+	const uint32_t want = blend ? blend_want : tex ? texel_want : D_COLOUR;
 	uint32_t bad_want = 0;
 
 	if (ring_va == 0 || ring_pa == 0) {
-		printf("WHYRED GPU: step 21 needs steps 10-12\n");
+		printf("WHYREDGPU: step 21 needs steps 10-12\n");
 		return;
 	}
 	if (whyred_alloc(0xa000, PAGE_MASK, &va, &pa)) {
-		printf("WHYRED GPU: no pages for the draw\n");
+		printf("WHYREDGPU: no pages for the draw\n");
 		return;
 	}
 	vs_pa = pa;
@@ -2069,7 +2074,7 @@ step21_draw(int mode)
 		shader_mov(&fs[0], 0, 0x3f800000u);
 		shader_mov(&fs[2], 1, 0x3e4ccccdu);
 		shader_mov(&fs[4], 2, 0x3f19999au);
-		shader_mov(&fs[6], 3, 0x3f800000u);
+		shader_mov(&fs[6], 3, blend ? 0x3f000000u : 0x3f800000u);
 		shader_store_tail(fs, 8, pa + 0x7040, 0xf5f50001u);
 	}
 	for (int i = 0; i < 3; i++) {
@@ -2086,7 +2091,7 @@ step21_draw(int mode)
 		}
 	}
 	for (uint32_t i = 0; i < D_W * D_H; i++) {
-		rt[i] = D_SENTINEL;
+		rt[i] = fill;
 	}
 	flush_dcache64((addr64_t)vs_pa, 0x1000, TRUE);
 	flush_dcache64((addr64_t)fs_pa, 0x1000, TRUE);
@@ -2238,13 +2243,13 @@ step21_draw(int mode)
 	ring_reg(0xe006u, 0);					/* GRAS_CL_GUARDBAND_CLIP_ADJ */
 	ring_reg(0xe146u, 1);					/* RB_FS_OUTPUT_CNTL: MRT 1 */
 	ring_reg(0xe5cau, 1u | (0xfcu << 5) | (0xfcu << 13));	/* SP_FS_OUTPUT_CNTL */
-	ring_reg(0xe150u, (3u << 3) | (0xfu << 7));		/* RB_MRT_CONTROL(0): ROP_COPY, all comps */
-	ring_reg(0xe151u, 0x10001u);				/* RB_MRT_BLEND_CONTROL(0): src ONE, dst ZERO */
-	ring_reg(0xe5c9u, 0x100);				/* SP_BLEND_CNTL */
+	ring_reg(0xe150u, (3u << 3) | (0xfu << 7) | (blend ? 3u : 0));		/* RB_MRT_CONTROL(0): ROP_COPY, all comps */
+	ring_reg(0xe151u, blend ? blend_ctl : 0x10001u);				/* RB_MRT_BLEND_CONTROL(0): src ONE, dst ZERO */
+	ring_reg(0xe5c9u, 0x100u | (blend ? 1u : 0));				/* SP_BLEND_CNTL */
 	if (draw_mark("state")) {
 		return;
 	}
-	ring_reg(0xe1a9u, 0xffff0100u);				/* RB_BLEND_CNTL: sample mask, independent */
+	ring_reg(0xe1a9u, 0xffff0100u | (blend ? 1u : 0));				/* RB_BLEND_CNTL: sample mask, independent */
 	/* fd5_program_emit: VS in the SP, one output (the position), FS writes r0 */
 	ring_pkt4(0xe78bu, 5);					/* HLSQ_VS/FS/HS/DS/GS_CONFIG */
 	ring_put(1);
@@ -2408,10 +2413,10 @@ step21_draw(int mode)
 		static const uint32_t ccu_var[4] = { 0x08000000u, 0x08000000u, 0x08000000u, 0x04000000u };
 		in_ok = in_n = out_ok = out_n = 0;
 		first_bad = 0xffffffffu;
-		printf("WHYRED GPU: draw variant %d: RB_RENDER_CNTL %x GRAS_SC_CNTL %x\n", var,
+		printf("WHYREDGPU: draw variant %d: RB_RENDER_CNTL %x GRAS_SC_CNTL %x\n", var,
 		    rc_var[var], sc_var[var]);
 		for (uint32_t i = 0; i < D_W * D_H; i++) {
-			rt[i] = D_SENTINEL;
+			rt[i] = fill;
 		}
 		flush_dcache64((addr64_t)rt_pa, D_BYTES, TRUE);
 		*(volatile uint32_t *)(va + 0x7000) = 0;
@@ -2455,7 +2460,7 @@ step21_draw(int mode)
 		ring_put(0x2345u);
 		ring_pkt7(CP_WAIT_FOR_IDLE, 0);
 		if (ring_submit("3D draw") != 0) {
-			printf("WHYRED GPU: the CP did not consume the draw\n");
+			printf("WHYREDGPU: the CP did not consume the draw\n");
 			return;
 		}
 		whyred_wait(100);
@@ -2488,7 +2493,7 @@ step21_draw(int mode)
 				}
 				if (inside) {
 					in_n++;
-					if (dbg ? chan_tol(got, pw, 5) : chan_ok(got, pw)) {
+					if (dbg ? chan_tol(got, pw, 5) : blend ? chan_tol(got, pw, 3) : chan_ok(got, pw)) {
 						in_ok++;
 					} else if (first_bad == 0xffffffffu) {
 						first_bad = y * D_W + x;
@@ -2496,41 +2501,197 @@ step21_draw(int mode)
 					}
 				} else if (outside) {
 					out_n++;
-					out_ok += got == D_SENTINEL;
+					out_ok += got == fill;
 				}
 			}
 		}
-		printf("WHYRED GPU: 3D draw: %u of %u inside pixels have the colour, %u of %u outside untouched%s, "
+		printf("WHYREDGPU: 3D draw: %u of %u inside pixels have the colour, %u of %u outside untouched%s, "
 		    "RBBM_STATUS %08x\n", in_ok, in_n, out_ok, out_n,
 		    (in_ok == in_n && out_ok == out_n) ? " (ALL CORRECT)" : "", rd(gpu, A5_RBBM_STATUS));
 		flush_dcache64((addr64_t)(pa + 0x7000), 0x80, TRUE);
-		printf("WHYRED GPU: RB counters (delta): TOTAL_PASS %u C_WRITE %u STALL_CCU %u BUSY %u\n",
+		printf("WHYREDGPU: RB counters (delta): TOTAL_PASS %u C_WRITE %u STALL_CCU %u BUSY %u\n",
 		    rd(gpu, 0x0440u * 4) - pc0[0], rd(gpu, 0x0442u * 4) - pc0[1],
 		    rd(gpu, 0x0444u * 4) - pc0[2], rd(gpu, 0x0446u * 4) - pc0[3]);
-		printf("WHYRED GPU: shader markers: VS %08x FS %08x (want a5a50002 / f5f50001)\n",
+		printf("WHYREDGPU: shader markers: VS %08x FS %08x (want a5a50002 / f5f50001)\n",
 		    *(volatile uint32_t *)(va + 0x7000), *(volatile uint32_t *)(va + 0x7040));
 		{
 			uint32_t changed = 0, first = 0xffffffffu;
 			for (uint32_t i = 0; i < D_W * D_H; i++) {
-				if (rt[i] != D_SENTINEL) {
+				if (rt[i] != fill) {
 					changed++;
 					if (first == 0xffffffffu) {
 						first = i;
 					}
 				}
 			}
-			printf("WHYRED GPU: render target words changed: %u, first at %u (%08x)\n", changed,
+			printf("WHYREDGPU: render target words changed: %u, first at %u (%08x)\n", changed,
 			    first, first == 0xffffffffu ? 0 : rt[first]);
 		}
-		printf("WHYRED GPU: samples (24,24)=%08x (30,30)=%08x (40,20)=%08x (50,50)=%08x (2,2)=%08x\n",
+		printf("WHYREDGPU: samples (24,24)=%08x (30,30)=%08x (40,20)=%08x (50,50)=%08x (2,2)=%08x\n",
 		    rt[24 * D_W + 24], rt[30 * D_W + 30], rt[20 * D_W + 40], rt[50 * D_W + 50], rt[2 * D_W + 2]);
 		if (first_bad != 0xffffffffu) {
-			printf("WHYRED GPU: first wrong inside pixel (%u,%u): got %08x want %08x\n",
+			printf("WHYREDGPU: first wrong inside pixel (%u,%u): got %08x want %08x\n",
 			    first_bad % D_W, first_bad / D_W, rt[first_bad], bad_want);
 		}
 		if (in_ok == in_n && out_ok == out_n) {
 			break;
 		}
+	}
+	if (mode == 2) {
+		whyred_rt_tex = rt;
+	} else if (mode == 4) {
+		whyred_rt_blend = rt;
+	}
+}
+
+extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, uint32_t flags);
+
+/*
+ * Panel copy: put the GPU's output on the panel. The scanout stride (4320 bytes) is not a multiple of 64, so the RB cannot
+ * render into it directly (RB_MRT_PITCH is in units of 64 bytes); the GPU renders into an aligned buffer and the CPU
+ * copies it up 4x into the framebuffer, which is what sweetfb does for iOS today. The picture is redrawn for about
+ * 30 s so the lock screen's own copies do not hide it. Pure red, green and blue bars (as a8r8g8b8) show the channel order.
+ */
+static void
+whyred_show_on_screen(void)
+{
+	PE_Video console;
+	volatile uint32_t *fb;
+	uint32_t w, h, stride, x0, y0;
+	static const uint32_t bars[3] = { 0xffff0000u, 0xff00ff00u, 0xff0000ffu };
+
+	if (whyred_rt_tex == NULL || whyred_rt_blend == NULL) {
+		printf("WHYREDGPU: on-screen: no render targets yet\n");
+		return;
+	}
+	PE_current_console(&console);
+	w = (uint32_t)console.v_width;
+	h = (uint32_t)console.v_height;
+	stride = (uint32_t)console.v_rowBytes;
+	printf("WHYREDGPU: on-screen: console base 0x%llx %ux%u stride %u depth %llu\n",
+	    (unsigned long long)console.v_baseAddr, w, h, stride, (unsigned long long)console.v_depth);
+	if (console.v_baseAddr == 0 || w < 700 || h < 700 || stride < w * 4) {
+		printf("WHYREDGPU: on-screen: unexpected console geometry\n");
+		return;
+	}
+	fb = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)console.v_baseAddr, (vm_size_t)stride * h, VM_WIMG_IO);
+	if (fb == NULL) {
+		printf("WHYREDGPU: on-screen: could not map the framebuffer\n");
+		return;
+	}
+	x0 = (w - (256 + 64 + 256)) / 2;
+	y0 = h / 2 - 128;
+	for (int it = 0; it < 600; it++) {
+		for (uint32_t y = 0; y < 256; y++) {
+			volatile uint32_t *line = fb + (uint64_t)(y0 + y) * (stride / 4);
+
+			for (uint32_t x = 0; x < 256; x++) {
+				uint32_t a = whyred_rt_tex[(y >> 2) * D_W + (x >> 2)];
+				uint32_t b = whyred_rt_blend[(y >> 2) * D_W + (x >> 2)];
+
+				if (a == D_SENTINEL) {
+					a = 0xff101010u;
+				} else {
+					a = 0xff000000u | ((a & 0xffu) << 16) | (a & 0xff00u) | ((a >> 16) & 0xffu);
+				}
+				b = 0xff000000u | ((b & 0xffu) << 16) | (b & 0xff00u) | ((b >> 16) & 0xffu);
+				line[x0 + x] = a;
+				line[x0 + 320 + x] = b;
+			}
+		}
+		for (uint32_t y = 0; y < 64; y++) {
+			volatile uint32_t *line = fb + (uint64_t)(y0 - 100 + y) * (stride / 4);
+
+			for (uint32_t x = 0; x < 3 * 96; x++) {
+				line[x0 + x] = bars[x / 96];
+			}
+		}
+		whyred_wait(30);
+	}
+	printf("WHYREDGPU: on-screen: picture shown for 30 s at %u,%u\n", x0, y0);
+}
+
+/*
+ * IOKit service: the GPU as an IOKit service (WhyredGPU.cpp). After the ladder reaches step 12 (the CP runs) whyredgpu=30 calls
+ * WhyredGPUStart(); the service hands user streams to whyred_gpu_service_submit(), which is synchronous: the
+ * stream goes into the ring, followed by a cache flush and a fence word, and it returns when the GPU wrote the fence.
+ */
+extern void WhyredGPUStart(void);
+extern void WhyredGPUSelfTest(void);
+
+static int whyred_svc_ready;
+static uint32_t whyred_svc_seq;
+
+int
+whyred_gpu_service_ready(void)
+{
+	return whyred_svc_ready;
+}
+
+uint32_t
+whyred_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
+{
+	volatile uint32_t *f = (volatile uint32_t *)(rptr_va + 0xe00);
+	uint32_t seq;
+
+	*status = 0;
+	if (!whyred_svc_ready || count == 0 || count > 4096) {
+		*status = EINVAL;
+		return 0;
+	}
+	seq = ++whyred_svc_seq;
+	for (uint32_t i = 0; i < count; i++) {
+		ring_put(dw[i]);
+	}
+	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	ring_pkt4(R_UCHE_INVALIDATE_MIN, 5);
+	ring_put(0);
+	ring_put(0);
+	ring_put(0);
+	ring_put(0);
+	ring_put(0x12);
+	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	ring_pkt7(CP_EVENT_WRITE, 4);
+	ring_put(0x4u | (1u << 30));			/* CACHE_FLUSH_TS */
+	ring_put((uint32_t)(rptr_pa + 0xe00));
+	ring_put((uint32_t)((rptr_pa + 0xe00) >> 32));
+	ring_put(seq);
+	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	if (ring_submit("service stream") != 0) {
+		*status = EIO;
+		return 0;
+	}
+	for (int i = 0; i < 2000; i++) {
+		flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+		if (*f == seq) {
+			return seq;
+		}
+		whyred_wait(1);
+	}
+	printf("WHYREDGPU: service stream %u: the fence was not written (%08x)\n", seq, *f);
+	*status = ETIMEDOUT;
+	return 0;
+}
+
+static void
+whyred_service_start(int selftest)
+{
+	if (ring_va == 0 || ring_pa == 0 || fence_pa == 0 || !gx_on) {
+		printf("WHYREDGPU: service: the CP is not running, not starting\n");
+		return;
+	}
+	*(volatile uint32_t *)(rptr_va + 0xe00) = 0;
+	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+	whyred_svc_ready = 1;
+	WhyredGPUStart();
+	printf("WHYREDGPU: service: started\n");
+	if (selftest) {
+		WhyredGPUSelfTest();
+	}
+	/* the live log can start late: repeat the state for a while */
+	for (int i = 0; i < 90; i++) {
+		whyred_wait(10000);
+		printf("WHYREDGPU: service alive (%d): streams %u, ready %d\n", i, whyred_svc_seq, whyred_svc_ready);
 	}
 }
 
@@ -2544,13 +2705,13 @@ whyred_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 	if (delay_s > 300) {
 		delay_s = 300;
 	}
-	printf("WHYRED GPU: ladder up to step %u in %u s\n", step, delay_s);
+	printf("WHYREDGPU: ladder up to step %u in %u s\n", step, delay_s);
 	whyred_wait(delay_s * 1000);
 
 	gcc = ml_io_map(GCC_PA, GCC_SIZE);
 	gpucc = ml_io_map(GPUCC_PA, GPUCC_SIZE);
 	if (gcc == 0 || gpucc == 0) {
-		printf("WHYRED GPU: map failed gcc %p gpucc %p\n", (void *)gcc,
+		printf("WHYREDGPU: map failed gcc %p gpucc %p\n", (void *)gcc,
 		    (void *)gpucc);
 		return;
 	}
@@ -2559,13 +2720,13 @@ whyred_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 		step2_votes();
 	}
 	if (step >= 3 && step3_cx() != 0) {
-		printf("WHYRED GPU: stopped before step 4 (CX or AHB not ready)\n");
+		printf("WHYREDGPU: stopped before step 4 (CX or AHB not ready)\n");
 		return;
 	}
 	if (step >= 4) {
 		gpu = ml_io_map(GPU_PA, GPU_SIZE);
 		if (gpu == 0) {
-			printf("WHYRED GPU: GPU block map failed\n");
+			printf("WHYREDGPU: GPU block map failed\n");
 			return;
 		}
 		step4_gx();
@@ -2594,7 +2755,7 @@ whyred_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 	if (step >= 12) {
 		step12_fence_reset();
 	}
-	if (step >= 13) {
+	if (step >= 13 && step < 30) {
 		step13_compute(0);
 	}
 	if (step == 14 || step == 16) {
@@ -2618,8 +2779,18 @@ whyred_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 	if (step == 23) {
 		step21_draw(2);
 	}
-	if (step >= 24) {
+	if (step == 24) {
 		step21_draw(3);
+	}
+	if (step == 25) {
+		step21_draw(4);
+		step21_draw(5);
+		step21_draw(6);
+	}
+	if (step == 26) {
+		step21_draw(2);
+		step21_draw(4);
+		whyred_show_on_screen();
 	}
 	if (step == 17) {
 		step13_compute(4);	/* 64 threads: probe the local id */
@@ -2635,7 +2806,10 @@ whyred_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 			step13_compute(1);
 		}
 	}
-	printf("WHYRED GPU: ladder finished\n");
+	if (step >= 30) {
+		whyred_service_start(step == 31);
+	}
+	printf("WHYREDGPU: ladder finished\n");
 }
 
 int

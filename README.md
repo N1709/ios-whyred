@@ -12,43 +12,20 @@ userland of the iPhone X: launchd, backboardd, SpringBoard.
 
 ## What works
 
-| Feature | State |
-| --- | --- |
-| Boot (`fastboot boot`) | **Works** — shim starts, boot partitions untouched |
-| CPU / memory | **Works** — 4× Cortex-A73 Gold, 16K pages, GICv3, timers |
-| Display / framebuffer | **Works** — kernel framebuffer, four colour bars on the panel |
-| Storage (eMMC + HFSX root) | **Works** — eMMC 5.1 at 8-bit high-speed, GPT, HFSX read-write |
-| Console log ring | **Works** — persistent ring on SYSTEM, pulled from recovery |
-| Kernel log / panic dump | **Works** |
-| Touch (probe) | **Works** — DSX at `0x20`, PDT and F12 bases read |
-| Touch (as HID input) | No |
-| Buttons | Added (0208), not booted |
-| RTC / date | Added (0209), not booted |
-| eMMC ADMA2 reads | Added (0210), not booted |
-| Panel 60 Hz / present timing | Added (0207), not booted |
-| GPU / Metal | Added (0211), not booted |
-| Wi-Fi | Added (0214), not booted |
-| Bluetooth | No |
-| Audio | Added (0213), not booted |
-| Cellular | Added (0215), not booted |
-| Wallpaper / PosterBoard | Lever added (0216), not booted; userland fixes pending |
-| Charging | Static 100% fallback; no PM660 gauge |
-| iOS userland (launchd → SpringBoard) | No (code signing) |
-
-Legend: **Works** = verified on the phone; **Added** = code exists but has
-not booted; **No** = not implemented or known blocked; **Static** = a fixed
-fallback value, not a measurement. This table is kept in sync with
-[`docs/progres.md`](docs/progres.md).
+See the live board: [`docs/progres.md`](docs/progres.md). It lists what is
+verified on the phone, what is added but not booted, and what is still
+missing. README keeps only the overview so that table has one home.
 
 Patches `0207`-`0210` add a 60 Hz display default with `present()` timing,
 PM660/PM660L keys, the PM660 RTC with a calendar fallback, and ADMA2 eMMC
 reads with a PIO fallback. Patches `0211`-`0215` add the large SDM660
 drivers as `whyred_gpu.c`, `whyred_audio.c`, `whyred_wlan.c` and
 `whyred_modem.c`, each behind its own boot arg and off by default; the
-audio/modem loaders read the GPT `modem` partition instead of lavender's
-fixed LBA. `0216` adds the `sweetnopb=1` lever for the PosterBoard crash
-that blocks the lock-screen wallpaper. All 222 patches apply on the series
-tip, but none of the new code has been built or booted yet.
+audio/modem loaders read the GPT `modem` partition instead of a fixed LBA.
+`0216` adds the `sweetnopb=1` lever for the PosterBoard crash that blocks
+the lock-screen wallpaper. `0217` merges the IOKit GPU service
+(`WhyredGPU`, started by `whyredgpu=30`). All 223 patches apply on the
+series tip, but none of the new code has been built or booted yet.
 
 ## Quick start
 

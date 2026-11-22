@@ -90,7 +90,7 @@ Build the lavender image with `BOARD=lavender shim/build.sh`.
 | `sweetrtcoff=<seconds>` | Add this offset to the raw PM660 RTC counter when it is not Unix time |
 | `sweetnopb=1` | Refuse to exec PosterBoard and log it, to isolate the lock-screen poster crash (0216) |
 | `sweetemmc_dma=0` | Keep eMMC reads on PIO; ADMA2 is the default after its self-test |
-| `whyredgpu=N` | Run GPU ladder step N after `whyredgpudelay` seconds (default 25); off by default |
+| `whyredgpu=N` | Run GPU ladder step N after `whyredgpudelay` seconds (default 25); `30` starts the IOKit service after the ring is up, `31` also runs its self-test; off by default |
 | `whyredaud=N` | Run the ADSP audio step N after `whyredauddelay` seconds; `whyredaudforce=1` overrides its checks; off by default |
 | `whyredwlan=1` | Probe WCN3990 after `whyredwlandelay` seconds (default 25); read only |
 | `whyredmodem=N` | Run the MSS/QDSP6 step N after `whyredmodemdelay` seconds; `whyredmodemclk=<mask>` selects the MSS clocks; off by default |
