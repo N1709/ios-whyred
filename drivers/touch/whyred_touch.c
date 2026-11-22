@@ -2122,7 +2122,7 @@ whyred_touch_display_power(int on)
 	}
 	dsx_display_on = on;
 	if (!on) {
-		int i;
+		int i, rc = 0;
 
 		dsx_hid_enabled = 0;
 		/*
@@ -2139,14 +2139,18 @@ whyred_touch_display_power(int on)
 			return;
 		}
 		if (dsx_addressable) {
-			(void)dsx_f01_set_sleep(1);
+			rc = dsx_f01_set_sleep(1);
 		}
 		printf("WHYRED TOUCH: display off, HID paused%s\n",
-		    dsx_addressable ? ", DSX asleep" : "");
+		    dsx_addressable && rc == 0 ? ", DSX asleep" : "");
 		return;
 	}
 	if (dsx_addressable) {
-		(void)dsx_f01_set_sleep(0);
+		if (dsx_f01_set_sleep(0) != 0) {
+			printf("WHYRED TOUCH: DSX wake failed, HID stays "
+			    "paused\n");
+			return;
+		}
 		if (dsx_f12_program() != 0) {
 			printf("WHYRED TOUCH: F12 did not come back, HID "
 			    "stays paused\n");

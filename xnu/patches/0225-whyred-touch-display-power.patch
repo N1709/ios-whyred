@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
-index f00bf60..a07e1ce 100644
+index f00bf60..605156b 100644
 --- a/bsd/dev/whyred_touch.c
 +++ b/bsd/dev/whyred_touch.c
 @@ -1199,6 +1199,10 @@ static int dsx_f12_programmed;
@@ -176,7 +176,7 @@ index f00bf60..a07e1ce 100644
  			if (errors++ == 0 || (errors % 100) == 0) {
  				printf("WHYRED TOUCH: HID poll read failed "
  				    "(%d)\n", errors);
-@@ -1984,6 +2100,63 @@ dsx_hid_start(void)
+@@ -1984,6 +2100,67 @@ dsx_hid_start(void)
  	}
  }
  
@@ -201,7 +201,7 @@ index f00bf60..a07e1ce 100644
 +	}
 +	dsx_display_on = on;
 +	if (!on) {
-+		int i;
++		int i, rc = 0;
 +
 +		dsx_hid_enabled = 0;
 +		/*
@@ -218,14 +218,18 @@ index f00bf60..a07e1ce 100644
 +			return;
 +		}
 +		if (dsx_addressable) {
-+			(void)dsx_f01_set_sleep(1);
++			rc = dsx_f01_set_sleep(1);
 +		}
 +		printf("WHYRED TOUCH: display off, HID paused%s\n",
-+		    dsx_addressable ? ", DSX asleep" : "");
++		    dsx_addressable && rc == 0 ? ", DSX asleep" : "");
 +		return;
 +	}
 +	if (dsx_addressable) {
-+		(void)dsx_f01_set_sleep(0);
++		if (dsx_f01_set_sleep(0) != 0) {
++			printf("WHYRED TOUCH: DSX wake failed, HID stays "
++			    "paused\n");
++			return;
++		}
 +		if (dsx_f12_program() != 0) {
 +			printf("WHYRED TOUCH: F12 did not come back, HID "
 +			    "stays paused\n");
@@ -240,7 +244,7 @@ index f00bf60..a07e1ce 100644
  static void
  touch_irq_setup(vm_offset_t north)
  {
-@@ -2777,6 +2950,7 @@ whyred_touch_probe(void)
+@@ -2777,6 +2954,7 @@ whyred_touch_probe(void)
  	 * here rather than earlier because the bit-bang has no lock and
  	 * dsx_f12_poll()/dsx_touch_test() above must not race it.
  	 */
