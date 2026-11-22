@@ -2269,7 +2269,7 @@ echo "ok   zip_partial proves an entry before calling it the kernel"
 python3 tests/test_payload_cmdline.py >/dev/null
 echo "ok   payload_cmdline reads the line the shim really uses, not boot.img"
 
-echo "== IMAGES: manual runs choose normal / log / quick =="
+echo "== IMAGES: manual runs choose normal / log / quick / console =="
 # Every image comes from the same kernel; the normal and fast images must
 # carry no log capture at all (no sweetlog ring, no cs_debug page dumps, no
 # kprintf spam), the ring image keeps only the ring, and the log image keeps
@@ -2290,9 +2290,11 @@ grep -q 'DIAG="sweetlog=1 cs_debug=2"' .github/workflows/xnu.yml
 grep -Fq 'TOUCH_FAST="sweetouchscl=200 sweetouchfast=1"' .github/workflows/xnu.yml
 grep -Fq 'build_mode "-fast" "$TOUCH_FAST"' .github/workflows/xnu.yml
 grep -Fq 'build_mode "-ring" "sweetlog=1 $TOUCH_FAST"' .github/workflows/xnu.yml
+grep -Fq 'build_mode "-console" "sweetlog=1 $TOUCH_FAST" "" 0 0' .github/workflows/xnu.yml
 grep -Fq -- '--require sweetouchfast=1 --require sweetouchscl=200' .github/workflows/xnu.yml
 grep -Fq 'shim-boot-fast.img' .github/workflows/xnu.yml
 grep -Fq 'shim-boot-ring.img' .github/workflows/xnu.yml
+grep -Fq 'shim-boot-console.img' .github/workflows/xnu.yml
 # Display profile: the normal image keeps the boot log off the panel (so the
 # graphical boot and the Apple logo stay visible) and the log image keeps
 # printing, because the ring and the UART are the only diagnostics there is.
@@ -2304,8 +2306,8 @@ grep -Fq 'DISPLAY_ARGS="disable_kprintf_output=0"' shim/build.sh
 grep -Fq 'KPRINTF_MUTE="$4"' .github/workflows/xnu.yml
 # The panel console is a separate switch from the mute: disable_kprintf_output
 # is inert in this kernel, so the only thing that really stops the console
-# being drawn over the GUI is sweetfb_noconsole=1 (patch 0067). The workflow
-# has no text/hidden choice any more: every build carries the hidden setting.
+# being drawn over the GUI is sweetfb_noconsole=1 (patch 0067). Every build
+# hides it except the opt-in build_mode=console image.
 grep -Fq 'PANEL_NOCONSOLE="${PANEL_NOCONSOLE:-0}"' shim/build.sh
 grep -Fq 'DISPLAY_ARGS="$DISPLAY_ARGS sweetfb_noconsole=1"' shim/build.sh
 grep -Fq 'PANEL_NOCONSOLE="$5"' .github/workflows/xnu.yml
@@ -2316,15 +2318,16 @@ grep -Fq 'sweetouchpower=$power' tools/build-touch-diag.sh
 grep -Fq 'power=${SWEETOUCHPOWER:-0}' tools/build-touch-diag.sh
 ! grep -Fq 'panel_console:' .github/workflows/xnu.yml
 grep -Fq -- '--require sweetfb_noconsole=1' .github/workflows/xnu.yml
-! grep -Fq -- '--reject sweetfb_noconsole=1' .github/workflows/xnu.yml
+grep -Fq -- '--reject sweetfb_noconsole=1' .github/workflows/xnu.yml
+grep -Fq 'shim-boot-console.img)' .github/workflows/xnu.yml
 grep -Fq 'build_mode ""     ""     ""     1 "$NOCONSOLE"' .github/workflows/xnu.yml
 grep -Fq -- '--require disable_kprintf_output=1' .github/workflows/xnu.yml
 grep -Fq -- '--require disable_kprintf_output=0' .github/workflows/xnu.yml
 grep -Fq -- "--reject 'ignition_level='" .github/workflows/xnu.yml
 grep -Fq 'build_mode "-log" "$DIAG" "$SPAM" 0' .github/workflows/xnu.yml
 grep -Fq 'build_mode ""     ""     ""     1' .github/workflows/xnu.yml
-# The quiet images mute the framebuffer console; only the full diagnostic
-# image still prints to the panel.
+# The quiet images mute the framebuffer console; the full diagnostic image
+# and the opt-in console image still print to the panel.
 python3 - <<'PY'
 wf = open('.github/workflows/xnu.yml').read()
 def check(name):
@@ -2333,10 +2336,15 @@ normal = check('shim-boot.img')
 fast = check('shim-boot-fast.img')
 ring = check('shim-boot-ring.img')
 log = check('shim-boot-log.img')
+console = check('shim-boot-console.img')
 for name, body in (('normal', normal), ('fast', fast), ('ring', ring)):
     assert 'disable_kprintf_output=1' in body, '%s image is not muted' % name
 assert 'disable_kprintf_output=1' not in log, 'log image must not be muted'
-print('ok   the quiet images mute the panel, the log image still prints')
+assert '--require disable_kprintf_output=0' in console, \
+    'console image must draw the running text'
+assert '--reject sweetfb_noconsole=1' in console, \
+    'console image must not hide itself from the GUI'
+print('ok   quiet images mute the panel, log and console images print')
 PY
 # The command line is assembled by shell assignments in the workflow. An
 # unquoted "COMMON=emmcrw=1 cs_enforcement_disable=1 ..." sets three shell

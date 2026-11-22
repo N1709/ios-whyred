@@ -17,13 +17,14 @@ on:
         description: make -k (collect all compile errors in one run)
         default: "true"
       build_mode:
-        description: both / normal (no log capture) / log (ring + page dumps) / quick (fast touch + fast ring)
+        description: both / normal / log / quick (fast touch + fast ring) / console (visible text)
         type: choice
         options:
           - both
           - normal
           - log
           - quick
+          - console
         default: both
       fb_test_pattern:
         description: on (four colour bars prove the panel scans out) / off (clean panel)
@@ -390,6 +391,10 @@ jobs:
             log)    build_mode "-log" "$DIAG" "$SPAM" 0 "$NOCONSOLE" ;;
             quick)  build_mode "-fast" "$TOUCH_FAST" "" 1 "$NOCONSOLE"
                     build_mode "-ring" "sweetlog=1 $TOUCH_FAST" "" 1 "$NOCONSOLE" ;;
+            # Visible console: the panel draws the running text over the GUI,
+            # silence is off (mute 0) and the noconsole switch is omitted.
+            # This is a diagnostic choice, not the daily image.
+            console) build_mode "-console" "sweetlog=1 $TOUCH_FAST" "" 0 0 ;;
             *)      echo "::error::unknown build_mode '$MODE'"; exit 1 ;;
           esac
 
@@ -412,11 +417,16 @@ jobs:
             # The default level 0x5 is what reached SpringBoard in 0174-0178.
             python3 tools/payload_cmdline.py --image "$img" \
               --reject 'ignition_level='
-            # Every image must hide the panel console: a build that still
-            # draws text looks exactly like the bug this rule is meant to
-            # rule out.
-            python3 tools/payload_cmdline.py --image "$img" \
-              --require sweetfb_noconsole=1
+            # Every image hides the panel console except the opt-in console
+            # image, whose whole point is to show the running text.
+            case "$(basename "$img")" in
+              shim-boot-console.img)
+                python3 tools/payload_cmdline.py --image "$img" \
+                  --reject sweetfb_noconsole=1 ;;
+              *)
+                python3 tools/payload_cmdline.py --image "$img" \
+                  --require sweetfb_noconsole=1 ;;
+            esac
           done
           if [ -f images/shim-boot.img ]; then
             echo "verifying the normal image carries no log capture"
@@ -446,6 +456,16 @@ jobs:
               --reject=-enable_kprintf_spam \
               --require disable_kprintf_output=1 \
               --require sweetfb_stayon=1 --require sweetfb_hz=60 \
+              --require sweetouchfast=1 --require sweetouchscl=200
+          fi
+          if [ -f images/shim-boot-console.img ]; then
+            echo "verifying the console image draws the running text"
+            python3 tools/payload_cmdline.py --image images/shim-boot-console.img \
+              --require sweetlog=1 --reject cs_debug=2 \
+              --reject=-enable_kprintf_spam \
+              --require disable_kprintf_output=0 \
+              --reject sweetfb_stayon=1 --reject sweetfb_hz=60 \
+              --reject sweetfb_noconsole=1 \
               --require sweetouchfast=1 --require sweetouchscl=200
           fi
           if [ -f images/shim-boot-log.img ]; then
@@ -496,8 +516,15 @@ jobs:
                              probe. This is the image that gives a readable
                              log without the diagnostic boot cost.
 
+          shim-boot-console.img
+                             opt-in text image: draws the running console
+                             text on the panel over the GUI, keeps the 4 MiB
+                             ring, and uses the same short touch probe. Use
+                             it when the panel must show where the boot is.
+
           A manual "Run workflow" chooses which images to build
-          (build_mode: both / normal / log / quick). A push builds both.
+          (build_mode: both / normal / log / quick / console). A push
+          builds both.
 
           fb_test_pattern=on draws four colour bars into the boot framebuffer
           once, early in BSD init (sweetfbtest=1), so a lit panel proves MDSS
@@ -510,6 +537,7 @@ jobs:
               fastboot boot shim-boot-log.img
               fastboot boot shim-boot-fast.img
               fastboot boot shim-boot-ring.img
+              fastboot boot shim-boot-console.img
 
           Verify before booting:
 

@@ -117,8 +117,13 @@ variants from one kernel:
 * `shim-boot-ring.img` — 4 MiB SYSTEM ring (`sweetlog=1`) with no
   `cs_debug=2` page dumps and no kprintf spam, plus the same short probe
   (C: boot fast, still get a readable log).
+* `shim-boot-console.img` — opt-in `build_mode=console`: the panel draws
+  the running console text over the GUI (`disable_kprintf_output=0`, no
+  `sweetfb_noconsole`), while the 4 MiB ring and the short probe stay. Use
+  it when the panel itself has to show where the boot stops.
 
-The ring image is the one to boot next: it covers B and C together.
+The console image is the one to boot next when the screen must show the
+running text; the ring image is the quieter equivalent.
 
 ## New fixes 0207-0210 (2026-11-22, not booted)
 
@@ -195,10 +200,12 @@ sha256 `4b55e7916dbda67c8835ecfefa105fdf4177862dd7954b1838a56636c9a42139`,
 
 ## Next actions (in order)
 
-1. **Build 0223 with `build_mode=quick`**, boot `shim-boot-ring.img`, and
-   pull the ring from recovery. Confirm the short-probe lines, the
+1. **Build 0223 with `build_mode=console`**, boot
+   `shim-boot-console.img`, and watch the text on the panel; pull the ring
+   from recovery afterwards. Confirm the short-probe lines, the
    `address phase still ignored, ...` lines, no `watchdog fired`, and whether
-   the boot reaches SpringBoard.
+   the boot reaches SpringBoard. For a quiet boot with the same log, use
+   `shim-boot-ring.img` instead.
 2. If the boot still stops before SpringBoard, fix the last ring line first;
    touch is not the only remaining gate.
 3. Touch: build a diag with `sweetouchpower=1` and read the LDO11 APID
