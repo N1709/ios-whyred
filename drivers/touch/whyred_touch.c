@@ -230,6 +230,8 @@ touch_spmi_write(vm_offset_t chan, uint8_t reg, uint8_t val)
 /*
  * Toggle PM660 LDO11 so the DSX reboots into its addressable window. The
  * register's other bits are preserved; only the common enable bit changes.
+ * Returns 1 when the rail is on after the toggle, 0 when sweetouchpower is
+ * absent, and -1 when the arbiter access was refused.
  */
 static int
 whyred_touch_power_cycle(void)
@@ -297,7 +299,7 @@ whyred_touch_power_cycle(void)
 	rc = touch_spmi_read(obs, TOUCH_LDO11_ENABLE, &after);
 	printf("WHYRED TOUCH: ldo11 enable after 0x%02x (%s)\n", after,
 	    rc == 0 ? "ok" : "read failed");
-	return (rc == 0 && (after & TOUCH_LDO11_ENABLE_BIT)) ? 0 : -1;
+	return (rc == 0 && (after & TOUCH_LDO11_ENABLE_BIT)) ? 1 : -1;
 }
 
 /*
@@ -2686,7 +2688,11 @@ whyred_touch_probe(void)
 			 * more fresh window.
 			 */
 			if (!dsx_f12_programmed && dsx_f12_found) {
-				(void)whyred_touch_power_cycle();
+				if (whyred_touch_power_cycle() > 0) {
+					printf("WHYRED TOUCH: rail cycle done, "
+					    "re-testing the address phase\n");
+					dsx_reset_probe();
+				}
 				(void)dsx_f12_program();
 			}
 		} else {

@@ -2096,6 +2096,39 @@ assert 'touch_line_wait_config();' in probe
 PY2
 echo "ok   0223 shortens the line wait and adds the known-base fast path"
 
+echo "== TOUCH: 0224 re-tests the address phase after a real rail toggle =="
+P224="xnu/patches/0224-whyred-touch-power-reprobe.patch"
+python3 tools/check_patch.py "$P224" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:Returns 1 when the rail is on after the toggle' \
+	--added-contains 'bsd/dev/whyred_touch.c:whyred_touch_power_cycle() > 0' \
+	--added-contains 'bsd/dev/whyred_touch.c:re-testing the address phase' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_reset_probe();'
+python3 - <<'PY2'
+src = open('xnu/patches/0224-whyred-touch-power-reprobe.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# 0 used to mean both "sweetouchpower absent" and "toggle succeeded", so the
+# caller could not tell whether a fresh window existed. Success is 1 now.
+assert '? 1 : -1;' in body
+assert '? 0 : -1;' not in body
+assert body.count('whyred_touch_power_cycle() > 0') == 1
+
+# The re-probe must happen before the F12 write in the same branch, otherwise
+# it would program ctrl28 with the bases from the streamed map.
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+probe = mirror.split('whyred_touch_probe(void)', 1)[1]
+probe = probe[:probe.index('\n}\n')]
+branch = probe.split('rail cycle done', 1)[1]
+assert branch.index('dsx_reset_probe();') < \
+    branch.index('(void)dsx_f12_program();')
+# A refused toggle (-1) must not claim a fresh window either.
+assert 'whyred_touch_power_cycle() > 0' in probe
+PY2
+echo "ok   0224 re-runs the address probe after a successful rail cycle"
+
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
 python3 tools/check_patch.py "$P212" -q \
