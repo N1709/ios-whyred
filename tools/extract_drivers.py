@@ -31,7 +31,11 @@ DRIVERS = {
         "iokit/Kernel/arm/SweetFramebuffer.cpp",
         "iokit/Kernel/arm/SweetSurface.cpp",
     ],
-    "touch": ["bsd/dev/sweet_touch.c"],
+    "touch": [
+        "bsd/dev/sweet_touch.c",
+        "bsd/dev/santoni_touch.c",
+        "iokit/Kernel/arm/hid/SweetHID.cpp",
+    ],
     "wifi": [
         "iokit/Kernel/arm/TopazModem.cpp",
         "bsd/dev/whyred_wlan.c",
@@ -39,7 +43,7 @@ DRIVERS = {
     "modem": ["bsd/dev/whyred_modem.c"],
     "gpu": [
         "bsd/dev/whyred_gpu.c",
-        "bsd/dev/WhyredGPU.cpp",
+        "iokit/Kernel/arm/WhyredGPU.cpp",
     ],
     "audio": ["bsd/dev/whyred_audio.c"],
     "power": [

@@ -1858,12 +1858,12 @@ echo "ok   0211 ships the Adreno ladder, gated by whyredgpu and off by default"
 echo "== GPU: 0217 adds the IOKit service and its submit path =="
 P217="xnu/patches/0217-whyred-gpu-service.patch"
 python3 tools/check_patch.py "$P217" -q \
-	--added-contains 'bsd/conf/files:bsd/dev/WhyredGPU.cpp' \
-	--added-contains 'bsd/dev/WhyredGPU.cpp:OSDefineMetaClassAndStructors(WhyredGPU, IOService)' \
-	--added-contains 'bsd/dev/WhyredGPU.cpp:WhyredGPUUserClient' \
-	--added-contains 'bsd/dev/WhyredGPU.cpp:kWhyredSubmit' \
-	--added-contains 'bsd/dev/WhyredGPU.cpp:#if defined(ARM64_BOARD_CONFIG_WHYRED)' \
-	--added-contains 'bsd/dev/WhyredGPU.cpp:inTaskWithPhysicalMask' \
+	--added-contains 'iokit/conf/files.arm64:iokit/Kernel/arm/WhyredGPU.cpp' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:OSDefineMetaClassAndStructors(WhyredGPU, IOService)' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:WhyredGPUUserClient' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:kWhyredSubmit' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:#if defined(ARM64_BOARD_CONFIG_WHYRED)' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:inTaskWithPhysicalMask' \
 	--added-contains 'bsd/dev/whyred_gpu.c:whyred_gpu_service_submit' \
 	--added-contains 'bsd/dev/whyred_gpu.c:WhyredGPUStart();' \
 	--added-contains 'bsd/dev/whyred_gpu.c:if (step >= 30)'
@@ -1877,13 +1877,39 @@ body = '\n'.join(added)
 assert 'whyred_service_start(step == 31)' in body
 assert 'whyredgpu=30' in body
 assert 'WhyredGPUStart(void)' in body
-# The C++ file must be inert on the other boards that share bsd/conf/files.
+# The C++ file must be inert on the other boards that share iokit/conf/files.arm64.
 assert '#else /* !ARM64_BOARD_CONFIG_WHYRED */' in body
 # No lavender names may survive the merge.
 for old in ('lavender', 'LAVENDER', 'lavgpu', 'LAVGPU'):
     assert old not in body, old
 PY2
 echo "ok   0217 merges the IOKit service, gated by whyredgpu=30"
+
+echo "== TOUCH: 0218 feeds F12 into SweetHID =="
+P218="xnu/patches/0218-whyred-touch-hid.patch"
+python3 tools/check_patch.py "$P218" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:extern void sweet_hid_touch(int finger, int down, int x, int y);' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_hid_thread' \
+	--added-contains 'bsd/dev/santoni_touch.c:kernel_thread_start(dsx_hid_thread' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_f12_fingers = c23[1];' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_hid_start();' \
+	--added-contains 'iokit/Kernel/arm/hid/SweetHID.cpp:fLogicalH = native ? 2160 : 2436;' \
+	--added-contains 'iokit/Kernel/arm/hid/SweetHID.cpp:y > 2159 ? 2159 : y'
+python3 - <<'PY2'
+src = open('xnu/patches/0218-whyred-touch-hid.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# The poll must hand every change to the HID service, and must not use the
+# non-existent touch_wait() helper or keep the old addressable-only gate.
+assert 'sweet_hid_touch(i, down, x, y)' in body
+assert 'touch_wait(' not in body
+assert 'dsx_addressable && dsx_f12_found' not in body
+assert 'if (dsx_f12_found)' in body
+assert 'DSX_HID_MAX_FINGERS' in body
+PY2
+echo "ok   0218 polls F12 and feeds SweetHID at 1080x2160"
 
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
@@ -2097,14 +2123,15 @@ grep -Fq 'DISPLAY_ARGS="disable_kprintf_output=0"' shim/build.sh
 grep -Fq 'KPRINTF_MUTE="$4"' .github/workflows/xnu.yml
 # The panel console is a separate switch from the mute: disable_kprintf_output
 # is inert in this kernel, so the only thing that really stops the console
-# being drawn over the GUI is sweetfb_noconsole=1 (patch 0067). A manual run
-# picks text or hidden, and the built image must carry exactly that.
+# being drawn over the GUI is sweetfb_noconsole=1 (patch 0067). The workflow
+# has no text/hidden choice any more: every build carries the hidden setting.
 grep -Fq 'PANEL_NOCONSOLE="${PANEL_NOCONSOLE:-0}"' shim/build.sh
 grep -Fq 'DISPLAY_ARGS="$DISPLAY_ARGS sweetfb_noconsole=1"' shim/build.sh
 grep -Fq 'PANEL_NOCONSOLE="$5"' .github/workflows/xnu.yml
-grep -Fq 'panel_console:' .github/workflows/xnu.yml
+grep -Fq 'NOCONSOLE=1' .github/workflows/xnu.yml
+! grep -Fq 'panel_console:' .github/workflows/xnu.yml
 grep -Fq -- '--require sweetfb_noconsole=1' .github/workflows/xnu.yml
-grep -Fq -- '--reject sweetfb_noconsole=1' .github/workflows/xnu.yml
+! grep -Fq -- '--reject sweetfb_noconsole=1' .github/workflows/xnu.yml
 grep -Fq 'build_mode ""     ""     ""     1 "$NOCONSOLE"' .github/workflows/xnu.yml
 grep -Fq -- '--require disable_kprintf_output=1' .github/workflows/xnu.yml
 grep -Fq -- '--require disable_kprintf_output=0' .github/workflows/xnu.yml

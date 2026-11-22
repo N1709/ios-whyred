@@ -29,7 +29,7 @@ Last updated: 2026-11-22.
 | Cellular | Added (0215), not booted |
 | Wallpaper / PosterBoard | Lever added (0216), not booted |
 | Charging | Static 100% fallback; no PM660 gauge |
-| iOS userland (launchd → SpringBoard) | No (code signing) |
+| iOS userland (launchd → SpringBoard) | **Works** — boots to the lock screen |
 
 Legend: **Works** = verified on the phone; **Added** = code exists but has
 not booted; **No** = not implemented or known blocked; **Static** = a fixed
@@ -51,7 +51,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
 | Display | Kernel framebuffer + 4-bar test visible on panel — **works** |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
-| iOS userland | launchd starts, then dies at code signing (`CS_KILLED`) — **blocked** |
+| iOS userland | launchd → backboardd → SpringBoard boots to the lock screen — **works**; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
 | Touch | DSX at `0x20` probed, F12 programmed, tap poll exists — **not in HID yet** |
 
 ## New fixes 0207-0210 (2026-11-22, not booted)

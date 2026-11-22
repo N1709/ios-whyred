@@ -24,13 +24,6 @@ on:
           - normal
           - log
         default: both
-      panel_console:
-        description: text (console drawn over the GUI) / hidden (sweetfb_noconsole=1)
-        type: choice
-        options:
-          - text
-          - hidden
-        default: text
       fb_test_pattern:
         description: on (four colour bars prove the panel scans out) / off (clean panel)
         type: choice
@@ -333,17 +326,14 @@ jobs:
           # image.
           DIAG="sweetlog=1 cs_debug=2"
           SPAM="-enable_kprintf_spam"
-          # Manual runs choose which image(s) to build; a push builds both.
-          MODE="${{ inputs.build_mode || 'both' }}"
-          # Console on the panel: hidden stops drawing it on the first GUI
-          # swap (patch 0067), so the panel shows backboardd's IOSurfaces
-          # instead of scrolling kprintf text. The ring keeps the text either
-          # way, so a hidden-console boot is still diagnosable afterwards.
-          if [ "${{ inputs.panel_console || 'text' }}" = hidden ]; then
-            NOCONSOLE=1
-          else
-            NOCONSOLE=0
-          fi
+          # Manual runs choose which image(s) to build; a push builds only the
+          # quiet image, with no console text and no log ring.
+          MODE="${{ inputs.build_mode || 'normal' }}"
+          # Console on the panel is always hidden: it stops being drawn on the
+          # first GUI swap (patch 0067), so the panel shows backboardd's
+          # IOSurfaces instead of scrolling kprintf text. The ring keeps the
+          # text either way, so a hidden-console boot is still diagnosable.
+          NOCONSOLE=1
 
           mkdir -p images
           # suffix extra cmdline spam mute(1=keep the log off the panel)
@@ -406,16 +396,11 @@ jobs:
             # The default level 0x5 is what reached SpringBoard in 0174-0178.
             python3 tools/payload_cmdline.py --image "$img" \
               --reject 'ignition_level='
-            # The panel switch must match the run that was asked for; a
-            # hidden-console image that still draws text looks exactly like
-            # the bug it is meant to rule out.
-            if [ "$NOCONSOLE" = 1 ]; then
-              python3 tools/payload_cmdline.py --image "$img" \
-                --require sweetfb_noconsole=1
-            else
-              python3 tools/payload_cmdline.py --image "$img" \
-                --reject sweetfb_noconsole=1
-            fi
+            # Every image must hide the panel console: a build that still
+            # draws text looks exactly like the bug this rule is meant to
+            # rule out.
+            python3 tools/payload_cmdline.py --image "$img" \
+              --require sweetfb_noconsole=1
           done
           if [ -f images/shim-boot.img ]; then
             echo "verifying the normal image carries no log capture"

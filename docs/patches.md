@@ -56,6 +56,7 @@ the reason it exists. Tests for every row live in `tests/run_tests.sh`.
 | 0215 | Add `whyred_modem.c`: enable the MSS clocks, program RMB, reset QDSP6, load PBL/MBA from the modem FAT, then authenticate the MDT and its segments through SCM PAS; off unless `whyredmodem=N` |
 | 0216 | Add the `sweetnopb=1` lever: exec of `/Applications/PosterBoard.app/PosterBoard` fails with `EPERM` and logs `SWEET EXEC: refusing PosterBoard`, so one boot can tell whether the lock-screen freeze follows the poster process; off by default |
 | 0217 | Merge the IOKit GPU service: `WhyredGPU`/`WhyredGPUUserClient` with info, contiguous buffer new/free and synchronous PM4 submit (cache flush + fence), plus the `whyredgpu=30`/`31` hook in `whyred_gpu.c`; the C++ file is inert on the other boards and the ladder stays off by default |
+| 0218 | Feed F12 into `SweetHIDTouch`: program `ctrl28` even when the address-phase test fails, read `ctrl23` for the finger count, poll the 8-byte 2D records in a kernel thread and call `sweet_hid_touch()`; map the HID digitizer to the real 1080x2160 panel (Y clamp, edge band, synthetic swipe), with `sweetouchhid=0` to disable the poll |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.
