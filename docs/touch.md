@@ -26,21 +26,28 @@
 1. Waits until `sweetouchearly=MS` kernel time (default off, diag images use
    `1000`).
 2. Maps TLMM, sets up SDA/SCL, clears the bus.
-3. Bit-bangs I2C at ~50 kHz (byte-identical to the vendor driver, 0188).
-4. Reads the streamed register map in two back-to-back `0x200` windows (the
+3. With `sweetouchpower=1`, toggles PM660 LDO11 (`vcc_i2c`) through the
+   SPMI arbiter. The DSX only accepts register addresses for ~3 s after its
+   own power-on, so the rail toggle starts a fresh window at the probe.
+4. Bit-bangs I2C at ~50 kHz (byte-identical to the vendor driver, 0188).
+5. Reads the streamed register map in two back-to-back `0x200` windows (the
    cycle is 536 bytes and the pointer position is unknown). This part ignores
    the address phase after the first read, so the PDT records arrive back to
    back: F34, F01 `2f 26 0d 04 01 01`, F12 `4c 00 13 06 01 12`. 0206 takes
    the F01 command base (`0x26`) from that record; the RMI4 default
    `00 06 0d 11` does not exist on this unit. `tools/dsx-pdt.py <ring>`
    reports the triplet and the stream phase.
-5. Software-resets the part at that command base, then reads two PDT
+6. Software-resets the part at that command base, then reads two PDT
    registers twice to test whether the address phase works. Only an
    addressable part is walked and gets F12 programmed; a still-streaming part
    tries the `0x06` base once more first.
-6. Programs F12 reporting: `RPT_DEFAULT (0x1F)` to control 28; the 2D data
-   base is `F12 data base + data0 present`.
-7. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result and runs a
+7. Clears the F01 sleep bits and the F12 `ctrl20` wakeup-gesture byte
+   (`synaptics_rmi4_f12_wg(false)`), then programs F12 reporting:
+   `RPT_DEFAULT (0x1F)` to control 28. The 2D data base is
+   `F12 data base + data0 present`. `ctrl28` alone only selects the report
+   type; a part left in LPWG keeps its 2D block inactive until the gesture
+   byte is cleared, which is the state Android hands over on a warm reboot.
+8. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result and runs a
    `sweetouchtouch` second poll of the F12 2D block.
 
 The F12 query block read on this unit:

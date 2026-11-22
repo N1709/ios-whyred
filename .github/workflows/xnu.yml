@@ -317,7 +317,11 @@ jobs:
             FB_ARG="sweetfbtest=1"
             FB_VERIFY="--require sweetfbtest=1"
           fi
-          COMMON="$COMMON launchd_unsecure_cache=1 $FB_ARG"
+          # Touch is on by default now: the late probe toggles PM660 LDO11
+          # (0220) so the DSX gets a fresh address window, uses the QUP when
+          # it comes up, and does not hold the panel. The HID poll starts
+          # after the probe and is on unless sweetouchhid=0.
+          COMMON="$COMMON launchd_unsecure_cache=1 $FB_ARG sweetouchi2c=1 sweetouchpower=1 sweetouchwait=0 sweeti2c=1"
           # Log mode: sweetlog=1 records every console character to the 4 MiB
           # ring on SYSTEM, cs_debug=2 prints the CD dump and the per-blob
           # line for every validated page (megabytes), and

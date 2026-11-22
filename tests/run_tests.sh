@@ -1931,6 +1931,41 @@ assert 'bsd/dev/santoni_touch.c\t\t\tstandard' in src
 PY2
 echo "ok   0219 renames santoni_touch.c to whyred_touch.c"
 
+echo "== TOUCH: 0220 power-cycles the DSX rail and exits LPWG =="
+P220="xnu/patches/0220-whyred-touch-power.patch"
+python3 tools/check_patch.py "$P220" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CORE_PA' \
+	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CHNL_PA' \
+	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_LDO11_PPID' \
+	--added-contains 'bsd/dev/whyred_touch.c:touch_spmi_write' \
+	--added-contains 'bsd/dev/whyred_touch.c:whyred_touch_power_cycle' \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchpower' \
+	--added-contains 'bsd/dev/whyred_touch.c:(void)whyred_touch_power_cycle();' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_f12_wg_off' \
+	--added-contains 'bsd/dev/whyred_touch.c:f12 ctrl20' \
+	--added-contains 'bsd/dev/whyred_touch.c:(void)dsx_f12_wg_off(q5n, q5);' \
+	--added-contains 'bsd/dev/whyred_touch.c:(v & ~0x07u) | 0x80u'
+python3 - <<'PY2'
+src = open('xnu/patches/0220-whyred-touch-power.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# Both probe paths must toggle the rail, and the late probe must not
+# overwrite a working early F12 result with stream bytes.
+assert body.count('(void)whyred_touch_power_cycle();') >= 3
+assert '!dsx_f12_programmed && dsx_f12_found' in body
+assert '0x08400000u' in body and '0x09400000u' in body
+assert '0x04au' in body
+# LPWG exit: the vendor's f12_wg(false) writes the three-byte ctrl20
+# block with the gesture byte cleared, and F01 clears the sleep bits.
+assert 'dsx_f12_wg_off(q5n, q5)' in body
+assert 'wg_index = 2' in body
+assert 'f12 ctrl20 <-' in body
+assert '(v & ~0x07u) | 0x80u' in body
+PY2
+echo "ok   0220 toggles LDO11, clears F01 sleep and exits F12 LPWG"
+
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
 python3 tools/check_patch.py "$P212" -q \
@@ -2149,6 +2184,8 @@ grep -Fq 'PANEL_NOCONSOLE="${PANEL_NOCONSOLE:-0}"' shim/build.sh
 grep -Fq 'DISPLAY_ARGS="$DISPLAY_ARGS sweetfb_noconsole=1"' shim/build.sh
 grep -Fq 'PANEL_NOCONSOLE="$5"' .github/workflows/xnu.yml
 grep -Fq 'NOCONSOLE=1' .github/workflows/xnu.yml
+grep -Fq 'sweetouchi2c=1 sweetouchpower=1 sweetouchwait=0 sweeti2c=1' .github/workflows/xnu.yml
+grep -Fq 'sweetouchpower=1' tools/build-touch-diag.sh
 ! grep -Fq 'panel_console:' .github/workflows/xnu.yml
 grep -Fq -- '--require sweetfb_noconsole=1' .github/workflows/xnu.yml
 ! grep -Fq -- '--reject sweetfb_noconsole=1' .github/workflows/xnu.yml
