@@ -63,6 +63,7 @@
 /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
 extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
     uint32_t flags);
+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 /*
  * PM660 LDO11 (vcc_i2c) powers the DSX and the I2C pull-ups. On whyred the

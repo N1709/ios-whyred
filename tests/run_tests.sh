@@ -1941,6 +1941,7 @@ echo "ok   0219 renames santoni_touch.c to whyred_touch.c"
 echo "== TOUCH: 0220 power-cycles the DSX rail and exits LPWG =="
 P220="xnu/patches/0220-whyred-touch-power.patch"
 python3 tools/check_patch.py "$P220" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:extern vm_offset_t ml_io_map(' \
 	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CORE_PA' \
 	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CHNL_PA' \
 	--added-contains 'bsd/dev/whyred_touch.c:TOUCH_SPMI_CNFG_PA' \
@@ -1961,6 +1962,11 @@ src = open('xnu/patches/0220-whyred-touch-power.patch',
 added = [l[1:] for l in src.splitlines()
          if l.startswith('+') and not l.startswith('+++')]
 body = '\n'.join(added)
+# 0220 calls ml_io_map() for the SPMI windows. osfmk/arm/machine_routines.h
+# is not visible to the BSD layer, so the file needs its own extern (the
+# other BSD drivers do the same). Without it the first build that actually
+# applied 0220 failed with an implicit-function-declaration error.
+assert 'extern vm_offset_t ml_io_map(' in body
 # The rail toggle now runs only in the late probe: whyred_touch_early() is
 # before santoni_log_start(), so an arbiter SError there panics with an empty
 # ring. Two call sites remain, both after the log is up.

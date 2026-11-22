@@ -2,9 +2,10 @@ diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
 index 7b69e87..e32358c 100644
 --- a/bsd/dev/whyred_touch.c
 +++ b/bsd/dev/whyred_touch.c
-@@ -64,6 +64,32 @@
+@@ -64,6 +64,33 @@
  extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
      uint32_t flags);
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
  
 +/*
 + * PM660 LDO11 (vcc_i2c) powers the DSX and the I2C pull-ups. On whyred the
