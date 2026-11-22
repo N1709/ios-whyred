@@ -1,6 +1,8 @@
 # Current status
 
-Last updated: 2026-11-19, kernel `23e59b3` (patch 0206), image
+Last updated: 2026-11-22. Patches `0207`-`0210` (display 60 Hz/telemetry,
+PM660 keys, PM660 RTC, ADMA2 reads) are committed locally and not built or
+booted. Last verified kernel/image: `23e59b3` (patch 0206),
 `shim-boot-touch-pdt-reset.img`.
 
 ## One-paragraph summary

@@ -23,6 +23,11 @@ userland of the iPhone X: launchd, backboardd, SpringBoard.
 | iOS userland | `launchd` starts, then dies at code signing (`CS_KILLED`) |
 | GPU / Wi-Fi / Bluetooth / audio / cellular / charging | Not implemented |
 
+Patches `0207`-`0210` add a 60 Hz display default with `present()` timing,
+PM660/PM660L keys, the PM660 RTC with a calendar fallback, and ADMA2 eMMC
+reads with a PIO fallback. They apply on the series tip but have not been
+built or booted yet.
+
 ## Quick start
 
 ```sh

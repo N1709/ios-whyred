@@ -83,7 +83,12 @@ Build the lavender image with `BOARD=lavender shim/build.sh`.
 | `rd=ufsroot0 ufsrw=1 rootrw=1` | Root on `userdata`, writable |
 | `cpus=4` | All four Gold cores; `cpus=1` is the safe fallback |
 | `sweetfb_noconsole=1` | Stop drawing kernel text over the GUI after the first iOS frame. Leave it out to debug (much slower: every console line is drawn and scrolled by the CPU) |
-| `sweetfb_hz=30` | Panel refresh rate of the CPU frame copy |
+| `sweetfb_hz=60` | Panel refresh rate of the CPU frame copy (driver default is now 60) |
+| `sweetfblog=N` | Log the first N presented frames (default 2000), then every 256th; `SWEET FB: present ... OVER` marks a frame over the 16667 us budget |
+| `sweetkeys=0` | Disable the PM660/PM660L key poller |
+| `sweetrtc=<unix seconds>` | Calendar base when the platform clock answers 0 |
+| `sweetrtcoff=<seconds>` | Add this offset to the raw PM660 RTC counter when it is not Unix time |
+| `sweetemmc_dma=0` | Keep eMMC reads on PIO; ADMA2 is the default after its self-test |
 | `sweettouch=0` | Disable the touch driver |
 | `sweethw=1` | Also start sweet's SM7150 key and USB drivers (**unsafe on topaz**, not ported) |
 | `launchd_unsecure_cache=1`, `wdt=-1 wdt_test=no_user_checkin` | launchd without AMFI; no hardware watchdog |

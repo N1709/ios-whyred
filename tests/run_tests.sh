@@ -1679,6 +1679,149 @@ assert 'dsx_f01_scan' not in body
 PY2
 echo "ok   0206 parses the PDT stream, resets at the record base and gates F12"
 
+echo "== DISPLAY: 0207 defaults to 60 Hz and times present() =="
+P207="xnu/patches/0207-whyred-fb-60hz-telemetry.patch"
+python3 tools/check_patch.py "$P207" -q \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:uint32_t hz = 60;' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:if ((count % fb->fFlushTicks) == 0) {' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:sweet_fb_present_log(get32(rec, 0x50), start, true);' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:sweet_fb_present_log(get32(rec, 0x50), start, false);' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:absolutetime_to_microseconds(mach_absolute_time() - start, &us);' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:us > SWEET_FB_VSYNC_US ? " OVER" : ""' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:PE_parse_boot_argn("sweetfblog", &logn, sizeof(logn));' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:SWEET FB: layer set mask'
+python3 - <<'PY2'
+src = open('xnu/patches/0207-whyred-fb-60hz-telemetry.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+gone = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('-') and not l.startswith('---'))
+# The driver default must match the shim's sweetfb_hz=60: an image built
+# without the boot arg must not silently fall back to 10 Hz.
+assert 'uint32_t hz = 10;' in gone
+assert 'uint32_t hz = 60;' in body
+assert 'default 10 Hz' not in body
+# Notifying every 60 Hz tick made CA::OGL::SW draw frames the panel never
+# showed; the notification is gated on the flush tick.
+assert 'client->notify(SWEET_FB_NOTIFY_VSYNC, values, 6);' in gone
+assert 'if ((count % fb->fFlushTicks) == 0) {' in body
+# Both presentation paths must be measured, not only the direct one.
+assert body.count('sweet_fb_present_log(get32(rec, 0x50), start,') == 2
+assert 'sweetfblog' in body
+assert 'SWEET FB: layer set mask' in body
+PY2
+echo "ok   0207 defaults to 60 Hz, gates vsync and times both present paths"
+
+echo "== KEYS: 0208 uses PM660/PM660L arbiter v3 and starts the poller =="
+P208="xnu/patches/0208-whyred-pmic-keys.patch"
+python3 tools/check_patch.py "$P208" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:extern void sweet_keys_init(void);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sweet_keys_init();' \
+	--added-contains 'bsd/dev/sweet_keys.c:#define KEYS_CORE_PA     0x0800f000u' \
+	--added-contains 'bsd/dev/sweet_keys.c:#define KEYS_OBS_PA      0x09400000u' \
+	--added-contains 'bsd/dev/sweet_keys.c:#define KEYS_APID_MAP    0x800u' \
+	--added-contains 'bsd/dev/sweet_keys.c:#define KEYS_OBS_STRIDE  0x8000u' \
+	--added-contains 'bsd/dev/sweet_keys.c:#define KEYS_GPIO_PPID   0x2c6u' \
+	--added-contains 'bsd/dev/sweet_keys.c:volume-up withheld, PMIC unchanged'
+python3 - <<'PY2'
+src = open('xnu/patches/0208-whyred-pmic-keys.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+gone = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('-') and not l.startswith('---'))
+# whyred's root path is santoni_sdhci.c, not sweet_ufs.c: without this call
+# the keys driver exists but never runs.
+assert 'extern void sweet_keys_init(void);' in body
+assert '\tsantoni_log_start();\n+\tsweet_keys_init();' in src
+# SDM660 is the v2/v3 arbiter layout, not the topaz v5 one.
+assert '0xc410u' in gone
+assert '0x80u * apid' in gone
+assert 'KEYS_OBS_STRIDE  0x8000u' in body
+# The enable check must withhold volume-up rather than write PMIC state.
+assert 'keys_gpio_chan = 0;' in body
+assert 'volume-up withheld, PMIC unchanged' in body
+# The poller still goes through the one HID entry point.
+assert 'sweet_hid_key(k, state[k]);' in src
+assert 'keys_started' in src
+PY2
+echo "ok   0208 maps PM660/PM660L, starts the poller and keeps PMIC writes out"
+
+echo "== RTC: 0209 reads the PM660 RTC and skips the 30 s IORTC wait =="
+P209="xnu/patches/0209-whyred-pm660-rtc.patch"
+python3 tools/check_patch.py "$P209" -q \
+	--added-contains 'bsd/dev/sweet_keys.c:#define RTC_PPID                0x060u' \
+	--added-contains 'bsd/dev/sweet_keys.c:#define RTC_RDATA0              0x48u' \
+	--added-contains 'bsd/dev/sweet_keys.c:PE_parse_boot_argn("sweetrtcoff", &off, sizeof(off));' \
+	--added-contains 'osfmk/kern/clock.c:PE_parse_boot_argn("sweetrtc", &rtc, sizeof(rtc))' \
+	--added-contains 'iokit/Kernel/IOPlatformExpert.cpp:return lavender_rtc_gmt();' \
+	--added-contains 'iokit/Kernel/IOStartIOKit.cpp:#if !defined(BCM2837) && !defined(ARM64_BOARD_CONFIG_LAVENDER)'
+python3 - <<'PY2'
+src = open('xnu/patches/0209-whyred-pm660-rtc.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+gone = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('-') and not l.startswith('---'))
+# The raw PM660 counter is not necessarily Unix time (Android keeps an
+# offset), so it is only used when plausible or with an explicit offset.
+assert 'RTC_ENABLE' in body
+assert 'RTC_PLAUSIBLE_MIN' in body
+assert 'raw >= RTC_PLAUSIBLE_MIN' in body
+assert 'sweetrtcoff' in body
+assert 'sweetrtc' in body
+assert 'lavender_rtc_read' in body
+assert 'lavender_rtc_gmt' in body
+# The 30 s wait must be skipped for whyred, but not for boards with an IORTC.
+assert '#ifndef BCM2837' in gone
+assert '#if !defined(BCM2837) && !defined(ARM64_BOARD_CONFIG_LAVENDER)' in body
+assert 'return lavender_rtc_gmt();' in body
+PY2
+echo "ok   0209 skips the IORTC wait, reads PM660 and keeps sweetrtc fallback"
+
+echo "== STORAGE: 0210 adds ADMA2 reads with PIO fallback =="
+P210="xnu/patches/0210-whyred-sdhci-adma2.patch"
+python3 tools/check_patch.py "$P210" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_prepare_pio(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_wait_write_ready(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_adma(uint8_t index' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define ADMA_ATTR_TRAN          0x0020u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define ADMA_FAIL_LIMIT         3u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:PE_parse_boot_argn("sweetemmc_dma", &want, sizeof(want));' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_adma_selftest();' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_diag_caps();' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_dma_diag_tests();' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:WHYRED SDHCI: driver 0210'
+python3 - <<'PY2'
+src = open('xnu/patches/0210-whyred-sdhci-adma2.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+gone = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('-') and not l.startswith('---'))
+# ADMA2 is a read path only; writes stay PIO (0192 waits for the card after
+# each write, because the next CMD24/25 times out while DAT0 is low).
+assert 'sdhci_read_adma(18, (uint32_t)lbas[i], ADMA_TEST_BLOCKS,' in body
+assert 'sdhci_wait_write_ready();' in body
+assert 'sdhci_write_pio(' in src
+# The self-test must disable the path on a mismatch, and repeated failures
+# must fall back to PIO instead of wedging the root.
+assert 'se.adma_on = false;' in body
+assert '++santoni_adma_fails >= ADMA_FAIL_LIMIT' in body
+assert 'falling back' in body
+# Boot-arg sweetemmc_dma=0 must keep the old path.
+assert 'sweetemmc_dma=0 turns it off' in body
+# The driver banner must name this series, not the old 0184.
+assert 'WHYRED SDHCI: driver 0210' in body
+assert 'WHYRED SDHCI: driver 0184' in gone
+PY2
+echo "ok   0210 arms ADMA2 only after a self-test and falls back to PIO"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

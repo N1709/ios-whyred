@@ -1,0 +1,1270 @@
+diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -1,13 +1,13 @@
+ /*
+- * WHYRED internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
++ * Lavender/Whyred SDCC v5 and Santoni SDCC v4 eMMC root device (polled).
++ * SDCC v5 has native HC registers at offset zero, not the v4 +0x900 window.
+  *
+  * The Qualcomm LK bootloader already powered, clocked and identified the
+  * internal eMMC through SDCC1 and hands it over in Transfer State (TRAN) on
+  * an 8-bit bus. This driver reuses that state instead of reimplementing the
+- * GCC clock tree and SPMI regulators: it maps the single 0x1000 MMIO window
+- * at 0x07824000 (Qualcomm vendor core registers at +0x000, standard SDHCI
+- * host controller registers at +0x900) and issues polled commands, one at a
+- * time, with PIO transfers through the SDHCI buffer port.
++ * SPMI regulators. SDCC v4 maps 0x07824000 with HC registers at +0x900;
++ * Lavender/Whyred SDCC v5 maps 0x0c0c4000 with native HC registers at +0.
++ * Commands are polled and serialized, with PIO through the SDHCI buffer port.
+  *
+  * SDHCI_RESET_ALL (0x01) is issued exactly once, during takeover and before
+  * the card is used: it clears the standard SDHCI register file while the GCC
+@@ -200,6 +200,10 @@ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ #define SDHCI_INT_DATA_END_BIT  0x00400000u
+ #define SDHCI_INT_ACMD12ERR     0x01000000u
+ #define SDHCI_INT_ADMAERR       0x02000000u
++#define SDHCI_INT_ERRORS        (SDHCI_INT_ERR | SDHCI_INT_CMD_TIMEOUT | \
++	SDHCI_INT_CMD_CRC | SDHCI_INT_CMD_END_BIT | SDHCI_INT_CMD_INDEX | \
++	SDHCI_INT_DATA_TIMEOUT | SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_END_BIT | \
++	SDHCI_INT_ACMD12ERR | SDHCI_INT_ADMAERR)
+ 
+ /* ------------------------------------------ Qualcomm MSM v4 core registers */
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+@@ -418,6 +422,14 @@ static const struct santoni_gcc_rate santoni_gcc_rates[] = {
+ #define EXT_CSD_BUS_WIDTH_8     2u
+ #define EXT_CSD_HS_TIMING       185u
+ #define EXT_CSD_TIMING_HS       1u
++/* MiCode lavender-q-oss @ b16ba644a26986cc4cc3cf526eb497b9fa91a043,
++ * include/linux/mmc/mmc.h: standard JEDEC fields. Byte 246 is BKOPS_STATUS,
++ * not a flush timeout. CACHE_CTRL is read/write; FLUSH_CACHE is write-only. */
++#define EXT_CSD_FLUSH_CACHE     32u
++#define EXT_CSD_CACHE_CTRL      33u
++#define EXT_CSD_REV             192u
++#define EXT_CSD_STRUCTURE       194u
++#define EXT_CSD_SEC_COUNT       212u
+ 
+ /* --------------------------------------------------------------- transfers */
+ #define SDHCI_BLOCK             512u
+@@ -432,12 +444,18 @@ static const struct santoni_gcc_rate santoni_gcc_rates[] = {
+ #define CMD_TIMEOUT_NS          (100ull * NSEC_PER_MSEC)
+ #define DATA_TIMEOUT_NS         (2ull * NSEC_PER_SEC)
+ #define CMD6_BUSY_TIMEOUT_NS    (1ull * NSEC_PER_SEC)
++/* Software bounds, not values decoded from a vendor/EXT_CSD timeout byte. */
++#define PIO_DRAIN_TIMEOUT_NS    (50ull * NSEC_PER_MSEC)
++#define CACHE_FLUSH_TIMEOUT_NS  (30ull * NSEC_PER_SEC)
+ 
+ static struct {
+-	vm_offset_t regs;                       /* core base, HC at +0x900 */
++	vm_offset_t regs;                       /* board window, HC at SDHCI_HC_OFFSET */
+ 	vm_offset_t gcc;                        /* GCC sdcc1_apps RCG page */
+ 	vm_offset_t dma;                        /* kernel VA of the bounce buffer */
+ 	uint64_t dma_pa;
++	vm_offset_t adma;                       /* 0210: ADMA2 descriptor page */
++	uint64_t adma_pa;
++	bool adma_on;                           /* 0210: CAPS ADMA2 + self-test, not sweetemmc_dma=0 */
+ 	uint64_t last_cmd_ns;                   /* duration of the last command */
+ 	char part[64];                          /* GPT partition name */
+ 	uint64_t first_block, nblocks;          /* root partition, 512-byte sectors */
+@@ -453,6 +471,9 @@ static struct {
+ 	bool enumerated;                        /* card is 25 MHz, 8-bit, HS */
+ 	bool log_ok;                            /* SYSTEM log area is safe */
+ 	bool writable;                          /* boot-arg emmcrw=1 */
++	bool cache_valid;                       /* sampled from a clean EXT_CSD */
++	uint8_t cache_ctrl;                      /* never inferred from CMD0/ABL */
++	bool write_pending;                     /* accepted FIFO words need a barrier */
+ 	int bmajor, cmajor;
+ 	dev_t bdev;
+ 	bool ready;
+@@ -615,11 +636,19 @@ sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
+     uint32_t *resp)
+ {
+ 	uint64_t deadline, start;
++	uint32_t inhibit = SDHCI_CMD_INHIBIT;
+ 	int error;
+ 
+ 	se.last_cmd_ns = 0;
+-	error = sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,
+-	    CMD_TIMEOUT_NS);
++	if (index == 0) {
++		se.cache_valid = false; /* A card reset invalidates the sampled state. */
++	}
++	/* Linux sdhci_send_command(): CMD12 must be allowed while DAT is busy,
++	 * otherwise the stop that recovery needs can never reach the card. */
++	if (index != 12) {
++		inhibit |= SDHCI_DATA_INHIBIT;
++	}
++	error = sdhci_poll_state(inhibit, CMD_TIMEOUT_NS);
+ 	if (error) {
+ 		{
+ 			uint32_t ps = hc_rd(SDHCI_PRESENT_STATE);
+@@ -653,7 +682,7 @@ sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
+ 	for (;;) {
+ 		uint32_t st = hc_rd(SDHCI_INT_STATUS);
+ 
+-		if (st & SDHCI_INT_ERR) {
++		if (st & SDHCI_INT_ERRORS) {
+ 			sdhci_cmd_stamp(start);
+ 			hc_wr(SDHCI_INT_STATUS, st);
+ 			printf("WHYRED SDHCI: command %u failed (arg 0x%08x, "
+@@ -735,33 +764,31 @@ static int sdhci_enable_card_clock(void);
+ static bool sdhci_ext_csd_sane(void);
+ static void sdhci_ext_csd_clear(void);
+ 
+-/* Wait for one data interrupt (BRR for reads, BWR for writes); clear it. */
++/* A latched BRR/BWR is not a per-word FIFO level. CloverSdhci's
++ * readDataBlock/readMultiBlock at b9ad635986998de400a7c1dec84f3e40a767e779
++ * gates each dword on PRESENT_STATE and retains error bits until verdict.
++ * Use one caller-supplied deadline for the whole PIO transfer. */
+ static int
+-sdhci_wait_data(uint32_t bit, const char *what)
++sdhci_wait_data_until(uint32_t bit, const char *what, uint64_t deadline)
+ {
+ 	const uint32_t ps_bit = (bit == SDHCI_INT_BRR) ?
+ 	    SDHCI_PSTATE_BUF_RD_READY : SDHCI_PSTATE_BUF_WR_READY;
+-	uint64_t deadline;
+-
+-	nanoseconds_to_absolutetime(DATA_TIMEOUT_NS, &deadline);
+-	deadline += mach_absolute_time();
+ 	for (;;) {
+ 		uint32_t st = hc_rd(SDHCI_INT_STATUS);
+ 		uint32_t ps;
+ 
+-		if (st & SDHCI_INT_ERR) {
++		if (st & SDHCI_INT_ERRORS) {
+ 			sdhci_data_failure(what, st);
+ 			hc_wr(SDHCI_INT_STATUS, st);
+ 			return EIO;
+ 		}
+-		if (st & bit) {
+-			hc_wr(SDHCI_INT_STATUS, bit);
+-			santoni_data_moved = true;
+-			return 0;
++		if (mach_absolute_time() >= deadline) {
++			sdhci_data_failure(what, st);
++			return ETIMEDOUT;
+ 		}
+ 		ps = hc_rd(SDHCI_PRESENT_STATE);
+ 		if (ps & ps_bit) {
+-			if (!santoni_pstate_buf_logged) {
++			if (!(st & bit) && !santoni_pstate_buf_logged) {
+ 				santoni_pstate_buf_logged = true;
+ 				printf("WHYRED SDHCI: %s: %s buffer ready "
+ 				    "in PRESENT_STATE 0x%08x while INT_STATUS "
+@@ -771,17 +798,33 @@ sdhci_wait_data(uint32_t bit, const char *what)
+ 				    ps, st);
+ 			}
+ 			hc_wr(SDHCI_INT_STATUS, bit);
+-			santoni_data_moved = true;
+ 			return 0;
+ 		}
+-		if (mach_absolute_time() > deadline) {
++		/* Clear a stale edge without treating an empty FIFO as data. */
++		if (st & bit) {
++			hc_wr(SDHCI_INT_STATUS, bit);
++		}
++		if (st & SDHCI_INT_TC) {
+ 			sdhci_data_failure(what, st);
+-			return ETIMEDOUT;
++			return EIO; /* transfer ended before the requested dword */
+ 		}
+ 		delay(1);
+ 	}
+ }
+ 
++static uint64_t
++sdhci_pio_deadline(uint32_t count)
++{
++	uint64_t deadline;
++
++	/* Clover readMultiBlock uses a 50 ms/block budget. Even a 400 kHz,
++	 * one-lane card moves 512 bytes in about 10 ms. Retain the existing
++	 * two-second startup margin, but do not restart it for every dword. */
++	nanoseconds_to_deadline(DATA_TIMEOUT_NS +
++	    (uint64_t)count * 50ull * NSEC_PER_MSEC, &deadline);
++	return deadline;
++}
++
+ /*
+  * Wait for the end of the transfer. all_bytes says the caller's own loop has
+  * already moved every byte it asked for (PIO read/write): in that case the
+@@ -802,7 +845,7 @@ sdhci_wait_transfer_complete(const char *what, bool all_bytes,
+ 	for (;;) {
+ 		uint32_t st = hc_rd(SDHCI_INT_STATUS);
+ 
+-		if (st & SDHCI_INT_ERR) {
++		if (st & SDHCI_INT_ERRORS) {
+ 			sdhci_data_failure(what, st);
+ 			hc_wr(SDHCI_INT_STATUS, st);
+ 			return EIO;
+@@ -824,7 +867,8 @@ sdhci_wait_transfer_complete(const char *what, bool all_bytes,
+ 		 * still times out instead of looking successful.
+ 		 */
+ 		if (santoni_data_moved &&
+-		    (all_bytes || !(ps & SDHCI_PSTATE_DATA_ACTIVE))) {
++		    ((!open_ended && all_bytes) ||
++		    !(ps & SDHCI_PSTATE_DATA_ACTIVE))) {
+ 			if (!santoni_pstate_tc_logged) {
+ 				santoni_pstate_tc_logged = true;
+ 				printf("WHYRED SDHCI: %s: no TC in INT_STATUS "
+@@ -847,6 +891,12 @@ sdhci_wait_transfer_complete(const char *what, bool all_bytes,
+ 				    50ull * NSEC_PER_MSEC, &drain);
+ 				drain += mach_absolute_time();
+ 				for (;;) {
++					st = hc_rd(SDHCI_INT_STATUS);
++					if (st & SDHCI_INT_ERRORS) {
++						sdhci_data_failure(what, st);
++						hc_wr(SDHCI_INT_STATUS, st);
++						return EIO;
++					}
+ 					ps = hc_rd(SDHCI_PRESENT_STATE);
+ 					if (!(ps & (SDHCI_PSTATE_DATA_ACTIVE |
+ 					    SDHCI_DATA_INHIBIT))) {
+@@ -859,12 +909,21 @@ sdhci_wait_transfer_complete(const char *what, bool all_bytes,
+ 						    "after the last byte; "
+ 						    "resetting the data "
+ 						    "path\n", what, ps);
+-						(void)sdhci_reset_paths();
++						int error = sdhci_reset_paths();
++						if (error) {
++							return error;
++						}
+ 						break;
+ 					}
+ 					delay(1);
+ 				}
+ 			}
++			st = hc_rd(SDHCI_INT_STATUS);
++			if (st & SDHCI_INT_ERRORS) {
++				sdhci_data_failure(what, st);
++				hc_wr(SDHCI_INT_STATUS, st);
++				return EIO;
++			}
+ 			hc_wr(SDHCI_INT_STATUS, SDHCI_INT_TC);
+ 			return 0;
+ 		}
+@@ -941,11 +1000,14 @@ sdhci_reset_paths(void)
+ 			printf("WHYRED SDHCI: path reset did not complete "
+ 			    "(SOFTWARE_RESET 0x%02x)\n",
+ 			    hc_rd8(SDHCI_SOFTWARE_RESET));
+-			return ETIMEDOUT;
++			/* SDCC v5 may leave SOFTWARE_RESET set. Still try the
++			 * existing vendor/clock recovery, then verify the inhibitors. */
++			break;
+ 		}
+ 		delay(1);
+ 	}
+ 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
++	sdhci_v5_standard_fifo();
+ 	/*
+ 	 * SOFTWARE_RESET is not enough on this core. The 0159 boot shows
+ 	 * CMD_INHIBIT and DAT_INHIBIT latched with every DAT line and CMD
+@@ -997,16 +1059,66 @@ sdhci_reset_paths(void)
+  * sending it there just produced a misleading "command 12 failed" line while
+  * the real failure (the 512-byte EXT_CSD read) stayed anonymous.
+  */
+-static void
++static int
+ sdhci_recover(bool open_ended)
+ {
+-	(void)sdhci_reset_paths();
+-	if (!open_ended) {
+-		return;
++	int error = sdhci_reset_paths();
++
++	if (open_ended) {
++		printf("WHYRED SDHCI: recover: stopping an open-ended transfer\n");
++		int stop_error = sdhci_stop_transmission();
++		int reset_error = sdhci_reset_paths();
++		error = stop_error ? stop_error : reset_error;
++	}
++	santoni_data_moved = false;
++	santoni_sdma_active = false;
++	if (error) {
++		printf("WHYRED SDHCI: recovery incomplete (%d), PRESENT_STATE "
++		    "0x%08x\n", error, hc_rd(SDHCI_PRESENT_STATE));
+ 	}
+-	printf("WHYRED SDHCI: recover: stopping an open-ended transfer\n");
+-	(void)sdhci_stop_transmission();
+-	(void)sdhci_reset_paths();
++	return error;
++}
++
++/* Clover prepareReadPath()/drainReadFifo(): a retry must not consume a
++ * failed request's tail as its own sector. Read only the FIFO, never write
++ * filler data, and bound both time and discarded dwords. */
++static int
++sdhci_drain_read_fifo(void)
++{
++	uint64_t deadline;
++	uint32_t words = 0;
++
++	nanoseconds_to_deadline(PIO_DRAIN_TIMEOUT_NS, &deadline);
++	while (hc_rd(SDHCI_PRESENT_STATE) & SDHCI_PSTATE_BUF_RD_READY) {
++		if (words >= BOUNCE_SIZE / 4 || mach_absolute_time() >= deadline) {
++			printf("WHYRED SDHCI: stale FIFO did not drain (%u words)\n", words);
++			return ETIMEDOUT;
++		}
++		(void)hc_rd(SDHCI_BUFFER);
++		words++;
++	}
++	return 0;
++}
++
++static int
++sdhci_prepare_pio(void)
++{
++	const uint32_t busy = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT |
++	    SDHCI_PSTATE_DATA_ACTIVE;
++	int error;
++
++	sdhci_v5_standard_fifo();
++	if (hc_rd(SDHCI_PRESENT_STATE) & busy) {
++		error = sdhci_reset_paths();
++		if (error) {
++			return error;
++		}
++	}
++	error = sdhci_drain_read_fifo();
++	if (error) {
++		return error;
++	}
++	return (hc_rd(SDHCI_PRESENT_STATE) & busy) ? EBUSY : 0;
+ }
+ 
+ /*
+@@ -1028,14 +1140,20 @@ sdhci_read_pio_once(uint8_t index, uint32_t arg, uint32_t count, void *buf)
+ 	uint32_t *dst = (uint32_t *)buf;
+ 	uint32_t r1 = 0;
+ 	uint32_t zero = 0;
++	uint32_t words = count * (SDHCI_BLOCK / 4);
++	uint64_t deadline;
+ 	int error;
+ 
+-	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
++	if (buf == NULL || count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
+ 		return EINVAL;
+ 	}
+ 
+ 	santoni_data_moved = false;
+ 	santoni_sdma_active = false;
++	error = sdhci_prepare_pio();
++	if (error) {
++		return error;
++	}
+ 
+ 	if (index == 18 && count == 1) {
+ 		index = 17;
+@@ -1079,13 +1197,18 @@ sdhci_read_pio_once(uint8_t index, uint32_t arg, uint32_t count, void *buf)
+ 	 * reliably (it does not on this core). Per-word waiting costs a few
+ 	 * microseconds at 400 kHz and is what the SDHCI spec describes.
+ 	 */
+-	for (uint32_t w = 0; w < count * (SDHCI_BLOCK / 4); w++) {
+-		error = sdhci_wait_data(SDHCI_INT_BRR, tag);
++	deadline = sdhci_pio_deadline(count);
++	for (uint32_t w = 0; w < words; w++) {
++		error = sdhci_wait_data_until(SDHCI_INT_BRR, tag, deadline);
+ 		if (error) {
++			printf("WHYRED SDHCI: %s: partial PIO read %u/%u words (%d)\n",
++			    tag, w, words, error);
+ 			sdhci_recover(index == 18);
++			(void)sdhci_drain_read_fifo();
+ 			return error;
+ 		}
+ 		dst[w] = hc_rd(SDHCI_BUFFER);
++		santoni_data_moved = true;
+ 		if (dst[w] == 0) {
+ 			zero++;
+ 		}
+@@ -1162,6 +1285,194 @@ sdhci_read_sdma(uint8_t index, uint32_t arg, uint32_t count, uint64_t pa)
+ 	return 0;
+ }
+ 
++/*
++ * 0210: ADMA2 read path. The 0210 dma-diag report shows this SDCC v5 core advertises
++ * ADMA2 (CAPS bit 19) and 64-bit addressing (bit 28) but NOT SDMA (bit 22):
++ * that is why every SDMA attempt (sdhci_read_sdma, above) ended in ADMAERR.
++ * PIO moves a dword per three uncached MMIO reads (~465 KB/s cold on a bus
++ * that can do ~25 MB/s); ADMA2 lets the controller fill the bounce buffer.
++ *
++ * Reads only, and only into the bounce buffer, under the same lock as PIO.
++ * Writes stay PIO (0192). On by default once the card is enumerated, CAPS
++ * says ADMA2 and the PIO-vs-ADMA2 self-test passes; boot-arg sweetemmc_dma=0
++ * keeps PIO. Any error falls back to PIO for that request and three failures
++ * in a row switch the path off.
++ */
++#define SDHCI_ADMA_SYS_ADDR     0x58
++#define SDHCI_ADMA_SYS_ADDR_HI  0x5c
++#define SDHCI_CTRL_ADMA2_32     0x10u           /* HOST_CONTROL[4:3] = 2 */
++#define ADMA_ATTR_VALID         0x0001u
++#define ADMA_ATTR_END           0x0002u
++#define ADMA_ATTR_TRAN          0x0020u         /* Act = 10: transfer data */
++#define ADMA_CHUNK              32768u          /* explicit length, < 64 KiB */
++#define ADMA_TABLE_BYTES        4096u
++#define ADMA_FAIL_LIMIT         3u
++
++struct santoni_adma2_desc {
++	uint16_t attr;
++	uint16_t len;
++	uint32_t addr;
++} __attribute__((packed));
++
++static uint64_t santoni_adma_reads, santoni_adma_bytes, santoni_adma_ns;
++static uint32_t santoni_adma_fails;
++static bool santoni_adma_fail_logged;
++
++static int
++sdhci_read_adma(uint8_t index, uint32_t arg, uint32_t count, uint64_t pa)
++{
++	volatile struct santoni_adma2_desc *d =
++	    (volatile struct santoni_adma2_desc *)se.adma;
++	uint32_t bytes = count * SDHCI_BLOCK;
++	uint32_t n = 0, off = 0;
++	uint16_t tr_mode;
++	uint8_t ctrl;
++	uint32_t r1 = 0;
++	uint64_t start, deadline, ns;
++	int error;
++
++	if (!se.adma_on || count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK ||
++	    pa + bytes > 0x100000000ull) {
++		return EINVAL;
++	}
++	if (index == 18 && count == 1) {
++		index = 17;
++	} else if (index == 17 && count > 1) {
++		index = 18;
++	}
++	error = sdhci_prepare_pio();
++	if (error) {
++		return error;
++	}
++
++	while (off < bytes) {
++		uint32_t chunk = MIN(bytes - off, ADMA_CHUNK);
++
++		d[n].attr = (uint16_t)(ADMA_ATTR_VALID | ADMA_ATTR_TRAN |
++		    ((off + chunk == bytes) ? ADMA_ATTR_END : 0));
++		d[n].len = (uint16_t)chunk;
++		d[n].addr = (uint32_t)(pa + off);
++		n++;
++		off += chunk;
++	}
++	/* Descriptors and the destination must be in memory, not in the cache. */
++	flush_dcache64((addr64_t)se.adma_pa, n * sizeof(*d), TRUE);
++	flush_dcache64((addr64_t)pa, bytes, TRUE);
++	__asm__ volatile ("dsb sy" ::: "memory");
++
++	hc_wr(SDHCI_ADMA_SYS_ADDR, (uint32_t)se.adma_pa);
++	hc_wr(SDHCI_ADMA_SYS_ADDR_HI, (uint32_t)(se.adma_pa >> 32));
++	ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	hc_wr8(SDHCI_HOST_CONTROL,
++	    (uint8_t)((ctrl & ~SDHCI_CTRL_DMA_MASK) | SDHCI_CTRL_ADMA2_32));
++	sdhci_set_block(count);
++
++	tr_mode = (uint16_t)(SDHCI_TRNS_DMA | SDHCI_TRNS_READ |
++	    SDHCI_TRNS_BLK_CNT_EN);
++	if (index == 18) {
++		tr_mode |= SDHCI_TRNS_MULTI | SDHCI_TRNS_AUTO_CMD12;
++	}
++	santoni_data_moved = false;
++	santoni_sdma_active = false;
++	start = mach_absolute_time();
++	error = sdhci_cmd(index, arg, tr_mode,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
++	    SDHCI_CMD_DATA, &r1);
++	if (!error) {
++		nanoseconds_to_deadline(DATA_TIMEOUT_NS +
++		    (uint64_t)count * 20ull * NSEC_PER_MSEC, &deadline);
++		for (;;) {
++			uint32_t st = hc_rd(SDHCI_INT_STATUS);
++
++			if (st & SDHCI_INT_ERRORS) {
++				sdhci_data_failure("ADMA2 block", st);
++				hc_wr(SDHCI_INT_STATUS, st);
++				error = EIO;
++				break;
++			}
++			if (st & SDHCI_INT_TC) {
++				hc_wr(SDHCI_INT_STATUS, SDHCI_INT_TC);
++				break;
++			}
++			if (mach_absolute_time() >= deadline) {
++				sdhci_data_failure("ADMA2 block", st);
++				error = ETIMEDOUT;
++				break;
++			}
++		}
++	}
++	/* Back to the PIO selection so every other path sees HOST_CONTROL as before. */
++	hc_wr8(SDHCI_HOST_CONTROL, (uint8_t)(ctrl & ~SDHCI_CTRL_DMA_MASK));
++	if (error) {
++		printf("WHYRED SDHCI: ADMA2 read of %u blocks failed (%d): "
++		    "ADMA_ERR 0x%08x, ADMA_ADDR 0x%08x%08x, INT_STATUS 0x%08x\n",
++		    count, error, hc_rd(0x54), hc_rd(0x5c), hc_rd(0x58),
++		    hc_rd(SDHCI_INT_STATUS));
++		sdhci_recover(index == 18);
++		return error;
++	}
++	flush_dcache64((addr64_t)pa, bytes, TRUE);
++	ns = mach_absolute_time() - start;
++	absolutetime_to_nanoseconds(ns, &ns);
++	santoni_adma_reads++;
++	santoni_adma_bytes += bytes;
++	santoni_adma_ns += ns ? ns : 1;
++	if (santoni_adma_reads <= 3 || (santoni_adma_reads % 2048) == 0) {
++		printf("WHYRED SDHCI: ADMA2 read #%llu: %u blocks in %llu us; "
++		    "total %llu KiB in %llu ms = %llu KiB/s\n",
++		    (unsigned long long)santoni_adma_reads, count,
++		    (unsigned long long)(ns / 1000),
++		    (unsigned long long)(santoni_adma_bytes >> 10),
++		    (unsigned long long)(santoni_adma_ns / 1000000),
++		    (unsigned long long)((santoni_adma_bytes >> 10) *
++		    1000000000ull / santoni_adma_ns));
++	}
++	return 0;
++}
++
++/*
++ * 0210 safety net: before the filesystem trusts ADMA2, read the same 128 KiB
++ * both ways at two places of the root partition and compare. Anything but a
++ * byte-identical result switches the path off for good. Caller holds the lock.
++ */
++#define ADMA_TEST_BLOCKS        256u
++#define ADMA_TEST_DMA_OFF       0x80000u
++
++static void
++sdhci_adma_selftest(void)
++{
++	char *pio_buf = (char *)(se.dma + DMA_BOUNCE);
++	char *dma_buf = pio_buf + ADMA_TEST_DMA_OFF;
++	uint64_t dma_pa = se.dma_pa + DMA_BOUNCE + ADMA_TEST_DMA_OFF;
++	uint32_t bytes = ADMA_TEST_BLOCKS * SDHCI_BLOCK;
++	uint64_t lbas[2] = { se.first_block, se.first_block + 100000 };
++
++	for (int i = 0; i < 2; i++) {
++		int perr, derr;
++		bool same;
++
++		if (lbas[i] + ADMA_TEST_BLOCKS > se.first_block + se.nblocks) {
++			continue;
++		}
++		memset(dma_buf, 0x5a, bytes);
++		perr = sdhci_read_pio_once(18, (uint32_t)lbas[i],
++		    ADMA_TEST_BLOCKS, pio_buf);
++		derr = sdhci_read_adma(18, (uint32_t)lbas[i], ADMA_TEST_BLOCKS,
++		    dma_pa);
++		same = !perr && !derr && memcmp(pio_buf, dma_buf, bytes) == 0;
++		printf("WHYRED SDHCI: ADMA2 self-test at LBA 0x%llx: PIO %d, "
++		    "ADMA2 %d, data %s\n", (unsigned long long)lbas[i], perr,
++		    derr, same ? "IDENTICAL" : "DIFFERENT");
++		if (!same) {
++			se.adma_on = false;
++			printf("WHYRED SDHCI: ADMA2 read path left OFF "
++			    "(self-test failed)\n");
++			return;
++		}
++	}
++	printf("WHYRED SDHCI: ADMA2 read path ON\n");
++}
++
+ /*
+  * Read count 512-byte blocks: PIO first (no cache or address setup), then
+  * the same transfer through SDMA if the controller never raises the buffer
+@@ -1176,6 +1487,23 @@ sdhci_read_pio(uint8_t index, uint32_t arg, uint32_t count, void *buf)
+ 	uint64_t pa;
+ 	int error;
+ 
++	if (se.adma_on && buf == (void *)(se.dma + DMA_BOUNCE)) {
++		error = sdhci_read_adma(index, arg, count, se.dma_pa + DMA_BOUNCE);
++		if (!error) {
++			santoni_adma_fails = 0;
++			return 0;
++		}
++		if (!santoni_adma_fail_logged) {
++			santoni_adma_fail_logged = true;
++			printf("WHYRED SDHCI: %s: ADMA2 failed (%d), falling back "
++			    "to PIO\n", tag, error);
++		}
++		if (++santoni_adma_fails >= ADMA_FAIL_LIMIT) {
++			se.adma_on = false;
++			printf("WHYRED SDHCI: ADMA2 read path switched off after %u "
++			    "failures\n", santoni_adma_fails);
++		}
++	}
+ 	error = sdhci_read_pio_once(index, arg, count, buf);
+ 	if (!error || buf != (void *)(se.dma + DMA_BOUNCE)) {
+ 		return error;
+@@ -1284,6 +1612,11 @@ sdhci_probe_attempt(uint16_t tr_mode, uint32_t *tm_rb, uint32_t *ps_out,
+ 	if (tr_mode & SDHCI_TRNS_DMA) {
+ 		santoni_sdma_active = true;
+ 		santoni_sdma_start = (uint32_t)(se.dma_pa + DMA_BOUNCE);
++	} else {
++		error = sdhci_prepare_pio();
++		if (error) {
++			return error;
++		}
+ 	}
+ 	sdhci_set_block(1);
+ 	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
+@@ -1303,7 +1636,7 @@ sdhci_probe_attempt(uint16_t tr_mode, uint32_t *tm_rb, uint32_t *ps_out,
+ 	for (;;) {
+ 		st = hc_rd(SDHCI_INT_STATUS);
+ 		ps = hc_rd(SDHCI_PRESENT_STATE);
+-		if (st & (SDHCI_INT_ERR | SDHCI_INT_BRR | SDHCI_INT_TC) ||
++		if (st & (SDHCI_INT_ERRORS | SDHCI_INT_BRR | SDHCI_INT_TC) ||
+ 		    (ps & SDHCI_PSTATE_BUF_RD_READY)) {
+ 			break;
+ 		}
+@@ -1314,7 +1647,7 @@ sdhci_probe_attempt(uint16_t tr_mode, uint32_t *tm_rb, uint32_t *ps_out,
+ 	}
+ 	hc_wr(SDHCI_INT_STATUS, st);
+ 
+-	if (st & SDHCI_INT_ERR) {
++	if (st & SDHCI_INT_ERRORS) {
+ 		*ps_out = ps;
+ 		return EIO;
+ 	}
+@@ -1327,11 +1660,21 @@ sdhci_probe_attempt(uint16_t tr_mode, uint32_t *tm_rb, uint32_t *ps_out,
+ 	 * accept the same two weak signals the real path does: a FIFO level
+ 	 * instead of BRR, and an idle engine instead of TC.
+ 	 */
+-	if ((st & SDHCI_INT_BRR) || (ps & SDHCI_PSTATE_BUF_RD_READY)) {
++	if (!santoni_sdma_active) {
+ 		uint32_t zero = 0;
+ 
+ 		for (i = 0; i < SDHCI_BLOCK / 4; i++) {
+-			uint32_t v = hc_rd(SDHCI_BUFFER);
++			uint32_t v;
++
++			error = sdhci_wait_data_until(SDHCI_INT_BRR, "CMD8 probe", deadline);
++			if (error) {
++				*ps_out = hc_rd(SDHCI_PRESENT_STATE);
++				sdhci_recover(false);
++				(void)sdhci_drain_read_fifo();
++				return error;
++			}
++			v = hc_rd(SDHCI_BUFFER);
++			santoni_data_moved = true;
+ 
+ 			((uint32_t *)(void *)(se.dma + DMA_BOUNCE))[i] = v;
+ 			if (v == 0) {
+@@ -1356,7 +1699,7 @@ sdhci_probe_attempt(uint16_t tr_mode, uint32_t *tm_rb, uint32_t *ps_out,
+ 		}
+ 		santoni_data_moved = true;
+ 		*ps_out = hc_rd(SDHCI_PRESENT_STATE);
+-		return 0;
++		return sdhci_wait_transfer_complete("CMD8 probe", true, false);
+ 	}
+ 	if ((st & SDHCI_INT_TC) ||
+ 	    (santoni_data_moved && !(ps & SDHCI_PSTATE_DATA_ACTIVE))) {
+@@ -1459,14 +1802,13 @@ sdhci_data_matrix(uint32_t *width)
+ 		 * 128 zero words. Only a block that names its own revision,
+ 		 * structure and capacity may end the search.
+ 		 */
+-		if (sdhci_ext_csd_sane()) {
++		if (!error && sdhci_ext_csd_sane()) {
+ 			*width = cfg[i].lanes;
+ 			printf("WHYRED SDHCI: data probe: EXT_CSD moved at "
+-			    "%u-bit %s bc=%u pre=%u%s - keeping it\n",
++			    "%u-bit %s bc=%u pre=%u - keeping it\n",
+ 			    (unsigned)cfg[i].lanes, engine,
+ 			    (unsigned)cfg[i].blk_cnt,
+-			    (unsigned)!cfg[i].preset_off,
+-			    error ? " (status error ignored)" : "");
++			    (unsigned)!cfg[i].preset_off);
+ 			return 0;
+ 		}
+ 		if (!error) {
+@@ -1499,6 +1841,44 @@ sdhci_data_matrix(uint32_t *width)
+ 	return last;
+ }
+ 
++/*
++ * The controller's transfer-complete interrupt only proves the FIFO moved the
++ * bytes; the card may still be programming and hold DAT0 low. Sending the next
++ * CMD24/CMD25 into that state times out on this eMMC. Poll DAT0 and require
++ * TRAN + READY_FOR_DATA via CMD13, like sdhci_synchronize_cache().
++ */
++static int
++sdhci_wait_write_ready(void)
++{
++	uint64_t deadline;
++	uint32_t r1 = 0;
++
++	nanoseconds_to_deadline(CACHE_FLUSH_TIMEOUT_NS, &deadline);
++	delay(1000); /* let the card assert busy after Command Complete */
++	for (;;) {
++		uint32_t ps = hc_rd(SDHCI_PRESENT_STATE);
++
++		if (mach_absolute_time() >= deadline)
++			return ETIMEDOUT;
++		if (!(ps & (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) &&
++		    (ps & SDHCI_DATA_0_LVL_MASK)) {
++			int error = sdhci_cmd(13, se.rca << 16, 0,
++			    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC |
++			    SDHCI_CMD_INDEX, &r1);
++			if (error)
++				return error;
++			if (r1 & (SDHCI_R1_SWITCH_ERROR |
++			    SDHCI_R1_ILLEGAL_COMMAND | SDHCI_R1_ERROR))
++				return EIO;
++			if ((r1 & SDHCI_R1_STATE_MASK) ==
++			    (SDHCI_R1_STATE_TRAN << 9) &&
++			    (r1 & SDHCI_R1_READY_FOR_DATA))
++				return 0;
++		}
++		delay(1000);
++	}
++}
++
+ /*
+  * Polled PIO write of count 512-byte blocks. For count == 1, CMD24 is used.
+  * For count > 1, CMD25 is used with AUTO_CMD12.
+@@ -1510,11 +1890,19 @@ sdhci_write_pio(uint32_t lba, uint32_t count, const void *buf)
+ 	const uint32_t *src = (const uint32_t *)buf;
+ 	uint16_t tr_mode;
+ 	uint8_t index = (count == 1) ? 24 : 25;
++	uint32_t words = count * (SDHCI_BLOCK / 4);
++	uint64_t deadline;
+ 	int error;
+ 
+-	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
++	if (buf == NULL || count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
+ 		return EINVAL;
+ 	}
++	santoni_data_moved = false;
++	santoni_sdma_active = false;
++	error = sdhci_prepare_pio();
++	if (error) {
++		return error;
++	}
+ 	sdhci_set_block(count);
+ 
+ 	if (index == 25) {
+@@ -1532,21 +1920,31 @@ sdhci_write_pio(uint32_t lba, uint32_t count, const void *buf)
+ 		return error;
+ 	}
+ 
+-	for (uint32_t b = 0; b < count; b++) {
+-		error = sdhci_wait_data(SDHCI_INT_BWR, tag);
++	deadline = sdhci_pio_deadline(count);
++	for (uint32_t w = 0; w < words; w++) {
++		error = sdhci_wait_data_until(SDHCI_INT_BWR, tag, deadline);
+ 		if (error) {
++			printf("WHYRED SDHCI: %s: partial PIO write %u/%u words (%d)\n",
++			    tag, w, words, error);
+ 			sdhci_recover(index == 25);
+ 			return error;
+ 		}
+-		for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
+-			hc_wr(SDHCI_BUFFER, src[b * (SDHCI_BLOCK / 4) + i]);
+-		}
++		hc_wr(SDHCI_BUFFER, src[w]);
++		se.write_pending = true;
++		santoni_data_moved = true;
+ 	}
+ 	error = sdhci_wait_transfer_complete(tag, true, index == 25);
+ 	if (error) {
+ 		sdhci_recover(index == 25);
+ 		return error;
+ 	}
++	error = sdhci_wait_write_ready();
++	if (error) {
++		printf("WHYRED SDHCI: %s: card not ready after write (%d)\n",
++		    tag, error);
++		sdhci_recover(index == 25);
++		return error;
++	}
+ 	return 0;
+ }
+ 
+@@ -1600,6 +1998,9 @@ sdhci_core_check(void)
+ 	printf("WHYRED SDHCI: SDCC v5 core present (HOST_VERSION 0x%04x)\n", host_version);
+ 	return 0;
+ #else
++	uint32_t mci_version = core_rd(CORE_MCI_VERSION);
++	uint32_t generics = core_rd(CORE_GENERICS);
++
+ 	if (mci_version == 0 || mci_version == 0xffffffffu) {
+ 		printf("WHYRED SDHCI: vendor core does not answer "
+ 		    "(MCI_VERSION 0x%08x, GENERICS 0x%08x): GCC SDC1 clock "
+@@ -2134,7 +2535,7 @@ sdhci_take_over(void)
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("WHYRED SDHCI: driver 0184 (root \"%s\", writes %s; boot "
++	printf("WHYRED SDHCI: driver 0210 (root \"%s\", writes %s; boot "
+ 	    "args decide whether the HFS+ root comes from eMMC)\n",
+ 	    se.part, se.writable ? "enabled" : "read-only");
+ 
+@@ -2685,7 +3086,7 @@ sdhci_switch_ext_csd(uint8_t index, uint8_t value, uint8_t ctrl_set,
+ /*
+  * A PRESENT_STATE fallback can hand back an empty FIFO, and a constant burst
+  * (all 0x00 or all 0xff) still has a non-zero word at the SEC_COUNT offset.
+- * A real EXT_CSD names its own revision (byte 192), CSD structure (193) and a
++ * A real EXT_CSD names its own revision (byte 192), CSD structure (194) and a
+  * plausible capacity, so check all three before a bus width is switched on
+  * the strength of this read.
+  */
+@@ -2695,13 +3096,34 @@ sdhci_ext_csd_sane(void)
+ 	const uint8_t *ext = (const void *)(se.dma + DMA_BOUNCE);
+ 	uint32_t sec_count;
+ 
+-	if (ext[192] == 0 || ext[192] > 8 || ext[193] > 3) {
++	if (ext[EXT_CSD_REV] == 0 || ext[EXT_CSD_REV] > 8 ||
++	    ext[EXT_CSD_STRUCTURE] > 3) {
+ 		return false;
+ 	}
+-	memcpy(&sec_count, (const void *)(ext + 212), 4);
++	memcpy(&sec_count, (const void *)(ext + EXT_CSD_SEC_COUNT), 4);
+ 	return sec_count != 0 && sec_count <= 0x0fffffffu;
+ }
+ 
++static int
++sdhci_record_cache_state(void)
++{
++	const uint8_t *ext = (const void *)(se.dma + DMA_BOUNCE);
++
++	se.cache_valid = false;
++	if (!sdhci_ext_csd_sane()) {
++		return EIO;
++	}
++	se.cache_ctrl = ext[EXT_CSD_CACHE_CTRL];
++	if (se.cache_ctrl & ~1u) {
++		printf("WHYRED SDHCI: invalid EXT_CSD CACHE_CTRL 0x%02x\n", se.cache_ctrl);
++		return EIO;
++	}
++	se.cache_valid = true;
++	printf("WHYRED SDHCI: EXT_CSD CACHE_CTRL 0x%02x (%s)\n",
++	    se.cache_ctrl, se.cache_ctrl ? "enabled" : "disabled");
++	return 0;
++}
++
+ /*
+  * Report a block that came back but is not the EXT_CSD, including its first
+  * words: on this board "the transfer finished" has already meant "128 zero
+@@ -2720,7 +3142,8 @@ sdhci_ext_csd_check(uint32_t lanes, const char *how)
+ 	memcpy(&sec_count, (const void *)(ext + 212), 4);
+ 	printf("WHYRED SDHCI: enumeration: EXT_CSD at %u-bit %s is not real "
+ 	    "(REV %u STRUCTURE %u SEC_COUNT %u, words %08x %08x %08x %08x); "
+-	    "trying the next setup\n", lanes, how, ext[192], ext[193],
++	    "trying the next setup\n", lanes, how,
++	    ext[EXT_CSD_REV], ext[EXT_CSD_STRUCTURE],
+ 	    sec_count, w[0], w[1], w[2], w[3]);
+ 	return false;
+ }
+@@ -2945,12 +3368,11 @@ sdhci_read_ext_csd(uint32_t *width)
+ 			    (void *)(se.dma + DMA_BOUNCE));
+ 		}
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+-		if (sdhci_ext_csd_sane()) {
++		if (!error && sdhci_ext_csd_sane()) {
+ 			*width = lba0_lanes;
+ 			printf("WHYRED SDHCI: enumeration: EXT_CSD read works "
+-			    "at %u-bit (%s%s)\n", lba0_lanes,
+-			    use_sdma ? "SDMA" : "PIO",
+-			    error ? ", status error ignored" : "");
++			    "at %u-bit (%s)\n", lba0_lanes,
++			    use_sdma ? "SDMA" : "PIO");
+ 			return 0;
+ 		}
+ 		printf("WHYRED SDHCI: EXT_CSD verdict: %s at %u-bit failed "
+@@ -3021,17 +3443,11 @@ sdhci_read_ext_csd(uint32_t *width)
+ 		sdhci_ext_csd_clear();
+ 		error = sdhci_read_sdma(8, 0, 1, se.dma_pa + DMA_BOUNCE);
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+-		/*
+-		 * The status path has already declared a timeout after the
+-		 * engine delivered the block on this core (CMD13 and the PIO
+-		 * FIFO both did it). A payload that names the card is worth
+-		 * more than the status bit, so keep it even on an error.
+-		 */
+-		if (sdhci_ext_csd_sane()) {
++		/* A plausible header cannot excuse a CRC/partial-transfer error. */
++		if (!error && sdhci_ext_csd_sane()) {
+ 			*width = lanes;
+ 			printf("WHYRED SDHCI: enumeration: EXT_CSD read works "
+-			    "at %u-bit (SDMA%s)\n", lanes,
+-			    error ? ", status error ignored" : "");
++			    "at %u-bit (SDMA)\n", lanes);
+ 			return 0;
+ 		}
+ 		if (!error) {
+@@ -3050,11 +3466,10 @@ sdhci_read_ext_csd(uint32_t *width)
+ 		error = sdhci_read_pio_once(8, 0, 1,
+ 		    (void *)(se.dma + DMA_BOUNCE));
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+-		if (sdhci_ext_csd_sane()) {
++		if (!error && sdhci_ext_csd_sane()) {
+ 			*width = lanes;
+ 			printf("WHYRED SDHCI: enumeration: EXT_CSD read works "
+-			    "at %u-bit (PIO%s)\n", lanes,
+-			    error ? ", status error ignored" : "");
++			    "at %u-bit (PIO)\n", lanes);
+ 			return 0;
+ 		}
+ 		if (!error) {
+@@ -3096,6 +3511,8 @@ sdhci_enumerate_card(void)
+ 	char pnm[7];
+ 	int error;
+ 
++	se.cache_valid = false;
++
+ 	printf("WHYRED SDHCI: enumeration: CMD2 ALL_SEND_CID (R2)\n");
+ 	error = sdhci_read_response128(2, 0, cid);
+ 	if (error) {
+@@ -3201,6 +3618,11 @@ sdhci_enumerate_card(void)
+ 		return EIO;
+ 	}
+ 	se.sec_count = sec_count;
++	/* This is copied before GPT/root reads reuse the shared bounce buffer. */
++	error = sdhci_record_cache_state();
++	if (error) {
++		return error;
++	}
+ 	printf("WHYRED SDHCI: enumeration: EXT_CSD SEC_COUNT %u "
+ 	    "(%llu MiB)\n", sec_count,
+ 	    (unsigned long long)((uint64_t)sec_count * SDHCI_BLOCK >> 20));
+@@ -3999,6 +4421,82 @@ done:
+ 	buf_biodone(bp);
+ }
+ 
++/* Linux mmc_flush_cache() and Clover's busy/TRAN checks: send the standard
++ * FLUSH_CACHE write, not CACHE_CTRL toggles or a guessed byte-246 timeout.
++ * Keep the existing SDCC v5 no-R1b command spelling. All controller and
++ * bounce-buffer users are serialized by the same mutex as strategy(). */
++static int
++sdhci_synchronize_cache(void)
++{
++	uint64_t deadline;
++	uint32_t r1 = 0;
++	int error = 0;
++
++	lck_mtx_lock(&santoni_sdhci_lock);
++	if (!se.ready) {
++		error = ENXIO;
++		goto out;
++	}
++	if (!se.cache_valid) {
++		error = EIO;
++		goto out;
++	}
++	if (!(se.cache_ctrl & 1u) && !se.write_pending) {
++		goto out; /* Observed write-through, with no writes to retire. */
++	}
++	if (se.cache_ctrl & 1u) {
++		error = sdhci_cmd(6, (EXT_CSD_WRITE_BYTE << 24) |
++		    (EXT_CSD_FLUSH_CACHE << 16) | (1u << 8), 0,
++		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
++		if (error || (r1 & (SDHCI_R1_SWITCH_ERROR |
++		    SDHCI_R1_ILLEGAL_COMMAND | SDHCI_R1_ERROR))) {
++			error = error ? error : EIO;
++			goto out;
++		}
++	}
++	/* A write-through card may still be programming after the FIFO drained.
++	 * The barrier waits for the card, even when there is no cache to flush. */
++	nanoseconds_to_deadline(CACHE_FLUSH_TIMEOUT_NS, &deadline);
++	delay(1000); /* Allow the card to assert busy after Command Complete. */
++	for (;;) {
++		uint32_t ps = hc_rd(SDHCI_PRESENT_STATE);
++
++		if (mach_absolute_time() >= deadline) {
++			error = ETIMEDOUT;
++			break;
++		}
++		/* Do not issue CMD13 while the host or DAT0 still says busy. */
++		if (!(ps & (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) &&
++		    (ps & SDHCI_DATA_0_LVL_MASK)) {
++			error = sdhci_cmd(13, se.rca << 16, 0,
++			    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
++			if (error) {
++				break;
++			}
++			if (r1 & (SDHCI_R1_SWITCH_ERROR |
++			    SDHCI_R1_ILLEGAL_COMMAND | SDHCI_R1_ERROR)) {
++				error = EIO;
++				break;
++			}
++			if ((r1 & SDHCI_R1_STATE_MASK) ==
++			    (SDHCI_R1_STATE_TRAN << 9) && (r1 & SDHCI_R1_READY_FOR_DATA)) {
++				break;
++			}
++		}
++		delay(1000);
++	}
++	if (!error) {
++		se.write_pending = false;
++	}
++out:
++	if (error) {
++		printf("WHYRED SDHCI: synchronize-cache failed (%d), R1 0x%08x\n",
++		    error, r1);
++	}
++	lck_mtx_unlock(&santoni_sdhci_lock);
++	return error;
++}
++
+ static int
+ santoni_sdhci_ioctl(__unused dev_t dev, u_long cmd, caddr_t data,
+     __unused int flag, __unused struct proc *p, int is_char)
+@@ -4040,18 +4538,7 @@ santoni_sdhci_ioctl(__unused dev_t dev, u_long cmd, caddr_t data,
+ 		return 0;
+ 	case DKIOCSYNCHRONIZE:
+ 	case DKIOCSYNCHRONIZECACHE:
+-		/*
+-		 * HFS asks for this barrier before it advances the journal
+-		 * head (write_journal_header). Returning ENOTTY (0x19) made
+-		 * every checkpoint print
+-		 * "jnl: b(2, 0): flushing fs disk buffer returned 0x19".
+-		 *
+-		 * This driver never sets EXT_CSD CACHE_CTRL, so the card's
+-		 * write cache stays disabled and a CMD25 transfer is already
+-		 * in the media when it completes: there is nothing left to
+-		 * flush. A RAM-disk (rd=md0) build answers the same way.
+-		 */
+-		return 0;
++		return sdhci_synchronize_cache();
+ 	default:
+ 		return ENOTTY;
+ 	}
+@@ -4215,6 +4702,182 @@ static const struct cdevsw santoni_sdhci_cdevsw = {
+ 	.d_type       = D_DISK,
+ };
+ 
++/*
++ * 0210: read-only diagnostics for an eventual DMA read path. Nothing here
++ * changes what the driver does for normal I/O. It prints (1) what the host
++ * controller advertises (SDHCI 3.0 CAPABILITIES: SDMA bit 22, ADMA2 bit 19,
++ * 64-bit system bus bit 28 - not 19/22 as ADMA2/64-bit), (2) the PIO read
++ * throughput as the filesystem sees it, and (3) with boot-arg
++ * sweetemmc_dmatest=1, one SDMA read of a few blocks compared byte for byte
++ * with the PIO read of the same blocks. Reads only; the card is never
++ * written.
++ */
++#define SDHCI_CAPABILITIES      0x40
++#define SDHCI_CAPABILITIES1     0x44
++#define SDHCI_ADMA_ERR          0x54
++#define SDHCI_ADMA_ADDR         0x58
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define CORE_VENDOR_SPEC_CAPS0  0x21c
++#else
++#define CORE_VENDOR_SPEC_CAPS0  0x11c
++#endif
++#define SANTONI_DIAG_BIG_BLOCKS 256u            /* 128 KiB */
++#define SANTONI_DIAG_SMALL_BLOCKS 8u            /* 4 KiB, one page */
++#define SANTONI_DIAG_SMALL_COUNT 16u
++#define SANTONI_DIAG_ABORT_NS   (3ull * NSEC_PER_SEC)
++#define SANTONI_DIAG_SDMA_OFF   0x80000u        /* second half of the bounce */
++
++static uint64_t
++sdhci_diag_ns(uint64_t start)
++{
++	uint64_t ns;
++
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++	return ns ? ns : 1;
++}
++
++static void
++sdhci_diag_caps(void)
++{
++	uint32_t caps = hc_rd(SDHCI_CAPABILITIES);
++	uint32_t caps1 = hc_rd(SDHCI_CAPABILITIES1);
++
++	printf("WHYRED SDHCI: dma-diag: HOST_VERSION 0x%04x CAPS 0x%08x "
++	    "CAPS1 0x%08x VENDOR_CAPS0 0x%08x\n", hc_rd16(SDHCI_HOST_VERSION),
++	    caps, caps1, hc_rd(CORE_VENDOR_SPEC_CAPS0));
++	printf("WHYRED SDHCI: dma-diag: SDMA %s, ADMA2 %s, 64-bit bus %s, "
++	    "8-bit %s, HS %s, base clock %u MHz, max block %u; "
++	    "SDR50 %s SDR104 %s DDR50 %s\n",
++	    (caps & (1u << 22)) ? "yes" : "no",
++	    (caps & (1u << 19)) ? "yes" : "no",
++	    (caps & (1u << 28)) ? "yes" : "no",
++	    (caps & (1u << 18)) ? "yes" : "no",
++	    (caps & (1u << 21)) ? "yes" : "no",
++	    (caps >> 8) & 0xff, 512u << ((caps >> 16) & 3),
++	    (caps1 & 1u) ? "yes" : "no", (caps1 & 2u) ? "yes" : "no",
++	    (caps1 & 4u) ? "yes" : "no");
++	printf("WHYRED SDHCI: dma-diag: HOST_CONTROL 0x%02x HOST_CONTROL2 "
++	    "0x%04x CLOCK_CONTROL 0x%04x VENDOR_SPEC 0x%08x DLL_CONFIG "
++	    "0x%08x ADMA_ERR 0x%08x ADMA_ADDR 0x%08x%08x\n",
++	    hc_rd8(SDHCI_HOST_CONTROL), hc_rd16(SDHCI_HOST_CONTROL2),
++	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd(CORE_VENDOR_SPEC),
++	    hc_rd(CORE_DLL_CONFIG), hc_rd(SDHCI_ADMA_ERR),
++	    hc_rd(SDHCI_ADMA_ADDR + 4), hc_rd(SDHCI_ADMA_ADDR));
++	printf("WHYRED SDHCI: dma-diag: card %s, bounce buffer pa 0x%llx "
++	    "(%s 4 GiB), size %u KiB\n",
++	    se.enumerated ? "enumerated" : "NOT enumerated",
++	    (unsigned long long)se.dma_pa,
++	    (se.dma_pa + BOUNCE_SIZE <= 0x100000000ull) ? "below" : "NOT below",
++	    BOUNCE_SIZE >> 10);
++}
++
++static void
++sdhci_diag_pio_speed(void)
++{
++	char *bounce = (char *)(se.dma + DMA_BOUNCE);
++	uint64_t start, big_ns, small_ns;
++	int error;
++
++	santoni_sdhci_bounce_lock();
++	start = mach_absolute_time();
++	error = santoni_sdhci_read_blocks(se.first_block,
++	    SANTONI_DIAG_BIG_BLOCKS, bounce);
++	big_ns = sdhci_diag_ns(start);
++	if (error) {
++		printf("WHYRED SDHCI: dma-diag: PIO 128 KiB read failed (%d)\n",
++		    error);
++		lck_mtx_unlock(&santoni_sdhci_lock);
++		return;
++	}
++	if (big_ns > SANTONI_DIAG_ABORT_NS) {
++		printf("WHYRED SDHCI: dma-diag: 128 KiB took %llu us; skipping "
++		    "the small-read test\n", (unsigned long long)(big_ns / 1000));
++		lck_mtx_unlock(&santoni_sdhci_lock);
++		return;
++	}
++	start = mach_absolute_time();
++	for (uint32_t i = 0; i < SANTONI_DIAG_SMALL_COUNT && !error; i++) {
++		error = santoni_sdhci_read_blocks(se.first_block +
++		    (uint64_t)i * SANTONI_DIAG_SMALL_BLOCKS,
++		    SANTONI_DIAG_SMALL_BLOCKS, bounce);
++	}
++	small_ns = sdhci_diag_ns(start);
++	lck_mtx_unlock(&santoni_sdhci_lock);
++	printf("WHYRED SDHCI: dma-diag: PIO CMD18 128 KiB: %llu us = %llu KiB/s; "
++	    "%u x 4 KiB: %llu us = %llu KiB/s%s\n",
++	    (unsigned long long)(big_ns / 1000),
++	    (unsigned long long)(128ull * 1000000000ull / big_ns),
++	    SANTONI_DIAG_SMALL_COUNT, (unsigned long long)(small_ns / 1000),
++	    (unsigned long long)(4ull * SANTONI_DIAG_SMALL_COUNT *
++	    1000000000ull / small_ns), error ? " (error)" : "");
++}
++
++/* One SDMA read of count blocks vs the PIO read of the same blocks. */
++static void
++sdhci_diag_sdma_compare(uint32_t count)
++{
++	char *pio_buf = (char *)(se.dma + DMA_BOUNCE);
++	char *dma_buf = pio_buf + SANTONI_DIAG_SDMA_OFF;
++	uint64_t dma_pa = se.dma_pa + DMA_BOUNCE + SANTONI_DIAG_SDMA_OFF;
++	uint32_t bytes = count * SDHCI_BLOCK;
++	uint64_t start, pio_ns, dma_ns;
++	int perr, derr;
++
++	santoni_sdhci_bounce_lock();
++	/* SDMA is the DMA select value 0; PIO/SDMA never share a transfer. */
++	hc_wr8(SDHCI_HOST_CONTROL,
++	    (uint8_t)(hc_rd8(SDHCI_HOST_CONTROL) & ~SDHCI_CTRL_DMA_MASK));
++	memset(pio_buf, 0xa5, bytes);
++	memset(dma_buf, 0x5a, bytes);
++	flush_dcache64((addr64_t)se.dma_pa + DMA_BOUNCE, bytes, TRUE);
++	flush_dcache64((addr64_t)dma_pa, bytes, TRUE);
++
++	start = mach_absolute_time();
++	perr = sdhci_read_pio_once(count == 1 ? 17 : 18, (uint32_t)se.first_block,
++	    count, pio_buf);
++	pio_ns = sdhci_diag_ns(start);
++	flush_dcache64((addr64_t)se.dma_pa + DMA_BOUNCE, bytes, TRUE);
++
++	start = mach_absolute_time();
++	derr = sdhci_read_sdma(count == 1 ? 17 : 18, (uint32_t)se.first_block,
++	    count, dma_pa);
++	dma_ns = sdhci_diag_ns(start);
++	flush_dcache64((addr64_t)dma_pa, bytes, TRUE);
++
++	printf("WHYRED SDHCI: dma-diag: SDMA test %u block(s): PIO %d %llu us, "
++	    "SDMA %d %llu us, data %s, INT_STATUS 0x%08x ADMA_ERR 0x%08x "
++	    "SDMA_ADDR 0x%08x\n", count, perr,
++	    (unsigned long long)(pio_ns / 1000), derr,
++	    (unsigned long long)(dma_ns / 1000),
++	    (!perr && !derr) ? (memcmp(pio_buf, dma_buf, bytes) == 0 ?
++	    "IDENTICAL" : "DIFFERENT") : "not compared",
++	    hc_rd(SDHCI_INT_STATUS), hc_rd(SDHCI_ADMA_ERR),
++	    hc_rd(SDHCI_SDMA_ADDR));
++	lck_mtx_unlock(&santoni_sdhci_lock);
++}
++
++static void
++sdhci_dma_diag_tests(void)
++{
++	int speed = 0, test = 0;
++
++	/*
++	 * Both tests hold the controller lock, which the log flusher needs: a
++	 * slow read here silences the log and holds up the USB bring-up behind
++	 * it. They are therefore opt-in; the default boot only prints the
++	 * register report from sdhci_diag_caps().
++	 */
++	if (PE_parse_boot_argn("sweetemmc_speed", &speed, sizeof(speed)) &&
++	    speed) {
++		sdhci_diag_pio_speed();
++	}
++	if (PE_parse_boot_argn("sweetemmc_dmatest", &test, sizeof(test)) &&
++	    test) {
++		sdhci_diag_sdma_compare(1);
++		sdhci_diag_sdma_compare(SANTONI_DIAG_SMALL_BLOCKS);
++	}
++}
++
+ static char santoni_fail_text[192];
+ 
+ static int
+@@ -4275,6 +4938,24 @@ santoni_sdhci_init(void)
+ 		return ENOMEM;
+ 	}
+ 	se.dma_pa = ptoa_64(pn);
++	{
++		int want = 1;           /* default on; sweetemmc_dma=0 turns it off */
++
++		(void)PE_parse_boot_argn("sweetemmc_dma", &want, sizeof(want));
++		if (want &&
++		    kmem_alloc_contig(kernel_map, &se.adma, ADMA_TABLE_BYTES,
++		    PAGE_MASK, 0, 0, KMA_DATA | KMA_ZERO | KMA_PERMANENT,
++		    VM_KERN_MEMORY_IOKIT) == KERN_SUCCESS) {
++			ppnum_t apn = pmap_find_phys(kernel_pmap,
++			    (addr64_t)se.adma);
++
++			se.adma_pa = apn ? ptoa_64(apn) : 0;
++			if (se.adma_pa == 0 ||
++			    se.adma_pa + ADMA_TABLE_BYTES > 0x100000000ull) {
++				se.adma = 0;
++			}
++		}
++	}
+ 	TOUCH_PHASE_MARK(1, 0xff00ffff);	/* cyan: DT/maps/DMA done */
+ 
+ 	lck_mtx_lock(&santoni_sdhci_lock);
+@@ -4290,6 +4971,14 @@ santoni_sdhci_init(void)
+ 		stage = "GPT partition";
+ 		error = santoni_sdhci_find_partition(se.part);
+ 	}
++	/* 0210: the GPT was read with PIO; later reads may use ADMA2. */
++	if (!error && se.adma && (hc_rd(SDHCI_CAPABILITIES) & (1u << 19))) {
++		se.adma_on = true;
++		printf("WHYRED SDHCI: ADMA2 read path armed (descriptors at "
++		    "pa 0x%llx); self-test next\n",
++		    (unsigned long long)se.adma_pa);
++		sdhci_adma_selftest();
++	}
+ 	TOUCH_PHASE_MARK(10, 0xffffffff);	/* white: partition */
+ 	lck_mtx_unlock(&santoni_sdhci_lock);
+ 	if (error) {
+@@ -4341,10 +5030,15 @@ santoni_sdhci_init(void)
+ 	    (unsigned long long)(se.nblocks * SDHCI_BLOCK >> 20),
+ 	    se.writable ? "writable (emmcrw=1)" : "read-only");
+ 
++	/* 0210: register-only report; no transfer can stall the boot here. */
++	sdhci_diag_caps();
++
+ 	/* Private console log area on SYSTEM, if the partition is there. */
+ 	TOUCH_PHASE_MARK(11, 0xffa0a0a0);	/* grey: before log */
+ 	santoni_log_start();
+ 	sweet_keys_init();
++	/* 0210: the timed reads run after the log flusher is up. */
++	sdhci_dma_diag_tests();
+ 	TOUCH_PHASE_MARK(12, 0xff8b4513);	/* brown: ring started */
+ 	/* After the log: the WHYRED FB lines belong in the SYSTEM ring. */
+ 	santoni_fb_test();

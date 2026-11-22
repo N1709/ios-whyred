@@ -1,0 +1,186 @@
+diff --git a/bsd/dev/sweet_keys.c b/bsd/dev/sweet_keys.c
+--- a/bsd/dev/sweet_keys.c
++++ b/bsd/dev/sweet_keys.c
+@@ -248,4 +248,107 @@ sweet_keys_init(void)
+ 		printf("SWEET KEYS: kernel_thread_start failed %d\n", kr);
+ 	}
+ }
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++/*
++ * 0209: PM660 real-time clock, read-only, through the same SPMI arbiter v3.
++ *
++ * DTB: pm660@0 qcom,pm660_rtc ("qcom,qpnp-rtc", qcom,qpnp-rtc-write = <0>)
++ * with rtc_rw@6000: PPID 0x060 (SID 0, peripheral 0x60). Registers (Linux
++ * qpnp-rtc.c / rtc-pm8xxx.c): RTC_CTRL 0x46 (bit 7 RTC_ENABLE), RTC_RDATA0..3
++ * 0x48..0x4b, the 32-bit seconds counter, little endian. The counter keeps
++ * running while the phone is off, but Android never writes it (rtc-write
++ * = 0: time_daemon keeps its own offset), so it is not necessarily Unix
++ * time. The four bytes are read one EXT_READL each; byte 0 is read again
++ * and the whole value re-read if it moved (the Linux rollover check).
++ *
++ * lavender_rtc_gmt() is IOPlatformExpert::getGMTTimeOfDay() on LAVENDER
++ * (clock_initialize_calendar). It returns raw + sweetrtcoff=<seconds> when
++ * the boot-arg is given, else the raw value if it already looks like Unix
++ * time (>= 2020-01-01), else 0 so the calendar falls back to sweetrtc (0209).
++ * The raw value is always logged: the offset can be computed once from a
++ * live log and then passed to every later boot.
++ */
++#define RTC_PPID                0x060u
++#define RTC_CTRL                0x46u
++#define   RTC_ENABLE            (1u << 7)
++#define RTC_RDATA0              0x48u
++#define RTC_PLAUSIBLE_MIN       1577836800u     /* 2020-01-01 00:00:00 UTC */
++
++long lavender_rtc_gmt(void);
++bool lavender_rtc_read(uint32_t *secs, uint8_t *ctrl);
++
++bool
++lavender_rtc_read(uint32_t *secs, uint8_t *ctrl)
++{
++	static vm_offset_t rtc_chan;
++	static bool tried;
++
++	if (!tried) {
++		tried = true;
++		if (keys_core == 0) {
++			keys_core = ml_io_map(KEYS_CORE_PA, KEYS_CORE_SIZE);
++			keys_cnfg = ml_io_map(KEYS_CNFG_PA, 0x1000);
++		}
++		if (keys_core == 0 || keys_cnfg == 0) {
++			return false;
++		}
++		uint32_t version = keys_rd(keys_core, 0);
++		if (version < KEYS_ARB_MIN || version >= KEYS_ARB_END) {
++			printf("SWEET RTC: unsupported arbiter version=%#x\n", version);
++			return false;
++		}
++		rtc_chan = keys_map_chan(keys_find_apid(RTC_PPID, KEYS_MAX_APIDS));
++	}
++	if (rtc_chan == 0) {
++		return false;
++	}
++	if (!keys_read(rtc_chan, RTC_CTRL, ctrl)) {
++		return false;
++	}
++	for (int attempt = 0; attempt < 3; attempt++) {
++		uint8_t b[4], again;
++		for (int i = 0; i < 4; i++) {
++			if (!keys_read(rtc_chan, (uint16_t)(RTC_RDATA0 + i), &b[i])) {
++				return false;
++			}
++		}
++		if (!keys_read(rtc_chan, RTC_RDATA0, &again)) {
++			return false;
++		}
++		if (again == b[0]) {
++			*secs = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
++			return true;
++		}
++	}
++	return false;
++}
++
++long
++lavender_rtc_gmt(void)
++{
++	uint32_t raw = 0;
++	uint8_t ctrl = 0;
++	int off = 0;
++	bool have_off = PE_parse_boot_argn("sweetrtcoff", &off, sizeof(off));
++
++	if (!lavender_rtc_read(&raw, &ctrl)) {
++		printf("SWEET RTC: PM660 RTC not readable; calendar from sweetrtc/0\n");
++		return 0;
++	}
++	if (!(ctrl & RTC_ENABLE)) {
++		printf("SWEET RTC: PM660 RTC disabled (ctrl 0x%02x, raw %u); not used\n", ctrl, raw);
++		return 0;
++	}
++	long gmt = 0;
++	if (have_off) {
++		gmt = (long)raw + off;
++	} else if (raw >= RTC_PLAUSIBLE_MIN) {
++		gmt = (long)raw;
++	}
++	printf("SWEET RTC: PM660 raw %u s (ctrl 0x%02x), sweetrtcoff %s%d -> %ld%s\n", raw, ctrl,
++	    have_off ? "" : "unset ", off, gmt,
++	    gmt ? "" : " (not Unix time: calendar from sweetrtc)");
++	return gmt;
++}
++#endif /* ARM64_BOARD_CONFIG_LAVENDER */
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
+--- a/iokit/Kernel/IOPlatformExpert.cpp
++++ b/iokit/Kernel/IOPlatformExpert.cpp
+@@ -390,10 +390,19 @@ IOPlatformExpert::sleepKernel(void)
+ #endif
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++extern "C" long lavender_rtc_gmt(void);
++#endif
++
+ long
+ IOPlatformExpert::getGMTTimeOfDay(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++	/* 0209: PM660 RTC (bsd/dev/sweet_keys.c); 0 when unusable */
++	return lavender_rtc_gmt();
++#else
+ 	return 0;
++#endif
+ }
+ 
+ void
+diff --git a/iokit/Kernel/IOStartIOKit.cpp b/iokit/Kernel/IOStartIOKit.cpp
+--- a/iokit/Kernel/IOStartIOKit.cpp
++++ b/iokit/Kernel/IOStartIOKit.cpp
+@@ -78,7 +78,9 @@ IOKitInitializeTime( void )
+ 	t.tv_nsec = 0;
+ 
+ // RTC is not present on this target
+-#ifndef BCM2837
++// 0209 WHYRED: no IORTC driver either; this wait cost exactly 30 s on every
++// boot. The calendar reads the PM660 RTC through getGMTTimeOfDay() instead.
++#if !defined(BCM2837) && !defined(ARM64_BOARD_CONFIG_LAVENDER)
+ 	IOService::waitForService(
+ 		IOService::resourceMatching("IORTC"), &t );
+ #endif
+diff --git a/osfmk/kern/clock.c b/osfmk/kern/clock.c
+--- a/osfmk/kern/clock.c
++++ b/osfmk/kern/clock.c
+@@ -85,6 +85,9 @@
+ #include <sys/timex.h>
+ #include <kern/arithmetic_128.h>
+ #include <os/log.h>
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#include <pexpert/pexpert.h>
++#endif
+ 
+ #if HIBERNATION && HAS_CONTINUOUS_HWCLOCK
+ // On ARM64, the hwclock keeps ticking across a normal S2R so we use it to reset the
+@@ -1050,6 +1053,24 @@ clock_initialize_calendar(void)
+ #endif /* ENABLE_LEGACY_CLOCK_CODE */
+ 	//Get the UTC time and corresponding sys time
+ 	PEGetUTCTimeOfDay(&secs, &microsecs);
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++	/*
++	 * 0209: the tree has no RTC driver yet (the PM660 RTC is not read), so
++	 * the platform clock answers 0 and iOS starts at 1970-01-01. The shim
++	 * passes the time it was built with as sweetrtc=<unix seconds>; use it
++	 * as the calendar base so the lock screen clock shows a real date and
++	 * advances with the system time. Only replaces a zero reading: a real
++	 * platform clock, when one exists, still wins.
++	 */
++	if (secs == 0) {
++		uint32_t rtc = 0;
++		if (PE_parse_boot_argn("sweetrtc", &rtc, sizeof(rtc)) && rtc != 0) {
++			secs = (clock_sec_t)rtc;
++			microsecs = 0;
++			printf("SWEET RTC: calendar base %u s (sweetrtc)\n", rtc);
++		}
++	}
++#endif /* ARM64_BOARD_CONFIG_LAVENDER */
+ 	clock_get_system_microtime(&sys, &microsys);
+ 
+ #if ENABLE_LEGACY_CLOCK_CODE

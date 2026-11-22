@@ -449,7 +449,7 @@ AppleCLCD::start(IOService *provider)
 		}
 	}
 #endif
-	uint32_t hz = 10;
+	uint32_t hz = 60;
 	PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
@@ -476,10 +476,18 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 	};
 
 	IOLockLock(fb->fLock);
-	for (unsigned int i = 0; i < fb->fClients->getCount(); i++) {
-		IOMobileFramebufferUserClient *client =
-		    (IOMobileFramebufferUserClient *)fb->fClients->getObject(i);
-		client->notify(SWEET_FB_NOTIFY_VSYNC, values, 6);
+	/*
+	 * 0207: the panel only shows a frame every fFlushTicks ticks
+	 * (sweetfb_hz), but backboardd draws one frame per vsync on the CPU
+	 * (CA::OGL::SW). Notifying every tick made it render 60 frames a
+	 * second of which half were never shown.
+	 */
+	if ((count % fb->fFlushTicks) == 0) {
+		for (unsigned int i = 0; i < fb->fClients->getCount(); i++) {
+			IOMobileFramebufferUserClient *client =
+			    (IOMobileFramebufferUserClient *)fb->fClients->getObject(i);
+			client->notify(SWEET_FB_NOTIFY_VSYNC, values, 6);
+		}
 	}
 	if (fb->fIntf1 != NULL && (count % 300) == 0) {
 		uint32_t frames = fb->fIntf1[(0x800 + 0x0ac) / 4];
@@ -597,13 +605,24 @@ get32(const uint8_t *p, uint32_t off)
 
 static uint32_t sweet_fb_swaps_logged;
 static uint64_t sweet_fb_swap_count;
+/*
+ * 0207: the old log printed only the first 16 presented frames, so "no more
+ * SWEET FB: swap lines" looked like a frozen UI when it only meant "the cap
+ * was reached". Log the first sweetfblog swaps (default 2000) one line each,
+ * then every 256th, and log every change of the layer set, so a stall and an
+ * idle UI are distinguishable in the ring.
+ */
+static uint32_t sweet_fb_swap_log_budget;
+static uint32_t sweet_fb_swap_last_mask;
+static uint32_t sweet_fb_swap_last_ids[4];
+static bool sweet_fb_swap_log_ready;
 
 /* Copy each enabled layer's surface into the panel memory (no scaling). */
 /*
  * A swap only records the frame: copying 10 MB into the panel on every
  * swap (backboardd presents at 60 Hz) took the whole CPU. The vsync timer
  * shows the latest frame every fFlushTicks ticks (boot-arg sweetfb_hz,
- * default 10 Hz).
+ * default 60 Hz).
  */
 void
 AppleCLCD::swap(const uint8_t *rec)
@@ -624,8 +643,30 @@ AppleCLCD::swap(const uint8_t *rec)
 	memcpy(fPendHold, held, sizeof(held));
 	IOLockUnlock(fLock);
 	sweet_hold_set(dropped, false);
-	if ((++sweet_fb_swap_count % 1000) == 0) {
-		IOLog("SWEET FB: %llu swaps\n", sweet_fb_swap_count);
+	if (!sweet_fb_swap_log_ready) {
+		uint32_t logn = 2000;
+		PE_parse_boot_argn("sweetfblog", &logn, sizeof(logn));
+		sweet_fb_swap_log_budget = logn;
+		sweet_fb_swap_log_ready = true;
+	}
+	uint64_t n = ++sweet_fb_swap_count;
+	uint32_t ids[4] = {
+		get32(rec, 0x54), get32(rec, 0x58), get32(rec, 0x5c), get32(rec, 0x60)
+	};
+	bool layersChanged = mask != sweet_fb_swap_last_mask;
+	for (uint32_t i = 0; i < 4; i++) {
+		if (ids[i] != sweet_fb_swap_last_ids[i]) {
+			layersChanged = true;
+		}
+	}
+	if (layersChanged) {
+		IOLog("SWEET FB: layer set mask 0x%x ids %u %u %u %u (swap %llu)\n",
+		    mask, ids[0], ids[1], ids[2], ids[3], n);
+		sweet_fb_swap_last_mask = mask;
+		memcpy(sweet_fb_swap_last_ids, ids, sizeof(ids));
+	}
+	if (n <= sweet_fb_swap_log_budget || (n % 256) == 0) {
+		IOLog("SWEET FB: swap %llu\n", n);
 	}
 }
 
@@ -954,9 +995,43 @@ AppleCLCD::directPresent(const uint8_t *rec)
 	return ok;
 }
 
+/*
+ * 0207: present() time. The panel timer runs at 60 Hz (16667 us), so a
+ * present slower than that budget cannot keep up with the display no matter
+ * what sweetfb_hz says. Log the first sweetfblog presents, every 256th, and
+ * every present over budget so the software renderer and the 10 MB copy can
+ * be told apart before optimizing either.
+ */
+static uint32_t sweet_fb_present_logged;
+static uint32_t sweet_fb_present_budget;
+static bool sweet_fb_present_log_ready;
+
+static void
+sweet_fb_present_log(uint32_t swap, uint64_t start, bool direct)
+{
+	uint64_t us;
+
+	absolutetime_to_microseconds(mach_absolute_time() - start, &us);
+	if (!sweet_fb_present_log_ready) {
+		uint32_t logn = 2000;
+
+		PE_parse_boot_argn("sweetfblog", &logn, sizeof(logn));
+		sweet_fb_present_budget = logn;
+		sweet_fb_present_log_ready = true;
+	}
+	uint32_t n = ++sweet_fb_present_logged;
+	if (n <= sweet_fb_present_budget || (n % 256) == 0 ||
+	    us > SWEET_FB_VSYNC_US) {
+		IOLog("SWEET FB: present %u swap %u %s %llu us%s\n",
+		    n, swap, direct ? "direct" : "copy", us,
+		    us > SWEET_FB_VSYNC_US ? " OVER" : "");
+	}
+}
+
 void
 AppleCLCD::present(const uint8_t *rec)
 {
+	uint64_t start = mach_absolute_time();
 	uint32_t mask = get32(rec, 0x104);
 	static int console_only = -1;
 
@@ -978,6 +1053,7 @@ AppleCLCD::present(const uint8_t *rec)
 				sweet_console_muted = 1;
 			}
 		}
+		sweet_fb_present_log(get32(rec, 0x50), start, true);
 		return;
 	}
 	IOLockLock(fLock);
@@ -1082,6 +1158,7 @@ AppleCLCD::present(const uint8_t *rec)
 	if (fFlip[0] != NULL) {
 		flipBack();
 	}
+	sweet_fb_present_log(get32(rec, 0x50), start, false);
 }
 
 bool
