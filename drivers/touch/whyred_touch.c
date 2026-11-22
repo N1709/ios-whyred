@@ -68,10 +68,12 @@ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
  * PM660 LDO11 (vcc_i2c) powers the DSX and the I2C pull-ups. On whyred the
  * vendor DTS declares it as an RPM-managed regulator (qcom,rpm-smd-regulator
  * in sdm660-regulator.dtsi), so the APPS normally does not own its APID.
- * The toggle below is therefore opt-in (sweetouchpower=1) and refuses to
- * touch an APID whose ownership word does not name APPS (EE0): writing
- * another EE's rail is the kind of access that raises the SError the early
- * panic reports. SDM660 uses PMIC arbiter v3: core 0x0800f000, write
+ * The toggle below is therefore opt-in (sweetouchpower=1), runs only in the
+ * late probe (after the ring is flushed, so a fault leaves a trace), and
+ * refuses to touch an APID whose ownership word does not name APPS (EE0):
+ * even reading another EE's arbiter window is the kind of access that raises
+ * the SError the early panic reports. SDM660 uses PMIC arbiter v3: core
+ * 0x0800f000, write
  * channels 0x08400000, observer 0x09400000, ownership table in cnfg
  * 0x0800a000 at +0x700, per-APID offset 0x8000 for EE0. The command word
  * only carries the low byte of the SPMI address; LDO11 enable is 0x4a46,
@@ -239,6 +241,13 @@ whyred_touch_power_cycle(void)
 	if (!PE_parse_boot_argn("sweetouchpower", &on, sizeof(on)) || !on) {
 		return 0;
 	}
+	/*
+	 * 0220: this runs from the late probe only. The early probe precedes
+	 * santoni_log_start(), so a bus error here used to panic the boot
+	 * with an empty ring; the marker below names the intent even when
+	 * the very first arbiter read faults and the print never returns.
+	 */
+	printf("WHYRED TOUCH: sweetouchpower=1, probing the LDO11 APID\n");
 	core = ml_io_map(TOUCH_SPMI_CORE_PA, 0x1000);
 	cnfg = ml_io_map(TOUCH_SPMI_CNFG_PA, 0x1000);
 	if (!core || !cnfg) {
@@ -1608,7 +1617,7 @@ dsx_bits_present(const uint8_t *bytes, int nbytes, int limit)
 }
 
 /*
- * 0221: the vendor's wakeup-gesture exit. synaptics_rmi4_f12_wg(false)
+ * 0220: the vendor's wakeup-gesture exit. synaptics_rmi4_f12_wg(false)
  * reads the three-byte reporting-control block at ctrl20 and writes it back
  * with the gesture byte set to F12_CONTINUOUS_MODE (0x00). ctrl28 only
  * selects the report type; it does not clear LPWG, so the 2D data block
@@ -2377,10 +2386,11 @@ whyred_touch_early(void)
 	(void)i2c_clear_bus();
 	touch_early_mark(6, 0xff0000ff);	/* blue: bus cleared */
 	/*
-	 * 0220: the rail toggle starts the DSX's addressable window here,
-	 * instead of relying on a power-on window that ended before XNU.
+	 * 0220: no rail toggle here. whyred_touch_early() runs before
+	 * santoni_log_start(), so an SError from the SPMI arbiter panics
+	 * with nothing written to the ring. The opt-in toggle lives in the
+	 * late probe, where a failure at least leaves a log line.
 	 */
-	(void)whyred_touch_power_cycle();
 	dsx_page = -1;
 	dsx_early_marks_on = 1;
 	dsx_reset_probe();
@@ -2564,8 +2574,9 @@ whyred_touch_probe(void)
 			}
 		} else {
 			/*
-			 * 0220: same rail toggle as the early probe, so a
-			 * late-only boot also gets a fresh address window.
+			 * 0220: the rail toggle is late-only, so a late-only
+			 * boot gets a fresh address window after the ring is
+			 * already being written.
 			 */
 			(void)whyred_touch_power_cycle();
 			dsx_reset_probe();

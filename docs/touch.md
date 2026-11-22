@@ -26,14 +26,16 @@
 1. Waits until `sweetouchearly=MS` kernel time (default off, diag images use
    `1000`).
 2. Maps TLMM, sets up SDA/SCL, clears the bus.
-3. With `sweetouchpower=1`, tries to toggle PM660 LDO11 (`vcc_i2c`) through
-   the SPMI arbiter. The DSX only accepts register addresses for ~3 s after
-   its own power-on, so a rail toggle would start a fresh window. On whyred
-   the vendor DTS declares LDO11 as an RPM-managed regulator
-   (`qcom,rpm-smd-regulator`), so the APPS usually does not own its APID;
-   the probe reads the arbiter ownership table first and refuses the toggle
-   (`owner EE<n>, not APPS; not toggling`) instead of writing another EE's
-   rail. The normal image therefore uses the bit-bang path only.
+3. Does **not** touch PM660 LDO11 here. `whyred_touch_early()` runs before
+   `santoni_log_start()`, so an SError from the SPMI arbiter would panic the
+   boot with nothing written to the ring. With `sweetouchpower=1` the rail
+   toggle happens later, in the late probe, where a fault leaves
+   `WHYRED TOUCH:` lines behind. On whyred the vendor DTS declares LDO11 as
+   an RPM-managed regulator (`qcom,rpm-smd-regulator`), so the APPS usually
+   does not own its APID; the late probe reads the arbiter ownership table
+   and refuses the toggle (`owner EE<n>, not APPS; not toggling`) instead of
+   writing another EE's rail. The normal image therefore uses the bit-bang
+   path only.
 4. Bit-bangs I2C at ~50 kHz (byte-identical to the vendor driver, 0188).
 5. Reads the streamed register map in two back-to-back `0x200` windows (the
    cycle is 536 bytes and the pointer position is unknown). This part ignores
@@ -52,8 +54,10 @@
    `F12 data base + data0 present`. `ctrl28` alone only selects the report
    type; a part left in LPWG keeps its 2D block inactive until the gesture
    byte is cleared, which is the state Android hands over on a warm reboot.
-8. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result and runs a
-   `sweetouchtouch` second poll of the F12 2D block.
+8. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result,
+   re-attempts F12 programming if the early pass failed, and runs a
+   `sweetouchtouch` second poll of the F12 2D block. With
+   `sweetouchpower=1` this is also the only place that toggles LDO11.
 
 The F12 query block read on this unit:
 
@@ -71,6 +75,7 @@ The F12 query block read on this unit:
 | `sweetouchreset=1` | drive reset GPIO 66 per the DT (low 20 ms, high 200 ms) |
 | `sweetouchwait=SEC` | hold the panel with the probe output for `SEC` seconds |
 | `sweetouchreboot=1` | reboot to the bootloader when the probe finishes |
+| `sweetouchpower=1` | late probe only: toggle PM660 LDO11 (`vcc_i2c`) through the SPMI arbiter, after refusing an APID another EE owns; off by default, a fault leaves `WHYRED TOUCH:` lines in the ring |
 
 ## Panel band map (diag images)
 

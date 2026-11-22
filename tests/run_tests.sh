@@ -1954,9 +1954,12 @@ src = open('xnu/patches/0220-whyred-touch-power.patch',
 added = [l[1:] for l in src.splitlines()
          if l.startswith('+') and not l.startswith('+++')]
 body = '\n'.join(added)
-# Both probe paths must toggle the rail, and the late probe must not
-# overwrite a working early F12 result with stream bytes.
-assert body.count('(void)whyred_touch_power_cycle();') >= 3
+# The rail toggle now runs only in the late probe: whyred_touch_early() is
+# before santoni_log_start(), so an arbiter SError there panics with an empty
+# ring. Two call sites remain, both after the log is up.
+assert body.count('(void)whyred_touch_power_cycle();') == 2
+assert 'no rail toggle here' in body
+assert 'late probe' in body
 assert '!dsx_f12_programmed && dsx_f12_found' in body
 assert '0x08400000u' in body and '0x09400000u' in body
 assert '0x04au' in body
@@ -1971,6 +1974,12 @@ assert '(v & ~0x07u) | 0x80u' in body
 assert '(owner & 7u) != 0' in body
 assert 'owner EE%u, not APPS' in body
 assert 'ldo11 enable unreadable, not toggling' in body
+# The shipped mirror must not call the toggle from the pre-log probe.
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+early = mirror.split('whyred_touch_early(void)', 1)[1]
+early = early[:early.index('\n}\n')]
+assert 'whyred_touch_power_cycle' not in early
+assert 'sweetouchpower=1, probing the LDO11 APID' in mirror
 PY2
 echo "ok   0220 toggles LDO11, clears F01 sleep and exits F12 LPWG"
 
@@ -2203,7 +2212,8 @@ grep -Fq 'PANEL_NOCONSOLE="$5"' .github/workflows/xnu.yml
 grep -Fq 'NOCONSOLE=1' .github/workflows/xnu.yml
 grep -Fq 'sweetouchi2c=1 sweetouchwait=0' .github/workflows/xnu.yml
 ! grep -Fq 'sweetouchpower=1 sweetouchwait=0 sweeti2c=1' .github/workflows/xnu.yml
-grep -Fq 'sweetouchpower=1' tools/build-touch-diag.sh
+grep -Fq 'sweetouchpower=$power' tools/build-touch-diag.sh
+grep -Fq 'power=${SWEETOUCHPOWER:-0}' tools/build-touch-diag.sh
 ! grep -Fq 'panel_console:' .github/workflows/xnu.yml
 grep -Fq -- '--require sweetfb_noconsole=1' .github/workflows/xnu.yml
 ! grep -Fq -- '--reject sweetfb_noconsole=1' .github/workflows/xnu.yml

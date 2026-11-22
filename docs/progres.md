@@ -63,12 +63,17 @@ new default cmdline forced `sweetouchpower=1` and `sweeti2c=1`; LDO11 is an
 RPM-managed regulator on whyred (`qcom,rpm-smd-regulator`), so the APPS
 does not own its SPMI APID. The direct rail toggle is the prime suspect.
 
-0220 now reads the arbiter ownership table and refuses a non-APPS APID;
-0221 prints `pc/lr/sp/far/esr` on this panic so the next failure names its
-PC. The normal image goes back to the proven bit-bang probe
-(`sweetouchi2c=1 sweetouchwait=0`); `sweetouchpower=1` and `sweeti2c=1`
-are opt-in diagnostics only. The F01 sleep clear and the F12 `ctrl20`
-wakeup-gesture clear stay, so the DSX can still leave LPWG.
+The empty ring was the second clue: 0220 called the toggle from
+`whyred_touch_early()`, which runs before `santoni_log_start()`, so an SError
+there panics before a single line reaches SYSTEM. The ownership check is not
+enough, because the fault can happen on the first arbiter read.
+
+0220 therefore keeps the toggle **late-only**, leaves it off unless
+`sweetouchpower=1`, and `tools/build-touch-diag.sh` now needs
+`SWEETOUCHPOWER=1` to add it. 0221 prints `pc/lr/sp/far/esr` on this panic
+so the next failure names its PC. The normal image keeps the proven bit-bang
+probe (`sweetouchi2c=1 sweetouchwait=0`). The F01 sleep clear and the F12
+`ctrl20` wakeup-gesture clear stay, so the DSX can still leave LPWG.
 
 Next boot: confirm the panic is gone, then read `WHYRED TOUCH: address
 phase`, `f01 ctrl ... -> 0x80`, `f12 ctrl20 <- ... 00`, `f12 ctrl28 <-

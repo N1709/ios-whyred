@@ -193,6 +193,7 @@ IRQ witness on GPIO 67 during the F12 poll.
 | `sweetouchi2c=1` | run the probe: scan `0x08`..`0x77`, then dump the RMI4 identification |
 | `sweeti2c=1` | after the address scan, bring up the BLSP1 QUP1 hardware master and read the DSX through it; the bit-bang remains the fallback if the clocks or the SE do not come up |
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) per the DT: low 20 ms, high 200 ms, then 50 ms settle before the scan |
+| `sweetouchpower=1` | late probe only: toggle PM660 LDO11 (`vcc_i2c`) through the SPMI arbiter after checking that the APID is APPS-owned; off by default because a non-owned arbiter access raises the SError that panicked the pre-log probe |
 | `sweetouchwait=SECONDS` | hold the boot after the scan (default 15 s, 0 = no hold, max 60); the panel is usually muted by then, so prefer the ring |
 | `sweetouchtouch=SECONDS` | poll F12 touch data for that long: top band of the panel is blue while waiting, green on the first change or IRQ edge, and every change goes to the ring (max 60) |
 | (automatic) | before identification, 0189 prints every address framing it knows (`page|a1`, `page+a1`, `page|a2be`, `page|a2le`, `a1`, `a2be`, `a2le`) against `0x00e9`, marks each one `addressed`, `streams` or `failed`, and keeps the first that returns the same six bytes twice with a different entry one slot above (`using frame ...`) |
@@ -241,7 +242,7 @@ above was read.
 | `tools/sweet-crash.py`, `sweet-log.py` | Symbolicate crash reports, read the persistent log |
 | `tools/extract-ts-firmware.py` | Pull the Synaptics DSX image out of any boot image (finds the `const unsigned char[]` in the kernel blob), validate the header, write `out/ts-fw-whyred.img` |
 | `tools/sweet-ts-reflash.sh` | Push that image to the vendor driver over the `doreflash` sysfs (`imagesize` -> `data` -> `doreflash 2` = FORCE) |
-| `tools/build-touch-diag.sh` | Pack the whyred touch-diag image from a CI kernel (muted console, ring on, `sweetouchi2c` + 30 s F12 poll, `rd=emmcroot0`); `SWEETI2C=0` packs the bit-bang-only probe (never maps the QUP window) and `OUT_IMAGE=` picks the output name |
+| `tools/build-touch-diag.sh` | Pack the whyred touch-diag image from a CI kernel (muted console, ring on, `sweetouchi2c` + 30 s F12 poll, `rd=emmcroot0`); `SWEETI2C=0` packs the bit-bang-only probe (never maps the QUP window), `SWEETOUCHPOWER=1` adds the late-probe LDO11 toggle, and `OUT_IMAGE=` picks the output name |
 | `docs/` | Live board, status, touch notes and the per-month engineering log |
 
 Not in git: partition backups, live device trees, Apple firmware and root images, build trees.

@@ -24,6 +24,12 @@
 # the phone back to fastboot. Keep it off while a boot result is still being
 # read from the panel.
 #
+# SWEETOUCHPOWER=1 adds `sweetouchpower=1`, the opt-in PM660 LDO11 rail
+# toggle. It defaults to 0: the toggle goes through the SPMI arbiter, and on
+# whyred LDO11 is an RPM-managed regulator the APPS does not own, so the
+# access can raise an SError. The toggle now runs only in the late probe,
+# after the log ring is up, so a failure leaves `WHYRED TOUCH:` lines behind.
+#
 # DIAG_CONSOLE=1 keeps the kernel text console on the panel instead of muting
 # it, so the probe's own lines can be read on the phone without a recovery
 # round trip. It costs boot time (every line is painted), so it is off by
@@ -35,6 +41,7 @@ qup=${SWEETI2C:-1}
 reset=${SWEETRESET:-1}
 early=${SWEETEARLY:-0}
 reboot=${SWEETREBOOT:-1}
+power=${SWEETOUCHPOWER:-0}
 out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}
 
 arg=${1:?usage: build-touch-diag.sh RUN_ID|KERNEL}
@@ -48,7 +55,7 @@ echo "kernel: $kernel ($(stat -c%s "$kernel") bytes)"
 
 # Same command line as the existing diag image: muted console (the ring has
 # the log), the ring on, and the touch probe with its 30 s F12 poll.
-cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweetouchpower=1 sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=$reboot"
+cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweetouchpower=$power sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=$reboot"
 if [ "$early" != 0 ]; then
 	cmdl="$cmdl sweetouchearly=$early"
 fi
