@@ -27,7 +27,7 @@ patch; the driver source stays as the board's record.
 | --- | --- | --- |
 | `audio/dsp` | ADSP over GLINK/SMEM | same ADSP; no codec path yet |
 | `gpu/adreno` | Adreno 509 clock and chip ID | same a5xx GPU, no firmware/ringbuffer yet |
-| `touch/dsx`, `touch/input`, `touch/hid` | Synaptics DSX transport, probe and HID bridge | same controller; the port's `santoni_touch.c` is ahead on the bus experiments |
+| `touch/dsx`, `touch/input`, `touch/hid` | Synaptics DSX transport, probe and HID bridge | same controller; the port's `whyred_touch.c` is ahead on the bus experiments |
 | `power/pmic` | PM660/PM660L rails and `IOPMPowerSource` | same PMIC |
 | `power/pmgr` | PMGR clock and reset scheduling | same clock tree |
 | `power/cpu` | CPU/GIC/timer override | same SoC |

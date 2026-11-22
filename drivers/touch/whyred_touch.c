@@ -971,7 +971,7 @@ static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
  * input2, then suspends into wakeup-gesture mode at 3.26 s; after that every
  * addressed read returns the same byte stream. XNU probed at the end of
  * santoni_sdhci_init(), i.e. after eMMC enumeration, and always missed it.
- * santoni_touch_early() runs at the top of that init, waits until
+ * whyred_touch_early() runs at the top of that init, waits until
  * sweetouchearly=MS from kernel start and dumps the PDT there. The addresses
  * it finds are cached for the later touch test, which then does not reset the
  * part a second time.
@@ -2003,7 +2003,7 @@ touch_early_mark(int step, uint32_t color)
 }
 
 /*
- * 0201: santoni_touch_early() returns, so the touch side is done, but the
+ * 0201: whyred_touch_early() returns, so the touch side is done, but the
  * ring still only starts after eMMC init. A boot that hangs between the
  * early probe and santoni_log_start() is therefore just as silent as the
  * 0198 one, and the white band alone cannot tell the eMMC phases apart.
@@ -2068,7 +2068,7 @@ touch_end_mark(void)
  * framebuffer exactly as SweetFramebuffer left it.
  */
 void
-santoni_touch_mark(int step, uint32_t color)
+whyred_touch_mark(int step, uint32_t color)
 {
 	if (!dsx_early_ran) {
 		return;
@@ -2083,7 +2083,7 @@ santoni_touch_mark(int step, uint32_t color)
  * the panel band stay in the late probe, where the framebuffer exists.
  */
 int
-santoni_touch_early(void)
+whyred_touch_early(void)
 {
 	vm_offset_t south, north;
 	uint32_t on = 0, at = 0;
@@ -2170,7 +2170,7 @@ santoni_touch_early(void)
 }
 
 int
-santoni_touch_probe(void)
+whyred_touch_probe(void)
 {
 	vm_offset_t south, north;
 	uint32_t on = 0, pulse = 0, wait, halt, qup = 0, reboot = 0;
@@ -2378,7 +2378,7 @@ santoni_touch_probe(void)
 #else /* !ARM64_BOARD_CONFIG_WHYRED */
 
 int
-santoni_touch_probe(void)
+whyred_touch_probe(void)
 {
 	return ENXIO;
 }

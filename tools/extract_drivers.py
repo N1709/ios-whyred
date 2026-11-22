@@ -33,7 +33,7 @@ DRIVERS = {
     ],
     "touch": [
         "bsd/dev/sweet_touch.c",
-        "bsd/dev/santoni_touch.c",
+        "bsd/dev/whyred_touch.c",
         "iokit/Kernel/arm/hid/SweetHID.cpp",
     ],
     "wifi": [
@@ -60,14 +60,36 @@ def patches():
     return found
 
 
+def includes_for(path, series):
+    """Paths to include: the file plus any name it was renamed from.
+
+    A rename patch reads the old path and writes the new one, so filtering
+    only the new path leaves git apply without the source file.
+    """
+    names = [path]
+    changed = True
+    while changed:
+        changed = False
+        for patch in series:
+            src = None
+            for line in patch.read_text(errors="replace").splitlines():
+                if line.startswith("rename from "):
+                    src = line[len("rename from "):].strip()
+                elif line.startswith("rename to ") and src:
+                    dst = line[len("rename to "):].strip()
+                    if dst in names and src not in names:
+                        names.append(src)
+                        changed = True
+    return names
+
+
 def extract(path, work, series):
     """Reconstruct one in-tree file by applying every patch that touches it."""
     work.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "git", "apply",
-        f"--include={path}",
-        "--whitespace=nowarn",
-    ] + [str(p) for p in series]
+    cmd = ["git", "apply"]
+    for name in includes_for(path, series):
+        cmd.append(f"--include={name}")
+    cmd += ["--whitespace=nowarn"] + [str(p) for p in series]
     proc = subprocess.run(cmd, cwd=work, capture_output=True, text=True)
     if proc.returncode != 0:
         print(proc.stderr.strip(), file=sys.stderr)

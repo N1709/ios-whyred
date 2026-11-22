@@ -11,7 +11,7 @@
   `0x03942000` / `0x03943000`), VDDIO PM660 LDO11.
 - **Addresses:** Novatek answers at `0x62` while its bootloader runs and at
   `0x01` once firmware runs; Synaptics answers at `0x20`.
-- **Code:** `santoni_touch.c` (patch 0184) is step 1 only: TLMM GPIO plus
+- **Code:** `whyred_touch.c` (patch 0184, renamed in 0219) is step 1 only: TLMM GPIO plus
   bit-banged I2C at ~50 kHz, a full address scan and a Novatek page-0
   chip-ID read. It does not publish `IOHIDDevice` and does not use the QUP.
 
@@ -53,5 +53,5 @@ the attach/IRQ/report structure.
 Reference: `dsx/`, `input/` and `hid/` (read `../THIRD_PARTY.md` first). They
 target the same Synaptics DSX controller through the BLSP1 QUP1 bus, so use
 them to compare the transport, probe and HID bridge before extending
-`santoni_touch.c`; the port's own source is ahead on the bus and page-select
+`whyred_touch.c`; the port's own source is ahead on the bus and page-select
 experiments.

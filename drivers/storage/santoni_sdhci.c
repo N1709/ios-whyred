@@ -64,17 +64,17 @@ static void santoni_log_start(void);
 static void santoni_fb_test(void);
 extern void sweet_keys_init(void);
 #if defined(ARM64_BOARD_CONFIG_WHYRED)
-extern int santoni_touch_probe(void);
-extern int santoni_touch_early(void);
-extern void santoni_touch_mark(int step, uint32_t color);
+extern int whyred_touch_probe(void);
+extern int whyred_touch_early(void);
+extern void whyred_touch_mark(int step, uint32_t color);
 /*
  * 0201: the eMMC phases after the early touch probe are just as silent as
  * the probe itself, because the ring only starts in santoni_log_start().
  * Paint one band per phase on the boot framebuffer, below the 0199/0200
- * touch bands. santoni_touch_mark() is a no-op unless that probe ran, so a
+ * touch bands. whyred_touch_mark() is a no-op unless that probe ran, so a
  * normal boot does not touch the framebuffer.
  */
-#define TOUCH_PHASE_MARK(step, color)	santoni_touch_mark((step), (color))
+#define TOUCH_PHASE_MARK(step, color)	whyred_touch_mark((step), (color))
 #else
 #define TOUCH_PHASE_MARK(step, color)	do { } while (0)
 #endif
@@ -4934,7 +4934,7 @@ santoni_sdhci_init(void)
 	 * at the very top of BSD init, while the window is still open.
 	 */
 #if defined(ARM64_BOARD_CONFIG_WHYRED)
-	santoni_touch_early();
+	whyred_touch_early();
 #endif
 	TOUCH_PHASE_MARK(0, 0xffff00ff);	/* magenta: early probe returned */
 	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
@@ -5083,7 +5083,7 @@ santoni_sdhci_init(void)
 	santoni_fb_test();
 #if defined(ARM64_BOARD_CONFIG_WHYRED)
 	/* Boot-arg sweetouchi2c=1: does the touch controller answer at all? */
-	santoni_touch_probe();
+	whyred_touch_probe();
 	/* 0211: boot-arg whyredgpu=N, Adreno 512 ladder (off by default) */
 	{
 		extern int whyred_gpu_probe(void);

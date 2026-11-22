@@ -1,0 +1,119 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index dad7b12..a27a0a3 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -111,7 +111,7 @@ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_i2c1.c			standard
+ bsd/dev/sweet_cpufreq.c			standard
+ bsd/dev/santoni_sdhci.c			standard
+-bsd/dev/santoni_touch.c			standard
++bsd/dev/whyred_touch.c			standard
+ bsd/dev/whyred_gpu.c			standard
+ bsd/dev/whyred_audio.c			standard
+ bsd/dev/whyred_wlan.c			standard
+diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
+index 199f572..bec292c 100644
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -64,17 +64,17 @@ static void santoni_log_start(void);
+ static void santoni_fb_test(void);
+ extern void sweet_keys_init(void);
+ #if defined(ARM64_BOARD_CONFIG_WHYRED)
+-extern int santoni_touch_probe(void);
+-extern int santoni_touch_early(void);
+-extern void santoni_touch_mark(int step, uint32_t color);
++extern int whyred_touch_probe(void);
++extern int whyred_touch_early(void);
++extern void whyred_touch_mark(int step, uint32_t color);
+ /*
+  * 0201: the eMMC phases after the early touch probe are just as silent as
+  * the probe itself, because the ring only starts in santoni_log_start().
+  * Paint one band per phase on the boot framebuffer, below the 0199/0200
+- * touch bands. santoni_touch_mark() is a no-op unless that probe ran, so a
++ * touch bands. whyred_touch_mark() is a no-op unless that probe ran, so a
+  * normal boot does not touch the framebuffer.
+  */
+-#define TOUCH_PHASE_MARK(step, color)	santoni_touch_mark((step), (color))
++#define TOUCH_PHASE_MARK(step, color)	whyred_touch_mark((step), (color))
+ #else
+ #define TOUCH_PHASE_MARK(step, color)	do { } while (0)
+ #endif
+@@ -4934,7 +4934,7 @@ santoni_sdhci_init(void)
+ 	 * at the very top of BSD init, while the window is still open.
+ 	 */
+ #if defined(ARM64_BOARD_CONFIG_WHYRED)
+-	santoni_touch_early();
++	whyred_touch_early();
+ #endif
+ 	TOUCH_PHASE_MARK(0, 0xffff00ff);	/* magenta: early probe returned */
+ 	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
+@@ -5083,7 +5083,7 @@ santoni_sdhci_init(void)
+ 	santoni_fb_test();
+ #if defined(ARM64_BOARD_CONFIG_WHYRED)
+ 	/* Boot-arg sweetouchi2c=1: does the touch controller answer at all? */
+-	santoni_touch_probe();
++	whyred_touch_probe();
+ 	/* 0211: boot-arg whyredgpu=N, Adreno 512 ladder (off by default) */
+ 	{
+ 		extern int whyred_gpu_probe(void);
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/whyred_touch.c
+similarity index 99%
+rename from bsd/dev/santoni_touch.c
+rename to bsd/dev/whyred_touch.c
+index 4134675..7b69e87 100644
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -971,7 +971,7 @@ static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
+  * input2, then suspends into wakeup-gesture mode at 3.26 s; after that every
+  * addressed read returns the same byte stream. XNU probed at the end of
+  * santoni_sdhci_init(), i.e. after eMMC enumeration, and always missed it.
+- * santoni_touch_early() runs at the top of that init, waits until
++ * whyred_touch_early() runs at the top of that init, waits until
+  * sweetouchearly=MS from kernel start and dumps the PDT there. The addresses
+  * it finds are cached for the later touch test, which then does not reset the
+  * part a second time.
+@@ -2003,7 +2003,7 @@ touch_early_mark(int step, uint32_t color)
+ }
+ 
+ /*
+- * 0201: santoni_touch_early() returns, so the touch side is done, but the
++ * 0201: whyred_touch_early() returns, so the touch side is done, but the
+  * ring still only starts after eMMC init. A boot that hangs between the
+  * early probe and santoni_log_start() is therefore just as silent as the
+  * 0198 one, and the white band alone cannot tell the eMMC phases apart.
+@@ -2068,7 +2068,7 @@ touch_end_mark(void)
+  * framebuffer exactly as SweetFramebuffer left it.
+  */
+ void
+-santoni_touch_mark(int step, uint32_t color)
++whyred_touch_mark(int step, uint32_t color)
+ {
+ 	if (!dsx_early_ran) {
+ 		return;
+@@ -2083,7 +2083,7 @@ santoni_touch_mark(int step, uint32_t color)
+  * the panel band stay in the late probe, where the framebuffer exists.
+  */
+ int
+-santoni_touch_early(void)
++whyred_touch_early(void)
+ {
+ 	vm_offset_t south, north;
+ 	uint32_t on = 0, at = 0;
+@@ -2170,7 +2170,7 @@ santoni_touch_early(void)
+ }
+ 
+ int
+-santoni_touch_probe(void)
++whyred_touch_probe(void)
+ {
+ 	vm_offset_t south, north;
+ 	uint32_t on = 0, pulse = 0, wait, halt, qup = 0, reboot = 0;
+@@ -2378,7 +2378,7 @@ santoni_touch_probe(void)
+ #else /* !ARM64_BOARD_CONFIG_WHYRED */
+ 
+ int
+-santoni_touch_probe(void)
++whyred_touch_probe(void)
+ {
+ 	return ENXIO;
+ }

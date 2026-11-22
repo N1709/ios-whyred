@@ -176,7 +176,7 @@ after a reset pulse, while `0x20` ACKs on the bit-bang scan every time. Do not
 pivot the touch work to the Novatek protocol and do not pulse GPIO 66 again.
 
 
-Patch `0184` (`bsd/dev/santoni_touch.c`) re-muxes the two bus lines as GPIO
+Patch `0184` (`bsd/dev/whyred_touch.c` since 0219) re-muxes the two bus lines as GPIO
 and bit-bangs I2C, because neither a TLMM GPIO driver nor a QUP I2C master
 exists in this kernel yet. `0186` guessed RMI4 (two-byte register address at
 `0x000e`); `0187` switched to the protocol the vendor driver actually uses

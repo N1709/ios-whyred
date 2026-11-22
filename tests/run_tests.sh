@@ -1911,6 +1911,26 @@ assert 'DSX_HID_MAX_FINGERS' in body
 PY2
 echo "ok   0218 polls F12 and feeds SweetHID at 1080x2160"
 
+echo "== TOUCH: 0219 names the whyred touch driver after the board =="
+P219="xnu/patches/0219-whyred-touch-rename.patch"
+python3 tools/check_patch.py "$P219" -q \
+	--added-contains 'bsd/conf/files:bsd/dev/whyred_touch.c' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:whyred_touch_probe();' \
+	--added-contains 'bsd/dev/whyred_touch.c:whyred_touch_early(void)' \
+	--added-contains 'bsd/dev/whyred_touch.c:whyred_touch_mark(int step' \
+	--added-lacks 'bsd/dev/whyred_touch.c:santoni_touch_'
+python3 - <<'PY2'
+src = open('xnu/patches/0219-whyred-touch-rename.patch',
+           encoding='utf-8').read()
+assert 'rename from bsd/dev/santoni_touch.c' in src
+assert 'rename to bsd/dev/whyred_touch.c' in src
+# Every entry point moved, including the non-whyred stub, and the config
+# file no longer lists the old path.
+assert src.count('whyred_touch_probe(void)') >= 2
+assert 'bsd/dev/santoni_touch.c\t\t\tstandard' in src
+PY2
+echo "ok   0219 renames santoni_touch.c to whyred_touch.c"
+
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
 python3 tools/check_patch.py "$P212" -q \

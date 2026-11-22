@@ -21,7 +21,7 @@
 
 ## What the probe does
 
-`santoni_touch_early()` runs at the top of `santoni_sdhci_init()`:
+`whyred_touch_early()` runs at the top of `santoni_sdhci_init()`:
 
 1. Waits until `sweetouchearly=MS` kernel time (default off, diag images use
    `1000`).
@@ -64,7 +64,7 @@ The F12 query block read on this unit:
 
 The SYSTEM ring only starts after eMMC init, so the early probe cannot be
 read from a log. It paints coloured bands into the framebuffer instead, and
-`santoni_touch_mark()` continues the map for the eMMC phases that follow.
+`whyred_touch_mark()` continues the map for the eMMC phases that follow.
 
 Bands 1–19, top to bottom, starting at row 40 with 70-row step:
 
