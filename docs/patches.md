@@ -54,6 +54,7 @@ the reason it exists. Tests for every row live in `tests/run_tests.sh`.
 | 0213 | Add `whyred_audio.c`: map LPASS Q6/SMMU/codec/pinctrl/AVTIMER/SMEM, vote the ADSP GDSC before the SMMU branch, authenticate the ADSP through PAS and read its firmware from the modem FAT16 `IMAGE/` directory; off unless `whyredaud=N` |
 | 0214 | Add `whyred_wlan.c`: probe WCN3990 through the ANOC2 SMMU (SIDs `0x1a00`/`0x1a01`), read icnss/QUP/TLMM state; read only, off unless `whyredwlan=1` |
 | 0215 | Add `whyred_modem.c`: enable the MSS clocks, program RMB, reset QDSP6, load PBL/MBA from the modem FAT, then authenticate the MDT and its segments through SCM PAS; off unless `whyredmodem=N` |
+| 0216 | Add the `sweetnopb=1` lever: exec of `/Applications/PosterBoard.app/PosterBoard` fails with `EPERM` and logs `SWEET EXEC: refusing PosterBoard`, so one boot can tell whether the lock-screen freeze follows the poster process; off by default |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

@@ -1948,6 +1948,30 @@ for old in ('lavender', 'LAVENDER', 'sweetmodem'):
 PY2
 echo "ok   0215 brings up MSS only with whyredmodem=N and uses the GPT LBA"
 
+echo "== WALLPAPER: 0216 adds the sweetnopb PosterBoard isolation lever =="
+P216="xnu/patches/0216-whyred-sweetnopb.patch"
+python3 tools/check_patch.py "$P216" -q \
+	--added-contains 'bsd/kern/kern_exec.c:PE_parse_boot_argn("sweetnopb", &on, sizeof(on))' \
+	--added-contains 'bsd/kern/kern_exec.c:whyred_refuse_posterboard(uap->fname)' \
+	--added-contains 'bsd/kern/kern_exec.c:/Applications/PosterBoard.app/PosterBoard' \
+	--added-contains 'bsd/kern/kern_exec.c:#if defined(ARM64_BOARD_CONFIG_WHYRED)'
+python3 - <<'PY2'
+src = open('xnu/patches/0216-whyred-sweetnopb.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# Default must be off: without the boot arg the helper returns before copying.
+assert 'if (!enabled) {' in body
+assert 'error = EPERM;' in body
+# One definition plus one call in the exec path.
+assert body.count('whyred_refuse_posterboard(') == 2
+assert 'sweet_refuse_posterboard' not in body
+for old in ('lavender', 'LAVENDER', 'sweet_refuse'):
+    assert old not in body, old
+PY2
+echo "ok   0216 isolates PosterBoard only when sweetnopb=1 is present"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

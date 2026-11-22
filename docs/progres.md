@@ -26,6 +26,7 @@ Last updated: 2026-11-22.
 | Bluetooth | ? |
 | Audio | Added (0213), not booted |
 | Cellular | Added (0215), not booted |
+| Wallpaper / PosterBoard | Lever added (0216), not booted |
 | Charging | ? |
 | iOS userland (launchd → SpringBoard) | No (code signing) |
 
@@ -63,7 +64,7 @@ patches. They are local code only: no CI build and no boot yet.
 | 0209 | PM660 RTC through the same arbiter; skips the 30 s IORTC wait; calendar fallback | `sweetrtc`, `sweetrtcoff` |
 | 0210 | SDCC v5 exact PIO/cache state, post-write DAT0/CMD13 wait, DMA diagnostics, ADMA2 reads with PIO fallback | `sweetemmc_dma=0`, `sweetemmc_speed=1`, `sweetemmc_dmatest=1` |
 
-All 221 patches apply on the whyred series tip; `drivers/` mirrors are
+All 222 patches apply on the whyred series tip; `drivers/` mirrors are
 regenerated. The next boot must confirm the banner `driver 0210`, the
 ADMA2 self-test, `SWEET KEYS:` lines, `SWEET RTC:` raw/offset and the
 `SWEET FB: present ... us` budget.
@@ -86,6 +87,19 @@ GPT for the `modem` entry.
 None of this has run on the phone. The first boot must show the SDHCI
 `"modem" first block` line before the loaders touch eMMC; without it they
 stop and log `no "modem" GPT partition`.
+
+## Wallpaper 0216 (2026-11-22, not booted)
+
+iOS 16's wallpaper path fails in three places on this port: PosterBoard
+traps on the lock-screen prewarm, the gallery has no
+`com.apple.posterkit.provider` extension point, and the home-screen preview
+builds a Metal command queue that does not exist. `0216` is the first
+lever only: `sweetnopb=1` makes the exec of
+`/Applications/PosterBoard.app/PosterBoard` fail with `EPERM` and prints
+`SWEET EXEC: refusing PosterBoard`. If the lock screen stays alive without
+the poster process, the freeze follows PosterBoard; if it still does not
+update, the poster is not the gate. Default off. The CPU preview fallback
+and the extension-point work are userland changes, not in the kernel patch.
 
 ## Latest ring (patch 0205)
 

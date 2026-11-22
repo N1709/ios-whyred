@@ -1,0 +1,75 @@
+From: N1709 <n1709@users.noreply.github.com>
+Subject: [PATCH 0216] whyred: sweetnopb boot arg to keep PosterBoard from running (diagnostic)
+
+The wallpaper path in iOS 16 has three separate failures; this patch is the
+lever for the first one.  SpringBoard prewarms PosterBoard on the lock
+transition and PosterBoard traps in
+-[PBFPosterExtensionDataStore _stateLock_setupSwitcherConfigurationForFirstTime]
+because its switcher configuration is already set when the first-time path
+runs.  The state lives in /var/mobile/Library/PosterBoard on the HFSX root,
+so it survives a shim change.  sweetnopb=1 makes execve() of
+/Applications/PosterBoard.app/PosterBoard fail with EPERM and logs it; that
+isolates the poster from the rest of the lock screen.  Default off.
+
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -4919,6 +4919,45 @@
+  *
+  * TODO:	Dynamic linker header address on stack is copied via suword()
+  */
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++/*
++ * 0216: diagnostic lever for the PosterBoard crash.  SpringBoard prewarms
++ * PosterBoard when the display turns off into the lock screen; PosterBoard
++ * traps in
++ * -[PBFPosterExtensionDataStore _stateLock_setupSwitcherConfigurationForFirstTime]
++ * because its in-memory switcher configuration is already set when the
++ * first-time path runs (ivar _stateLock_switcherConfiguration, offset 0x98,
++ * asserted nil), so launchd restarts it and the poster service never answers.
++ * The state lives in the HFSX data store (/var/mobile/Library/PosterBoard),
++ * not in the root image, and there is no Apple source to fix here.  With
++ * sweetnopb=1 the exec fails with EPERM instead, so one boot can tell whether
++ * the frozen lock screen follows the poster process.  Default off.
++ */
++static int
++whyred_refuse_posterboard(user_addr_t fname)
++{
++	static int enabled = -1;
++	char path[64];
++
++	if (enabled < 0) {
++		int on = 0;
++		(void)PE_parse_boot_argn("sweetnopb", &on, sizeof(on));
++		enabled = on;
++	}
++	if (!enabled) {
++		return 0;
++	}
++	if (copyinstr(fname, path, sizeof(path), NULL) != 0) {
++		return 0;
++	}
++	if (strcmp(path, "/Applications/PosterBoard.app/PosterBoard") != 0) {
++		return 0;
++	}
++	printf("SWEET EXEC: refusing PosterBoard (sweetnopb=1)\n");
++	return 1;
++}
++#endif /* ARM64_BOARD_CONFIG_WHYRED */
++
+ int
+ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval __unused)
+ {
+@@ -4966,6 +5005,13 @@
+ 	imgp->ip_simulator_binary = IMGPF_SB_DEFAULT;
+ 	imgp->ip_subsystem_root_path = NULL;
+ 	uthread_set_exec_data(current_uthread(), imgp);
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++	if (whyred_refuse_posterboard(uap->fname)) {
++		error = EPERM;
++		goto exit_with_error;
++	}
++#endif
++
+ 
+ #if CONFIG_MACF
+ 	if (uap->mac_p != USER_ADDR_NULL) {
