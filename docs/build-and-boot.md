@@ -23,7 +23,7 @@ You need a Redmi Note 5 / Note 5 Pro (`whyred`, SDM636) with an **unlocked bootl
 
 ### 1. Build the kernel
 
-The kernel builds on GitHub's macOS runners (macos-15, lowest Xcode on the image = 15.x; macos-14 was retired on 2026-11-02 and its brownout cancelled every run until the switch) with [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build); newer Xcode's `iig` does not match the xnu-8796 IORPC ABI. Fork the repo and run, on the `whyred` branch:
+The kernel builds on GitHub's `macos-15-intel` runner with the oldest Xcode installed on that image; `macos-14` retired on 2026-11-02, and the plain `macos-15` label now enters the high-demand M1 queue. The build uses [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build). Fork the repo and run, on the `whyred` branch:
 
 ```sh
 gh workflow run xnu.yml -R YOU/ios-whyred --ref whyred
@@ -247,4 +247,3 @@ above was read.
 | `docs/` | Live board, status, touch notes and the per-month engineering log |
 
 Not in git: partition backups, live device trees, Apple firmware and root images, build trees.
-

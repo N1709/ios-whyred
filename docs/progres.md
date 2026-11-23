@@ -81,7 +81,8 @@ SDR (`EOTF=0`), and returns color/timing ID 1 from selector 79 block `0x40`.
 The full host suite passes. It is **not built or booted** yet. First CI run
 `45210593721` stopped before compile because a host assertion referenced the
 intentionally untracked D22AP ADT; its replacement uses a synthetic ADT
-fixture and adds no Apple blob to git.
+fixture and adds no Apple blob to git. Dispatch `45212326756` then queued on
+the high-demand M1 label; the workflow now uses `macos-15-intel`.
 
 Progress estimates: black screen/SpringBoard 78%, touch 70%, status bar 70%,
 GPU 35%, overall 61%.

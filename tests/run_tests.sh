@@ -842,6 +842,8 @@ echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
 # the old driver, half the display link or no P3 mode, so name the whole range.
 grep -q '0219|022\[0-9\]' .github/workflows/xnu.yml
 echo "ok   a skipped 0219..0229 patch fails the build instead of shipping"
+grep -q 'runs-on: macos-15-intel' .github/workflows/xnu.yml
+echo "ok   XNU uses the available macOS 15 Intel queue"
 
 echo "== SWIPE: 0183 proves the digitizer path without touch hardware =="
 P183="xnu/patches/0183-sweet-hid-synthetic-swipe.patch"

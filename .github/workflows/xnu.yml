@@ -61,11 +61,12 @@ env:
 
 jobs:
   build:
-    # macos-14 is being retired (brownout since 2026-10, gone 2026-11-02), so
-    # the build moved to macos-15. The Deps step picks the LOWEST Xcode on the
-    # image, which is still 15.x there: its iig matches the xnu-8796 IORPC ABI
-    # (Xcode 16's iig emits IORPC.kernelContent, which this xnu lacks).
-    runs-on: macos-15
+    # macos-14 retired on 2026-11-02. The plain macos-15 label is now an M1
+    # runner and can sit in the high-demand arm64 queue; macos-15-intel is the
+    # standard x64 image supported through August 2027. Both images carry the
+    # same Xcode set. Deps selects the oldest installed Xcode, as in the last
+    # green builds, to keep iig compatible with xnu-8796.
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
