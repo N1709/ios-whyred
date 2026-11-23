@@ -55,6 +55,34 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | iOS userland | launchd → backboardd → SpringBoard reaches the lock screen (October, v12 root); the last boot (old image) was in a userland boot stage, not a hang; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
 | Touch | DSX at `0x20` streams the PDT; the address phase is still ignored. 0224 re-tests after a real LDO11 toggle; 0225 ties sleep to the panel. Neither is proven on the phone yet |
 
+## CS_KILLED from a bad image cmdline, corrected (2026-11-23)
+
+The first boot of the 2026-11-23 diagnostic series died at initproc with
+`SWEET EARLY PANIC: unexpected SIGKILL of launchd (CS_KILLED)` (the report
+said “launcher”; the kernel prints `p_name`). XNU only panics there for
+initproc (`bsd/kern/kern_sig.c`), and `CS_KILLED` means the kernel killed it
+for code signing.
+
+Cause: the three images had been packed by an ad-hoc script whose cmdline
+omitted `emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1`. The
+last working ring (`5985a74`) carries all three, and
+`docs/history/2026-10.md` records the same panic as `OS_REASON_EXEC` /
+`EXEC_EXIT_REASON_WRONG_PLATFORM` with `unentitled_ios_sim_launch=1` as the
+fix. The kernel binary is unchanged; only the payload cmdline was wrong.
+This is a build-recipe regression, not a 0227/0228 regression.
+
+Corrected images (same kernels, rebuilt payload), all 5,918,720 B:
+
+| Image | sha256 |
+| --- | --- |
+| `images/shim-boot-ring-9dd552a.img` | `1cc7a4df27ed62ddadcad8b6f2687fcb1ee644e94acedc20834e82ea7484126f` |
+| `images/shim-boot-ring-e92f698.img` | `c61d267baffcdd2a22a6963df6f50db28ef748a20811b733e53c6149618de00e` |
+| `images/shim-boot-ring-e92f698-qup.img` | `5fd5a252f4daa626517db7f1ca26739cc25272eae3fa3711de5ae30b4ff5e949` |
+
+The old hashes `474f9a41…`, `b310dcb7…` and `4acef22c…` are invalid and must
+not be booted. `tools/build-ring-image.sh` now encodes the recipe, and
+`tests/run_tests.sh` checks the three flags on its assignment line.
+
 ## Last boot: pre-0225 image, XNU alive (2026-11-23)
 
 The ring pulled on 2026-11-22 22:42 belongs to
@@ -65,8 +93,8 @@ panic), so the reported black screen with a progress bar was not a kernel
 hang and not the new display-power path. `nxprov` is not in that ring; it is
 Skywalk's normal provider registration from a console-image boot.
 
-Next: boot `images/shim-boot-ring-9dd552a.img` (5,918,720 B, sha256
-`474f9a41…`) and run `tools/ring-verdict.sh` on the fresh ring before
+Next: boot the corrected `images/shim-boot-ring-9dd552a.img` (5,918,720 B,
+sha256 `1cc7a4df…`) and run `tools/ring-verdict.sh` on the fresh ring before
 judging the touch or display changes.
 
 ## Panic 0220/0221 (2026-11-22)
@@ -182,12 +210,14 @@ and display-on's existing `fDirty = true` makes the vsync timer repaint the
 latest pending swap.
 
 Build state: CI run `45145911115` (`e92f698`) is green with 0227/0228. Two
-ring images were packed from that kernel: `images/shim-boot-ring-e92f698.img`
-(sha256 `b310dcb7…`, no QUP) and
-`images/shim-boot-ring-e92f698-qup.img` (sha256 `4acef22c…`, `sweeti2c=1`).
-The earlier `images/shim-boot-ring-9dd552a.img` (sha256 `474f9a41…`) stays
-the first boot because it isolates 0225/0226 from the QUP and present-guard
-changes. No image after `5985a74` has been booted.
+ring images were packed from that kernel and later rebuilt with the three
+iOS-root flags: `images/shim-boot-ring-e92f698.img` (sha256 `c61d267b…`, no
+QUP) and `images/shim-boot-ring-e92f698-qup.img` (sha256 `5fd5a252…`,
+`sweeti2c=1`). The corrected `images/shim-boot-ring-9dd552a.img` (sha256
+`1cc7a4df…`, `sweetouchpower=1`) stays the first boot because it isolates
+0224-0226 from the QUP and present-guard changes. The first 2026-11-23
+images died at initproc with `CS_KILLED`; see the top section. No image
+after `5985a74` has completed a boot on the phone.
 
 `shim/build.sh` no longer puts `sweetfb_native=1` on the default command
 line. The default ADT canvas is again 1125x2436, and `SweetFramebuffer`
@@ -299,34 +329,14 @@ touches in the ring are that old code, not the 0222 gate.
 it free of the stale neighbour, and CI fails if any of `0219..0223` is
 skipped. Rebuild pending.
 
-## Next actions (in order)
+## Next actions (0219-era, superseded)
 
-1. Boot `images/shim-boot-ring-9dd552a.img` (sha256 `474f9a41…`) and pull
-   the ring. Run `tools/ring-verdict.sh` first: it must say post-0225, not
-   the old `5985a74` image. Then confirm `address phase still ignored, not
-   programming` and **no** `SWEET HID: touch` phantom lines. Press power
-   after the first frame: the fade must hold and the ring must show the 0225
-   F01 sleep/wake lines.
-2. Boot `images/shim-boot-ring-e92f698.img` (sha256 `b310dcb7…`) for
-   0227/0228. `tools/ring-verdict.sh` must print `off-guard: … presents
-   after it: 0`, and the panel must stay black until display-on.
-3. If the gate holds, boot a diag with `sweetouchpower=1` and read the
-   LDO11 APID owner. Toggle only an APPS-owned APID; otherwise implement the
-   RPM regulator request. Add `sweetouchgcall=1` only as a separate test.
-4. Boot `images/shim-boot-ring-e92f698-qup.img` (sha256 `4acef22c…`,
-   `sweeti2c=1`) and read the QUP `SE version`, `DSX reads over QUP1` and
-   the address test. This is the first boot that can write F12 over QUP and
-   the first that chunks the HID poll; keep it separate from the power test.
-5. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
-   `f12 ctrl20 <- ... 00` and `f12 ctrl28 <- 0x1f ack`, then run the tap
-   test and decode X/Y.
-6. Press power after SpringBoard has presented. The expected ring is
-   `f01 ctrl ... (sleep)`, `display off, HID paused, DSX asleep`, then the
-   reverse (`f01 ctrl ... (normal)`, `display on, HID resumed`) on wake. This
-   proves the 0226 stayon change and the whyred fade.
-7. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
-8. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
-   ring header update fails while the boot is otherwise alive.
+The 2026-11-23 corrected images and the current ordered boot plan are at the
+top of this file and in `STATUS.md`; this older list is kept only for the
+0219 context above. Do not boot the pre-correction hashes. The current plan
+still proves the same points: ring identity, no phantom HID lines, power
+fade/sleep/wake, `presents after display off: 0`, then the QUP write path,
+and SDHCI CMD24 separately.
 
 
 ## Blockers / unknowns

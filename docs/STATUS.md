@@ -1,13 +1,16 @@
 # Current status
 
 Last updated: 2026-11-23. Latest built kernel: `e92f698` (patches through
-`0228`), run `45145911115` green. Diagnostic images:
-`images/shim-boot-ring-9dd552a.img` (5,918,720 B, sha256 `474f9a41…`) is the
-first isolation boot for 0225/0226; `images/shim-boot-ring-e92f698.img`
-(5,918,720 B, sha256 `b310dcb7…`) adds 0227/0228; and
-`images/shim-boot-ring-e92f698-qup.img` (5,918,720 B, sha256 `4acef22c…`)
-adds `sweeti2c=1`. The last pulled ring predates all of them (`5985a74`), so
-0224-0228 are still unproven on the phone.
+`0228`), run `45145911115` green. Corrected diagnostic images (payload
+rebuilt with `emmcrw=1 cs_enforcement_disable=1
+unentitled_ios_sim_launch=1`): `images/shim-boot-ring-9dd552a.img`
+(5,918,720 B, sha256 `1cc7a4df…`) is the first isolation boot for 0224-0226;
+`images/shim-boot-ring-e92f698.img` (5,918,720 B, sha256 `c61d267b…`) adds
+0227/0228; and `images/shim-boot-ring-e92f698-qup.img` (5,918,720 B, sha256
+`5fd5a252…`) adds `sweeti2c=1`. The first 2026-11-23 images died at initproc
+with `CS_KILLED` because their ad-hoc cmdline omitted those three flags;
+hashes `474f9a41…`, `b310dcb7…` and `4acef22c…` are invalid. No ring exists
+for the corrected images, so 0224-0228 are still unproven on the phone.
 
 ## One-paragraph summary
 
@@ -20,9 +23,12 @@ its PDT, but the address phase is still ignored, so the HID poll stays off.
 0224-0227 add a rail re-probe, panel-linked DSX sleep/wake, a bounded
 stayon veto and QUP writes; 0228 drops presents while the panel is off so
 the whyred fade holds. All are committed and built green in run
-`45145911115`, not yet booted. The 2026-11-22 black-screen report came from
-the older `5985a74` image: XNU and SpringBoard were alive (1,060 presents,
-no panic), so it was a userland boot stage, not a 0226 regression.
+`45145911115`, not yet booted. The first 2026-11-23 images failed at initproc
+with `CS_KILLED` because their ad-hoc payload cmdline dropped the three
+iOS-root flags; corrected images now carry them. The 2026-11-22 black-screen
+report came from the older `5985a74` image: XNU and SpringBoard were alive
+(1,060 presents, no panic), so it was a userland boot stage, not a 0226
+regression.
 
 ## Where the boot stands (2026-11-23)
 
@@ -58,15 +64,15 @@ no panic), so it was a userland boot stage, not a 0226 regression.
 2. Read `address phase still ignored, not programming` and confirm there are
    no phantom `SWEET HID: touch` lines. Then press power after the first
    frame and check the fade plus the 0225 sleep/wake lines.
-3. Boot `images/shim-boot-ring-e92f698.img` (sha256 `b310dcb7…`). It adds
+3. Boot `images/shim-boot-ring-e92f698.img` (sha256 `c61d267b…`). It adds
    0227/0228; the ring must show no `present` after `display off` and the
    panel must stay black until display-on repaints.
-4. If the gate holds, boot a diag with `sweetouchpower=1`; toggle only an
-   APPS-owned LDO11 APID, otherwise implement the RPM regulator request.
-   Try `sweetouchgcall=1` as a separate test. Then boot
-   `images/shim-boot-ring-e92f698-qup.img` (sha256 `4acef22c…`,
-   `sweeti2c=1`) and read `DSX reads over QUP1`, the address test and the
-   first QUP-backed F12 write.
+4. `9dd552a` already carries `sweetouchpower=1`, so read the late LDO11
+   result there; if it refuses a non-APPS APID, implement the RPM regulator
+   request instead of a direct toggle. Try `sweetouchgcall=1` as a separate
+   test. Then boot `images/shim-boot-ring-e92f698-qup.img` (sha256
+   `5fd5a252…`, `sweeti2c=1`) and read `DSX reads over QUP1`, the address
+   test and the first QUP-backed F12 write.
 5. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
    `f12 ctrl20 <- ... 00`, `f12 ctrl28 <- 0x1f ack`, then decode X/Y.
 6. Keep `SWEETREBOOT=0` while debugging; investigate the CMD24
@@ -99,10 +105,15 @@ no panic), so it was a userland boot stage, not a 0226 regression.
 
 | Image | Kernel | sha256 | Size |
 | --- | --- | --- | --- |
-| `images/shim-boot-ring-9dd552a.img` | `9dd552a` | `474f9a419dc766f062e94e1585c51072302653dec497789e881b437e866219a9` | 5,918,720 B |
-| `images/shim-boot-ring-9dd552a-native.img` | `9dd552a` | `3bb06e3c9eaf10c15f556b9654e9c3172b5ce58f9a4990828078f6d7d43156b5` | 5,918,720 B |
-| `images/shim-boot-ring-e92f698.img` | `e92f698` | `b310dcb7c44c4c66100430f033b2746b0fda2e4fab4f9f8214db632880b4b28e` | 5,918,720 B |
-| `images/shim-boot-ring-e92f698-qup.img` | `e92f698` | `4acef22c35e0c257a5842c38618b05a2ab1ad88006024b7b3e9145547ce5a15e` | 5,918,720 B |
+| `images/shim-boot-ring-9dd552a.img` | `9dd552a` | `1cc7a4df27ed62ddadcad8b6f2687fcb1ee644e94acedc20834e82ea7484126f` | 5,918,720 B |
+| `images/shim-boot-ring-e92f698.img` | `e92f698` | `c61d267baffcdd2a22a6963df6f50db28ef748a20811b733e53c6149618de00e` | 5,918,720 B |
+| `images/shim-boot-ring-e92f698-qup.img` | `e92f698` | `5fd5a252f4daa626517db7f1ca26739cc25272eae3fa3711de5ae30b4ff5e949` | 5,918,720 B |
 | `shim-boot-ring-5985a74.img` (last pulled ring) | `5985a74` | — | 5,910,528 B |
+
+The images built at 16:31 (`474f9a41…`, `b310dcb7…`, `4acef22c…`) and the
+native-canvas image (`3bb06e3c…`) are invalid: their ad-hoc cmdline omitted
+`emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1`, so launchd
+is killed with `CS_KILLED`. The native canvas is now an opt-in flag on
+`tools/build-ring-image.sh`.
 
 Older artifact hashes are in `docs/history/` and git history.

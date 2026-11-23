@@ -22,7 +22,9 @@ Boot Apple's iOS 16.7.16 (iPhone X userland) on the Xiaomi Redmi Note 5
 (`whyred`, SDM636) with a port of XNU 8796. The kernel is started from RAM
 with `fastboot boot`; nothing is flashed. Display and storage use the kernel's
 own drivers. eMMC, the HFSX root, the framebuffer and the console log all work
-on hardware; launchd starts and is then killed by code signing. The touch
+on hardware. With `emmcrw=1 cs_enforcement_disable=1
+unentitled_ios_sim_launch=1`, launchd reaches backboardd and SpringBoard;
+without them, initproc dies with `CS_KILLED` (wrong platform). The touch
 controller (Synaptics DSX at I2C `0x20`) is probed and its F12 reporting is
 being brought up, but no touch data reaches HID yet.
 

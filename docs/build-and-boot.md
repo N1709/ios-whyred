@@ -243,6 +243,7 @@ above was read.
 | `tools/extract-ts-firmware.py` | Pull the Synaptics DSX image out of any boot image (finds the `const unsigned char[]` in the kernel blob), validate the header, write `out/ts-fw-whyred.img` |
 | `tools/sweet-ts-reflash.sh` | Push that image to the vendor driver over the `doreflash` sysfs (`imagesize` -> `data` -> `doreflash 2` = FORCE) |
 | `tools/build-touch-diag.sh` | Pack the whyred touch-diag image from a CI kernel (muted console, ring on, `sweetouchi2c` + 30 s F12 poll, `rd=emmcroot0`); `SWEETI2C=0` packs the bit-bang-only probe (never maps the QUP window), `SWEETOUCHPOWER=1` adds the late-probe LDO11 toggle, and `OUT_IMAGE=` picks the output name |
+| `tools/build-ring-image.sh` | Pack a log/ring image from a CI kernel with the three iOS-root flags (`emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1`), muted console and `rd=emmcroot0`; `--power` adds the late LDO11 toggle, `--qup` adds `sweeti2c=1`, `--native` opts into the 1080x2160 canvas. It never arms `sweetouchreboot=1`, so a finished probe stays up |
 | `docs/` | Live board, status, touch notes and the per-month engineering log |
 
 Not in git: partition backups, live device trees, Apple firmware and root images, build trees.

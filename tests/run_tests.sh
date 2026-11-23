@@ -2747,4 +2747,20 @@ if grep -Fq 'verdict:' "$OUT/ring-new.log"; then
 fi
 echo "ok   tools/ring-verdict.sh separates pre-0225 from post-0225 rings"
 
+echo "== IMAGES: the ring recipe keeps the iOS-root exec flags =="
+# The 2026-11-23 diagnostic images dropped these three and launchd died with
+# CS_KILLED (EXEC_EXIT_REASON_WRONG_PLATFORM). Check the assignment lines, not
+# the comments, so a rewritten recipe cannot pass on a stale comment.
+grep -Eq '^common=".*emmcrw=1.*cs_enforcement_disable=1.*unentitled_ios_sim_launch=1' \
+	tools/build-ring-image.sh
+grep -Fq 'cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1' \
+	tools/build-touch-diag.sh
+# A ring image must stay up after the probe; the reboot watchdog belongs to the
+# intentional fastboot-returning diag image only.
+if grep -Fq 'sweetouchreboot' tools/build-ring-image.sh; then
+	echo "fail tools/build-ring-image.sh must not arm the reboot watchdog"
+	exit 1
+fi
+echo "ok   build-ring-image.sh and build-touch-diag.sh carry the three flags"
+
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"
