@@ -22,6 +22,14 @@ kernel=${1:?usage: build-ring-image.sh KERNEL OUT [--qup] [--power] [--native]}
 out=${2:?usage: build-ring-image.sh KERNEL OUT [--qup] [--power] [--native]}
 shift 2
 
+# The complete D22AP /product node is a private local build input.  Without
+# it mkadt.py deliberately emits no product node, which makes this P3
+# diagnostic indistinguishable from the already-failed image.
+test -s research/ipsw-x/d22ap.adt || {
+	echo "missing research/ipsw-x/d22ap.adt; refusing a non-P3 ring image" >&2
+	exit 1
+}
+
 qup=0
 power=0
 native=0
@@ -73,8 +81,55 @@ ROOTDEV=emmcroot0 EXTRA_CMDLINE="$common" KPRINTF_SPAM= \
 	KPRINTF_MUTE=1 PANEL_NOCONSOLE=1 \
 	IMAGE_GZ="$gz" bash shim/build.sh "$kernel"
 
+grep -aq 'P3 product / BT.709 RGB SDR' shim/out/Image || {
+	echo "kernel lacks the final 0230 framebuffer mode" >&2
+	exit 1
+}
+
+# Verify the exact ADT that the second pass packed, not just mkadt.py's input.
+NATIVE="$native" python3 - <<'PY'
+import os
+import struct
+import sys
+sys.path.insert(0, 'tools')
+import adt
+
+root, _ = adt.parse(open('shim/out/whyred.adt', 'rb').read())
+nodes = {dict((k, v) for k, _f, v in n.props).get('name'): n
+         for n in root.children}
+product = nodes.get(b'product\0')
+assert product is not None, 'packed ADT has no /product'
+props = {k: v for k, _f, v in product.props}
+assert len(product.props) >= 60, len(product.props)
+assert props.get('artwork-display-gamut') == b'P3\0', props.get('artwork-display-gamut')
+
+arm_io = nodes[b'arm-io\0']
+disp = next(n for n in arm_io.children
+            if dict((k, v) for k, _f, v in n.props).get('name') == b'disp0\0')
+dprops = {k: v for k, _f, v in disp.props}
+expected = (1080, 2160) if os.environ['NATIVE'] == '1' else (1125, 2436)
+actual = (struct.unpack('<I', dprops['canvas-width'])[0],
+          struct.unpack('<I', dprops['canvas-height'])[0])
+assert actual == expected, (actual, expected)
+print('verified packed ADT: complete P3 product, %dx%d canvas' % actual)
+PY
+
 mkdir -p "$(dirname "$out")"
 cp shim/out/shim-boot.img "$out"
-python3 tools/payload_cmdline.py --image "$out" | tail -1
+verify=(--require rd=emmcroot0 --require emmcrw=1 \
+	--require cs_enforcement_disable=1 \
+	--require unentitled_ios_sim_launch=1 \
+	--require launchd_unsecure_cache=1 \
+	--require sweetlog=1 --require sweetfb_noconsole=1)
+if [ "$native" = 1 ]; then
+	verify+=(--require sweetfb_native=1)
+else
+	verify+=(--reject sweetfb_native=1)
+fi
+python3 tools/payload_cmdline.py --image "$out" "${verify[@]}" | tail -1
 sha256sum "$out"
 stat -c '%n %s bytes' "$out"
+test "$(stat -c%s "$out")" -le 6291456 || {
+	echo "image exceeds whyred ABL's 6 MiB download limit" >&2
+	exit 1
+}

@@ -2856,6 +2856,15 @@ if grep -Fq 'sweetouchreboot' tools/build-ring-image.sh; then
 	echo "fail tools/build-ring-image.sh must not arm the reboot watchdog"
 	exit 1
 fi
+grep -Fq 'test -s research/ipsw-x/d22ap.adt' tools/build-ring-image.sh
+grep -Fq "P3 product / BT.709 RGB SDR" tools/build-ring-image.sh
+grep -Fq "artwork-display-gamut') == b'P3\\0'" tools/build-ring-image.sh
+grep -Fq "expected = (1080, 2160) if os.environ['NATIVE'] == '1' else (1125, 2436)" \
+	tools/build-ring-image.sh
+grep -Fq -- '--require cs_enforcement_disable=1' tools/build-ring-image.sh
+grep -Fq -- '--reject sweetfb_native=1' tools/build-ring-image.sh
+grep -Fq '6291456' tools/build-ring-image.sh
+echo "ok   ring packer requires the P3 ADT, final mode, root flags and ABL size"
 echo "ok   build-ring-image.sh and build-touch-diag.sh carry the three flags"
 
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"
