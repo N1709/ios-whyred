@@ -109,9 +109,16 @@ The power button already delivers `key=0` to `SweetHID`; what stopped the
 screen from blanking was the framebuffer's `sweetfb_stayon=1` veto, which
 ignored **every** display-off request. 0226 keeps the veto only until the
 first userspace present (`sweet_fb_present_logged == 0`). After that,
-backboardd's `RequestPowerChange` sets `fPowerOff`, calls
-`whyred_touch_display_power()`, and stops the panel. Display-on reverses the
-sequence before the next frame.
+backboardd's `RequestPowerChange` sets `fPowerOff` and calls
+`whyred_touch_display_power()`.
+
+whyred inherits the LAVENDER board config, so the DSI/MDP block is compiled
+out and `fDsi == NULL`: there is no DCS panel-off command. Instead the vsync
+timer takes the in-place fade path, halves every channel in the boot
+framebuffer six times, writes black and idles; display-on marks the frame
+dirty and the next present composes normally. This software blank has not
+been booted yet; the ring must show the display transition and the panel
+must go dark before it counts.
 
 Expected ring lines:
 

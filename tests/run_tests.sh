@@ -2647,4 +2647,30 @@ grep -Fq 'use: F01 cmd=0x26 ctrl=0x0d data=0x04; F12 query=0x4c ctrl=0x13 data=0
 	"$OUT/dsx-pdt-stream.log"
 echo "ok   tools/dsx-pdt.py names the streamed F01/F12 bases"
 
+# The 2026-11-22 "0226 blanked the panel" report came from a ring whose
+# boot-args belong to the older 5985a74 image. ring-verdict.sh must name that
+# generation and must not attribute it to 0225/0226.
+[ -x tools/ring-verdict.sh ]
+printf '%s\n' \
+	'launchd: boot-args = sweetfb_stayon=1 sweetfb_native=1 sweetfb_noconsole=1' \
+	'SWEET FB: display off ignored (sweetfb_stayon)' \
+	'SWEET FB: present 10 swap 10 copy 1 us' \
+	'exec SpringBoard' > "$OUT/ring-old.txt"
+tools/ring-verdict.sh "$OUT/ring-old.txt" > "$OUT/ring-old.log"
+grep -Fq 'image:     pre-0225' "$OUT/ring-old.log"
+grep -Fq 'verdict:   this ring does not test the 0225/0226 display-power path' "$OUT/ring-old.log"
+printf '%s\n' \
+	'launchd: boot-args = sweetfb_stayon=1 sweetfb_noconsole=1' \
+	'SWEET FB: display off ignored before the first frame (sweetfb_stayon)' \
+	'WHYRED TOUCH: display off, HID paused, DSX asleep' \
+	'SWEET FB: present 10 swap 10 copy 1 us' \
+	'exec SpringBoard' > "$OUT/ring-new.txt"
+tools/ring-verdict.sh "$OUT/ring-new.txt" > "$OUT/ring-new.log"
+grep -Fq 'image:     post-0225' "$OUT/ring-new.log"
+if grep -Fq 'verdict:' "$OUT/ring-new.log"; then
+	echo "fail ring-verdict.sh must not reject a post-0225 ring"
+	exit 1
+fi
+echo "ok   tools/ring-verdict.sh separates pre-0225 from post-0225 rings"
+
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"

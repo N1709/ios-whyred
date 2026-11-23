@@ -4,7 +4,7 @@ Update this file at every milestone, before handing off, and whenever a boot
 result changes the picture. Keep it short: facts and next actions only. The
 long reasoning belongs in `history/`.
 
-Last updated: 2026-11-22.
+Last updated: 2026-11-23.
 
 ## What works
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-22.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | 0222/0223/0225 code exists; the last ring still said `address phase still ignored`, so the HID poll stays off |
+| Touch (as HID input) | 0222/0223/0225 code exists; the last touch ring (pre-0225) said `address phase still ignored`, so the HID poll stays off |
 | Power button / display off | 0226 added (stayon only before the first frame), not booted |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
@@ -52,8 +52,22 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
 | Display | Kernel framebuffer + 4-bar test visible on panel — **works**; 0226 makes the default canvas 1125x2436 (no red clock), not booted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
-| iOS userland | launchd → backboardd → SpringBoard boots to the lock screen — **works**; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
+| iOS userland | launchd → backboardd → SpringBoard reaches the lock screen (October, v12 root); the last boot (old image) was in a userland boot stage, not a hang; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
 | Touch | DSX at `0x20` streams the PDT; the address phase is still ignored. 0224 re-tests after a real LDO11 toggle; 0225 ties sleep to the panel. Neither is proven on the phone yet |
+
+## Last boot: pre-0225 image, XNU alive (2026-11-23)
+
+The ring pulled on 2026-11-22 22:42 belongs to
+`shim-boot-ring-5985a74.img`: its boot-args carry `sweetfb_native=1` and the
+old `display off ignored (sweetfb_stayon)` line, and none of the 0225/0226
+strings. XNU was alive (SpringBoard and backboardd exec, 1,060 presents, no
+panic), so the reported black screen with a progress bar was not a kernel
+hang and not the new display-power path. `nxprov` is not in that ring; it is
+Skywalk's normal provider registration from a console-image boot.
+
+Next: boot `images/shim-boot-ring-9dd552a.img` (5,918,720 B, sha256
+`474f9a41…`) and run `tools/ring-verdict.sh` on the fresh ring before
+judging the touch or display changes.
 
 ## Panic 0220/0221 (2026-11-22)
 
@@ -261,10 +275,10 @@ skipped. Rebuild pending.
 
 ## Next actions (in order)
 
-1. Push the 0224-0226 chain and let CI build `build_mode=quick`. Boot
-   `shim-boot-ring.img` and pull the ring. Confirm
-   `address phase still ignored, not programming` and **no**
-   `SWEET HID: touch` phantom lines.
+1. Boot `images/shim-boot-ring-9dd552a.img` (sha256 `474f9a41…`) and pull
+   the ring. Run `tools/ring-verdict.sh` first: it must say post-0225, not
+   the old `5985a74` image. Then confirm `address phase still ignored, not
+   programming` and **no** `SWEET HID: touch` phantom lines.
 2. If the gate holds, build a diag with `sweetouchpower=1` and read the
    LDO11 APID owner. Toggle only an APPS-owned APID; otherwise implement the
    RPM regulator request. Add `sweetouchgcall=1` only as a separate test.

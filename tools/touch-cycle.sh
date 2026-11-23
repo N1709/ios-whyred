@@ -107,5 +107,8 @@ say "pulling the SYSTEM ring"
 bash "$root/tools/sweet-log-pull.sh" "$ring" >/dev/null || exit 1
 say "ring: $ring ($(wc -c <"$ring") bytes)"
 say ""
+say "--- ring verdict ---"
+sh "$root/tools/ring-verdict.sh" "$ring" || true
+say ""
 say "--- touch / i2c lines ---"
 grep -n "WHYRED I2C\|framing matrix\|WHYRED TOUCH" "$ring" | tail -40
