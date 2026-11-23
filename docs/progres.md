@@ -4,7 +4,7 @@ Update this file at every milestone, before handing off, and whenever a boot
 result changes the picture. Keep it short: facts and next actions only. The
 long reasoning belongs in `history/`.
 
-Last updated: 2026-11-23.
+Last updated: 2026-11-24.
 
 ## What works
 
@@ -50,7 +50,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | CPU / memory | 4× Gold A73, 16K pages, GICv3, timers — **works** |
 | eMMC | SDCC v5, 8-bit high-speed, 122,142,720 sectors, GPT parsed — **works** |
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
-| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. Runtime gamut is still sRGB; 0229 publishes mode arrays and 0230 corrects their RGB wire colorimetry before boot |
+| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. 0229/0230 now build a valid mode contract; new verified image is ready but not booted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | launchd → backboardd → SpringBoard; latest boot crashes before the visible lock screen because the P3 asset facet is paired with an sRGB `FBSDisplayMode` |
 | Touch | DSX at `0x20` streams the PDT; the address phase is still ignored even after the latest ring's successful LDO11 power-cycle. No phantom HID poll starts |
@@ -78,28 +78,34 @@ The fresh recovery pull is `/tmp/opencode/logs/ring-recovery-now.txt`
 Patch `0229-whyred-fb-p3-mode.patch` publishes `TimingElements`/
 `ColorElements` and returns color/timing ID 1 from selector 79 block `0x40`.
 Run `45213483030` built it green, but QuartzCore 16.7's RGB-mode parser rejects
-its initial P3 wire enum 14. Local 0230 changes the mode to accepted BT.709
+its initial P3 wire enum 14. Patch 0230 changes the mode to accepted BT.709
 (`Colorimetry=1`), RGB 8-bit/full range, SDR (`EOTF=0`); `/product` remains
-P3. Neither 0229 nor 0230 has been booted. First CI run
-`45210593721` stopped before compile because a host assertion referenced the
+P3. Run `45219477278` built 0230 green. Neither 0229 nor 0230 has been booted.
+First CI run `45210593721` stopped before compile because a host assertion referenced the
 intentionally untracked D22AP ADT; its replacement uses a synthetic ADT
 fixture and adds no Apple blob to git. Dispatch `45212326756` then queued on
 the high-demand M1 label; the workflow now uses `macos-15-intel`.
 
-Progress estimates: black screen/SpringBoard 78%, touch 70%, status bar 70%,
-GPU 35%, overall 61%.
+The new, not-yet-booted hardware-test image is
+`laptop:/home/n1709/whyred-flash/shim-boot-ring-9abe008-p3.img`, 5,918,720 B,
+sha256 `e92bff82405106cf475075c9a7705de6ac6b2eb4893d07bb911beb00864dff22`.
+Its packed ADT has 63 `/product` properties, P3 and 1125x2436; its payload
+contains the final 0230 string and all required root flags, with no native
+canvas or QUP. It keeps `sweetouchpower=1` to change only the display driver
+relative to the previous P3 boot.
+
+Progress estimates: black screen/SpringBoard 82%, touch 70%, status bar 70%,
+GPU 35%, overall 63%.
 
 ## Current next actions
 
-1. Commit and push 0230; wait for a
-   green WHYRED CI kernel.
-2. Pack a **new** ring image with the existing e92f698 command line, P3 ADT,
-   no `sweetfb_native=1`; report its path, size and sha256.
-3. Boot it once with `fastboot boot`, pull a fresh ring, and require both
+1. When the user is awake and explicitly asks, boot the new 9abe008 image
+   once with `fastboot boot`; do not reuse the old e92f698 P3 image.
+2. Pull a fresh ring and require both
    `SWEET FB: ... P3 product / BT.709 RGB SDR` and
    `FBSDisplayMode ... P3 SDR` before calling
    the black-screen fix successful.
-4. After the lock screen is visible, continue the DSX address-phase work
+3. After the lock screen is visible, continue the DSX address-phase work
    until normal tap/swipe/multi-touch reaches `SweetHIDTouch`; test the QUP
    image separately. Then continue the real Adreno 509 path.
 

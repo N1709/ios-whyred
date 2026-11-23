@@ -1,9 +1,10 @@
 # Current status
 
-Last updated: 2026-11-23. Patch `0229` built green in run `45213483030`
+Last updated: 2026-11-24. Patch `0229` built green in run `45213483030`
 (head `9aa9549`) but is deliberately not booted: QuartzCore 16.7 rejects its
-P3 wire colorimetry 14. Local patch `0230` changes the transport mode to the
-accepted BT.709 value 1 while retaining the D22AP P3 product identity.
+P3 wire colorimetry 14. Patch `0230` changes the transport mode to the
+accepted BT.709 value 1 while retaining the D22AP P3 product identity; run
+`45219477278` built it green.
 Run `45210593721` stopped before compile because its host test referenced the
 intentionally untracked D22AP ADT; the replacement uses a synthetic fixture.
 Dispatch `45212326756` queued on the high-demand M1 label; CI now targets the
@@ -21,8 +22,8 @@ reports P3, but the latest ring proves that the framebuffer runtime mode
 still falls back to sRGB. SpringBoard therefore crashes while loading the P3
 `BoundingPathBitmap-1125x2436-375x812-3.00x`, producing the current black
 screen. Patches 0229/0230 supply valid `ColorElements`/`TimingElements` and
-active IDs while `/product` supplies P3. The same boot proves LDO11 can be power-cycled safely on this
-unit, but the Synaptics DSX still ignores the register address phase; F12 and
+active IDs while `/product` supplies P3. The same boot proves LDO11 can be
+power-cycled safely on this unit, but the Synaptics DSX still ignores the register address phase; F12 and
 the HID poll remain safely disabled. Touch must become normal only after the
 lock screen is visible.
 
@@ -57,15 +58,12 @@ lock screen is visible.
 
 ## Next actions
 
-1. Commit/push 0230; require a green WHYRED
-   CI build with no skipped patch.
-2. Pack a new ring image (same safe iOS-root flags, P3 ADT, no
-   `sweetfb_native=1`) and report exact path, size and sha256.
-3. Boot only that new image with `fastboot boot`; require the ring to show
+1. When explicitly requested, boot only the new 9abe008 image with
+   `fastboot boot`; require the ring to show
    both the driver's `P3 product / BT.709 RGB SDR` line and
    `FBSDisplayMode ... P3 SDR`, then
    confirm SpringBoard no longer throws the BoundingPath exception.
-4. Once the lock screen is visible, resume DSX work: test a separate
+2. Once the lock screen is visible, resume DSX work: test a separate
    general-call/QUP diagnostic, solve the address phase, program F01/F12,
    and verify ordinary tap, swipe and multi-touch through `SweetHIDTouch`
    with no phantom contacts.
@@ -92,8 +90,7 @@ lock screen is visible.
 
 * There is no local XNU build; each kernel change is one CI run
   (~10-15 min). Run `bash tests/run_tests.sh` before committing.
-* Latest green: `9aa9549`, run `45213483030` (through 0229, superseded before
-  boot); 0230 is local only.
+* Latest green: `9abe008`, run `45219477278` (through 0230).
 * Repack a CI kernel with the two-pass `shim/build.sh` recipe in
   `docs/history/2026-11.md`; boot only with `fastboot boot`.
 
@@ -101,11 +98,16 @@ lock screen is visible.
 
 | Image | Kernel | sha256 | Size |
 | --- | --- | --- | --- |
+| `shim-boot-ring-9abe008-p3.img` (**ready, not booted**) | `9abe008` | `e92bff82405106cf475075c9a7705de6ac6b2eb4893d07bb911beb00864dff22` | 5,918,720 B |
 | `shim-boot-ring-e92f698-p3.img` (**already booted**) | `e92f698` | `265e8171d6146353b8b94564815285a585d5264668b2313ee8318b55d57830a8` | 6,176,768 B |
 | `images/shim-boot-ring-9dd552a.img` | `9dd552a` | `1cc7a4df27ed62ddadcad8b6f2687fcb1ee644e94acedc20834e82ea7484126f` | 5,918,720 B |
 | `images/shim-boot-ring-e92f698.img` | `e92f698` | `c61d267baffcdd2a22a6963df6f50db28ef748a20811b733e53c6149618de00e` | 5,918,720 B |
 | `images/shim-boot-ring-e92f698-qup.img` | `e92f698` | `5fd5a252f4daa626517db7f1ca26739cc25272eae3fa3711de5ae30b4ff5e949` | 5,918,720 B |
 | `shim-boot-ring-5985a74.img` (last pulled ring) | `5985a74` | — | 5,910,528 B |
+
+The ready image is on the laptop at
+`/home/n1709/whyred-flash/shim-boot-ring-9abe008-p3.img`; remote
+`sha256sum -c SHA256SUMS.9abe008` passes.
 
 The images built at 16:31 (`474f9a41…`, `b310dcb7…`, `4acef22c…`) and the
 native-canvas image (`3bb06e3c…`) are invalid: their ad-hoc cmdline omitted

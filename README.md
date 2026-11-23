@@ -26,8 +26,9 @@ audio/modem loaders read the GPT `modem` partition instead of a fixed LBA.
 the lock-screen wallpaper. `0217` merges the IOKit GPU service
 (`WhyredGPU`, started by `whyredgpu=30`). The full series (236 patch files,
 through `0230`) applies on the series tip. `0229` built green in run
-`45213483030`; `0230` corrects its RGB wire colorimetry before any hardware
-boot and is awaiting CI. The boot-verification state is in
+`45213483030`; `0230` corrects its RGB wire colorimetry and built green in
+run `45219477278`. Neither was booted before the correction. The
+boot-verification state is in
 [`docs/progres.md`](docs/progres.md).
 
 ## Quick start
