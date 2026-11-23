@@ -65,6 +65,14 @@ echo "image:     $image"
 echo "args:      native=$native noconsole=$noconsole stayon=$stayon touchpower=$touchpower sweeti2c=$qup"
 echo "kernel:    alive=$alive"
 echo "display:   old-veto=$old_veto new-veto=$new_veto sleep=$sleep_line wake=$wake_line nosleep=$nosleep"
+off_line=$(grep -n '^SWEET FB: display off$' "$ring" | tail -1 | cut -d: -f1)
+if [ -n "$off_line" ]; then
+	after=$(awk -v n="$off_line" 'NR > n && /SWEET FB: present / { c++ } END { print c + 0 }' "$ring")
+	echo "off-guard: last display off at line $off_line; presents after it: $after"
+	if [ "$after" -gt 0 ]; then
+		echo "warning:    presents after display off; 0228 is not holding (or this ring predates it)"
+	fi
+fi
 echo "console:   nxprov=$nxprov (normal Skywalk provider registration, not a stall)"
 echo "userland:  datamigrator=$migrator PosterBoard-crash=$poster"
 
