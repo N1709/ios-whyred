@@ -39,12 +39,13 @@ patch like every other driver.
 | Folder | Hardware | Mirrored source | Driver source | State |
 | --- | --- | --- | --- | --- |
 | `storage/` | SDCC v5 eMMC `0x0c0c4000` | `santoni_sdhci.c` | none (kernel built-in) | working (`0142`+) |
-| `display/` | `AppleCLCD` + ABL framebuffer `0x9d400000` | `SweetFramebuffer.cpp`, `SweetSurface.cpp` | none (kernel built-in) | working, console only |
-| `gpu/` | Adreno 509 (`0x05000900`) | none in tree | `gpu/adreno` | not started |
-| `wifi/` | WCN3990 (SNOC) + BT SLIMbus | `TopazModem.cpp` (topaz reference) | none yet | not started |
+| `display/` | `AppleCLCD` + ABL framebuffer `0x9d400000` | `SweetFramebuffer.cpp`, `SweetSurface.cpp` | none (kernel built-in) | scanout works; P3 mode awaiting hardware verification |
+| `gpu/` | Adreno 509 (`0x05000900`) | `whyred_gpu.c`, `WhyredGPU.cpp` | `gpu/adreno` | ladder/service compiled, off by default, not hardware-tested |
+| `wifi/` | WCN3990 (SNOC) + BT SLIMbus | `whyred_wlan.c`, `TopazModem.cpp` | none yet | platform/SMMU probe compiled; no WLAN data path |
+| `modem/` | SDM636 MSS/QDSP6 | `whyred_modem.c` | none yet | firmware/PAS ladder compiled, off by default, not hardware-tested |
 | `touch/` | Synaptics DSX / Novatek NT36672 (I2C) | `whyred_touch.c`, `sweet_touch.c` | `touch/dsx`, `touch/input`, `touch/hid` | probing (`0184`+) |
-| `audio/` | WCD9335 + ADSP | none in tree | `audio/dsp` | not started |
-| `power/` | PM660/PM660L charger and gauge | `WhyredBattery.cpp`, `whyred_power.c` | `power/pmic`, `power/pmgr`, `power/cpu` | renamed, still disabled (`sweetbattery=0`) |
+| `audio/` | WCD9335 + ADSP | `whyred_audio.c` | `audio/dsp` | ADSP loader compiled, off by default; no CoreAudio/codec path |
+| `power/` | PM660/PM660L charger and gauge | `WhyredBattery.cpp`, `whyred_power.c` | `power/pmic`, `power/pmgr`, `power/cpu` | static battery only; real gauge/charger disabled |
 | `key-store/` | board-independent key events | none in tree | `key-store/keystore` | not started |
 
 Hardware facts for the domains with no code yet are in `gpu/hw.md` and

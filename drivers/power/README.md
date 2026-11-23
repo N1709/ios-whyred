@@ -2,10 +2,12 @@
 
 - **Hardware:** PM660/PM660L PMIC pair (charger, fuel gauge, regulators), plus
   PS_HOLD at `0x010ac000` which the shim already uses for reset.
-- **Code:** none. The boot command line sets `sweetbattery=0`, so no charger or
-  gauge driver runs.
-- **Not started:** charger detection, fuel gauge, thermal mitigation, battery
-  reporting to `IOPMrootDomain`.
+- **Code:** `WhyredBattery.cpp` and `whyred_power.c` are compiled mirrors of
+  the inherited battery/power path. The boot command line sets
+  `sweetbattery=0`, so it publishes only the static fallback and does not
+  touch an unverified PM660 gauge or charger.
+- **Missing:** verified PM660 charger/fuel-gauge registers, thermal
+  mitigation and real battery reporting to `IOPMrootDomain`.
 - **Next:** not on the critical path for the lock screen; pick this up after
   SpringBoard, when the device must stay alive on battery.
 

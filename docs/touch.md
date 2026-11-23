@@ -27,10 +27,17 @@ ACK. The subsequent address test still advances through the byte stream,
 including after F01 reset at `0x26` and the fallback reset at `0x06`:
 `address phase still ignored (streaming)`. Therefore F12 programming, its
 poll and the HID thread are correctly skipped; there are no phantom touch
-events. A rail cycle alone is no longer a candidate fix. The next isolated
-diagnostics are the existing general-call reset and QUP framing, followed by
-F01/F12 setup only if `dsx_addressable` becomes true. Recovery stays
-read-only.
+events. The current short rail cycle did not solve addressing. The next
+isolated diagnostics are a fully timed rail cycle, the existing general-call
+reset and QUP framing, followed by F01/F12 setup only if `dsx_addressable`
+becomes true. Recovery stays read-only.
+
+One caveat remains before calling the rail experiment electrically complete:
+the current code waits only 20 ms after disable and 50 ms after enable, and
+does not read `ENABLE_CTL` while off. The vendor DT's power/reset timing is
+200/200/20 ms. A later touch-only diagnostic should read back bit 7 after
+disable, hold the rail off for 200 ms, restore it, wait 200 ms, then run the
+address test. Do not mix that timing change into the P3 display boot.
 
 ## What the probe does
 

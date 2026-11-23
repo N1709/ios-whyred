@@ -1,22 +1,31 @@
 # Roadmap
 
 
-1. **Touch**: the controller answers at Synaptics `0x20` on BLSP1 QUP1 I2C
-   (`0x0c175000`, IRQ GPIO 67, reset GPIO 66, VDDIO PM660 LDO11) and reports
-   F12 again after the bootloader-mode recovery. 0184/0186/0187/0188 prove the
-   bus and identify the chip with bit-banged GPIO; next is a clean read of the
-   F12 data registers from XNU (the 0188 matrix exists to explain the shifting
-   stream), then the QUP I2C master (GCC `BLSP1_AHB` + `QUP1_I2C_APPS`) and
-   PM660 SPMI for LDO11 so the bit-bang can be retired. `sweet_hid_touch()` and
-   `SweetHIDTouch` are already shared with the topaz port and need no change.
-2. **Buttons**: power and volume keys on the PM660/PM660L PON block, volume up on a PMIC GPIO.
-3. **Smoother display**: higher `sweetfb_hz`; check whether the Gold cores run at a low clock without cpufreq (the shim's speed probe) and raise it if so.
-4. **Narrow the GIC fix** to the register that actually matters, then move it into XNU.
-5. **Real-time clock** from the PMIC RTC or passed in by the shim.
-6. **All 8 cores (experiment, later):** build XNU with 4K pages (drop `__ARM_16K_PG__` from `SWEET.h`, as XNU's own `BCM2837` Raspberry Pi 3 config does on Cortex-A53) and describe two clusters, Gold as `P` and Silver as `E`, so the AMP scheduler uses both. Risk: the iOS 16 userland was only ever run on 16K pages (hard-coded 16K in malloc, JIT guard pages, IOSurface, commpage layout), and the 16K assumptions in the shim and sweet's patches have to be checked too. The 16K Gold-only kernel stays as the fallback.
-7. **Silver cores as a coprocessor** (idea): run bare-metal shim code on them for the panel frame copy instead of XNU.
-8. **3/4/6 GB variants:** the ADT uses a fixed safe 1 GiB budget at `0xa0000000`, so the same image works on all whyred RAM variants. A larger budget needs the shim to read the DDR ranges from ABL's `/memory` node.
-9. **Wi-Fi:** bring up the WCN3990 firmware through TrustZone/SMEM/QMI in an XNU driver. Expose it to iOS first as an IONetworkingFamily interface, then emulate the IO80211 interface that `wifid` talks to.
-10. **Speaker:** ADSP/AudioReach through TrustZone, then an XNU audio driver that CoreAudio can output to.
-11. **GPU:** the whyred Adreno 509 is close to the Adreno 610 work in [MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa) (`TopazGpuW`); a kernel msm/DRM-style user client is the long-term path for QuartzCore's OpenGL ES renderer.
-
+1. **Visible lock screen:** verify 0229 makes IOMFB report P3 D65 instead of
+   sRGB and removes the `BoundingPathBitmap` SpringBoard crash. Do not stack
+   another display variable into that boot.
+2. **Normal touch:** the DSX at `0x20` still streams after the current short
+   LDO11 cycle. In separate diagnostics, prove a 200 ms off/readback/on cycle,
+   then general-call reset and QUP framing. Only an addressable part gets F01
+   normal mode, F12 `ctrl20`/`ctrl28`, the ten-finger poll and
+   `SweetHIDTouch` tap/swipe/multi-touch.
+3. **Adreno 509:** run the existing A5xx ladder one rung per boot, starting
+   read-only. Prove clocks/GDSCs, chip identity, firmware, ring and fence
+   before exposing an accelerator; Metal must use the real GPU path.
+4. **Buttons, RTC and storage DMA:** code exists (0208-0210); verify the
+   already-built paths from the ring rather than adding replacements.
+5. **Power:** replace the static battery with PM660 charger/fuel-gauge data
+   only after register ownership is confirmed. Keep unverified PMIC writes
+   disabled.
+6. **Networking:** `whyred_wlan.c` is only a WCN3990 platform/SMMU probe and
+   `whyred_modem.c` only an MSS/PAS ladder. Add firmware/QMI, data transport
+   and iOS networking services after read-only hardware rungs pass.
+7. **Audio:** prove the ADSP ladder, then add the missing WCD9335/SLIMbus and
+   CoreAudio service; ADSP authentication alone is not sound output.
+8. **Bluetooth:** separate WCN3990/SLIMbus work after Wi-Fi and audio clocks
+   are understood.
+9. **All 8 cores (later experiment):** a 4K-page two-cluster kernel risks
+   iOS 16's 16K assumptions. Keep the proven Gold-only 16K kernel as the
+   fallback.
+10. **3/4/6 GB variants:** the fixed safe 1 GiB ADT budget works across them;
+    any larger budget must come from ABL's actual DDR ranges.
