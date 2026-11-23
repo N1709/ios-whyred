@@ -1,8 +1,9 @@
 # Current status
 
-Last updated: 2026-11-23. Latest CI-built kernel: `e92f698` (patches through
-`0228`), run `45145911115` green. Local patch `0229` publishes the P3 D65
-IOMFB mode and passes the full host suite; it is not built or booted yet.
+Last updated: 2026-11-23. Patch `0229` built green in run `45213483030`
+(head `9aa9549`) but is deliberately not booted: QuartzCore 16.7 rejects its
+P3 wire colorimetry 14. Local patch `0230` changes the transport mode to the
+accepted BT.709 value 1 while retaining the D22AP P3 product identity.
 Run `45210593721` stopped before compile because its host test referenced the
 intentionally untracked D22AP ADT; the replacement uses a synthetic fixture.
 Dispatch `45212326756` queued on the high-demand M1 label; CI now targets the
@@ -19,8 +20,8 @@ backboardd/SpringBoard. The complete D22AP `/product` node now correctly
 reports P3, but the latest ring proves that the framebuffer runtime mode
 still falls back to sRGB. SpringBoard therefore crashes while loading the P3
 `BoundingPathBitmap-1125x2436-375x812-3.00x`, producing the current black
-screen. Patch 0229 supplies the missing P3 `ColorElements`/`TimingElements`
-and active IDs. The same boot proves LDO11 can be power-cycled safely on this
+screen. Patches 0229/0230 supply valid `ColorElements`/`TimingElements` and
+active IDs while `/product` supplies P3. The same boot proves LDO11 can be power-cycled safely on this
 unit, but the Synaptics DSX still ignores the register address phase; F12 and
 the HID poll remain safely disabled. Touch must become normal only after the
 lock screen is visible.
@@ -49,18 +50,20 @@ lock screen is visible.
 * The latest mode is the correct logical 1125x2436 at 60 Hz but still says
   `sRGB SDR`; the real product node says P3. That mismatch, not the canvas,
   is the current SpringBoard crash.
-* `0229` uses the confirmed IOAV values `Colorimetry=14` (DCI-P3 D65),
-  `EOTF=0` (SDR gamma), RGB 8-bit/full range, with color/timing ID 1 and
-  selector 79 block `0x40` returning those IDs at `+4`.
+* `0229` publishes the mode arrays and selector 79 current IDs. `0230` uses
+  RGB 8-bit/full range, `Colorimetry=1` (BT.709) and `EOTF=0` (SDR gamma).
+  QuartzCore 16.7 accepts RGB colorimetry 1/10/16 and rejects P3 wire enum
+  14; the display identity remains P3 through the real D22AP `/product`.
 
 ## Next actions
 
-1. Commit/push 0229 and the complete `/product` fix; require a green WHYRED
+1. Commit/push 0230; require a green WHYRED
    CI build with no skipped patch.
 2. Pack a new ring image (same safe iOS-root flags, P3 ADT, no
    `sweetfb_native=1`) and report exact path, size and sha256.
 3. Boot only that new image with `fastboot boot`; require the ring to show
-   both the driver's `P3 D65 SDR` line and `FBSDisplayMode ... P3 SDR`, then
+   both the driver's `P3 product / BT.709 RGB SDR` line and
+   `FBSDisplayMode ... P3 SDR`, then
    confirm SpringBoard no longer throws the BoundingPath exception.
 4. Once the lock screen is visible, resume DSX work: test a separate
    general-call/QUP diagnostic, solve the address phase, program F01/F12,
@@ -89,7 +92,8 @@ lock screen is visible.
 
 * There is no local XNU build; each kernel change is one CI run
   (~10-15 min). Run `bash tests/run_tests.sh` before committing.
-* Latest green: `e92f698`, run `45145911115`; 0229 is local/host-green only.
+* Latest green: `9aa9549`, run `45213483030` (through 0229, superseded before
+  boot); 0230 is local only.
 * Repack a CI kernel with the two-pass `shim/build.sh` recipe in
   `docs/history/2026-11.md`; boot only with `fastboot boot`.
 

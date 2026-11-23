@@ -50,7 +50,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | CPU / memory | 4× Gold A73, 16K pages, GICv3, timers — **works** |
 | eMMC | SDCC v5, 8-bit high-speed, 122,142,720 sectors, GPT parsed — **works** |
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
-| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. Runtime gamut is still sRGB; local patch 0229 publishes P3 D65, not built yet |
+| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. Runtime gamut is still sRGB; 0229 publishes mode arrays and 0230 corrects their RGB wire colorimetry before boot |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | launchd → backboardd → SpringBoard; latest boot crashes before the visible lock screen because the P3 asset facet is paired with an sRGB `FBSDisplayMode` |
 | Touch | DSX at `0x20` streams the PDT; the address phase is still ignored even after the latest ring's successful LDO11 power-cycle. No phantom HID poll starts |
@@ -75,10 +75,12 @@ The fresh recovery pull is `/tmp/opencode/logs/ring-recovery-now.txt`
 * four frames are presented, then `display off, HID paused`; there are no
   later presents in this ring.
 
-Local patch `0229-whyred-fb-p3-mode.patch` now publishes
-`TimingElements`/`ColorElements` as RGB 8-bit, P3 D65 (`Colorimetry=14`),
-SDR (`EOTF=0`), and returns color/timing ID 1 from selector 79 block `0x40`.
-The full host suite passes. It is **not built or booted** yet. First CI run
+Patch `0229-whyred-fb-p3-mode.patch` publishes `TimingElements`/
+`ColorElements` and returns color/timing ID 1 from selector 79 block `0x40`.
+Run `45213483030` built it green, but QuartzCore 16.7's RGB-mode parser rejects
+its initial P3 wire enum 14. Local 0230 changes the mode to accepted BT.709
+(`Colorimetry=1`), RGB 8-bit/full range, SDR (`EOTF=0`); `/product` remains
+P3. Neither 0229 nor 0230 has been booted. First CI run
 `45210593721` stopped before compile because a host assertion referenced the
 intentionally untracked D22AP ADT; its replacement uses a synthetic ADT
 fixture and adds no Apple blob to git. Dispatch `45212326756` then queued on
@@ -89,12 +91,13 @@ GPU 35%, overall 61%.
 
 ## Current next actions
 
-1. Commit and push 0229 plus the complete-P3 product-node fix; wait for a
+1. Commit and push 0230; wait for a
    green WHYRED CI kernel.
 2. Pack a **new** ring image with the existing e92f698 command line, P3 ADT,
    no `sweetfb_native=1`; report its path, size and sha256.
 3. Boot it once with `fastboot boot`, pull a fresh ring, and require both
-   `SWEET FB: ... P3 D65 SDR` and `FBSDisplayMode ... P3 SDR` before calling
+   `SWEET FB: ... P3 product / BT.709 RGB SDR` and
+   `FBSDisplayMode ... P3 SDR` before calling
    the black-screen fix successful.
 4. After the lock screen is visible, continue the DSX address-phase work
    until normal tap/swipe/multi-touch reaches `SweetHIDTouch`; test the QUP

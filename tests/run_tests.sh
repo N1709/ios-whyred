@@ -838,10 +838,10 @@ echo "ok   0182 paints the shim's own mark after the fbcon clear"
 # DSX page select.
 grep -q '01\[89\]\[0-9\]' .github/workflows/xnu.yml
 echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
-# The touch/display chain is gated the same way: a skipped 0219..0229 leaves
+# The touch/display chain is gated the same way: a skipped 0219..0230 leaves
 # the old driver, half the display link or no P3 mode, so name the whole range.
-grep -q '0219|022\[0-9\]' .github/workflows/xnu.yml
-echo "ok   a skipped 0219..0229 patch fails the build instead of shipping"
+grep -q '0219|022\[0-9\]|0230' .github/workflows/xnu.yml
+echo "ok   a skipped 0219..0230 patch fails the build instead of shipping"
 grep -q 'runs-on: macos-15-intel' .github/workflows/xnu.yml
 echo "ok   XNU uses the available macOS 15 Intel queue"
 
@@ -2356,27 +2356,34 @@ assert 'fFB->fDirty = true;' in args
 PY
 echo "ok   0228 keeps the whyred fade from being repainted while off"
 
-echo "== DISPLAY: 0229 publishes the iPhone X P3 mode and current IDs =="
+echo "== DISPLAY: 0229 publishes the mode registry and current IDs =="
 P229="xnu/patches/0229-whyred-fb-p3-mode.patch"
 python3 tools/check_patch.py "$P229" -q \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:SWEET_FB_COLORIMETRY_P3_D65     14' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:setProperty("ColorElements", colors);' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:setProperty("TimingElements", timings);' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:args->scalarInput[0] == 0x40' \
-	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:(uint8_t *)args->structureOutput + 4' \
-	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:P3 D65 SDR'
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:(uint8_t *)args->structureOutput + 4'
+echo "== DISPLAY: 0230 uses a colorimetry QuartzCore 16.7 accepts =="
+P230="xnu/patches/0230-whyred-fb-valid-colorimetry.patch"
+python3 tools/check_patch.py "$P230" -q \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:SWEET_FB_COLORIMETRY_BT709      1' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:QuartzCore 16.7 rejects P3 wire enum 14 here' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:P3 product / BT.709 RGB SDR'
 python3 - <<'PY'
 mirror = open('drivers/display/SweetFramebuffer.cpp', encoding='utf-8').read()
 
-# Apple/Asahi's IOAV enum is 14 for DCI-P3 D65; it is SDR gamma (EOTF 0),
-# full-range RGB, eight bits.  Do not regress to MiniIOMFB's value 1.
-assert '#define SWEET_FB_COLORIMETRY_P3_D65     14' in mirror
+# QuartzCore 16.7's RGB ColorElements parser accepts colorimetry 1, 10 or 16;
+# it rejects the wire P3 enum 14. The D22AP /product remains the P3 identity,
+# while the internal panel transport is 8-bit, full-range BT.709 RGB SDR.
+assert '#define SWEET_FB_COLORIMETRY_BT709      1' in mirror
+assert 'SWEET_FB_COLORIMETRY_P3_D65' not in mirror
 assert '#define SWEET_FB_EOTF_SDR_GAMMA         0' in mirror
 mode = mirror.split('AppleCLCD::publishModes(void)', 1)[1]
 mode = mode.split('AppleCLCD::start(IOService *provider)', 1)[0]
 assert '"PixelEncoding", 0' in mode
 assert '"Depth", 8' in mode
-assert '"Colorimetry", SWEET_FB_COLORIMETRY_P3_D65' in mode
+assert '"Colorimetry", SWEET_FB_COLORIMETRY_BT709' in mode
 assert '"EOTF", SWEET_FB_EOTF_SDR_GAMMA' in mode
 assert '"DynamicRange", 0' in mode
 assert '"Active", fLogicalW' in mode
@@ -2397,7 +2404,7 @@ supported = supported.split('case kSweetFBGetBlock:', 1)[0]
 assert 'out[0] = 0;' in supported
 assert 'outCount = 1;' in supported
 PY
-echo "ok   0229 publishes P3 D65 SDR and returns matching active mode IDs"
+echo "ok   0229/0230 publish a valid P3-product RGB mode and active IDs"
 
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"

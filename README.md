@@ -24,10 +24,10 @@ drivers as `whyred_gpu.c`, `whyred_audio.c`, `whyred_wlan.c` and
 audio/modem loaders read the GPT `modem` partition instead of a fixed LBA.
 `0216` adds the `sweetnopb=1` lever for the PosterBoard crash that blocks
 the lock-screen wallpaper. `0217` merges the IOKit GPU service
-(`WhyredGPU`, started by `whyredgpu=30`). The full series (235 patch files,
-through `0229`) applies on the series tip. `e92f698` built green in run
-`45145911115`; 0229's P3 display-mode contract is host-green and awaiting
-CI/hardware verification. The boot-verification state is in
+(`WhyredGPU`, started by `whyredgpu=30`). The full series (236 patch files,
+through `0230`) applies on the series tip. `0229` built green in run
+`45213483030`; `0230` corrects its RGB wire colorimetry before any hardware
+boot and is awaiting CI. The boot-verification state is in
 [`docs/progres.md`](docs/progres.md).
 
 ## Quick start
