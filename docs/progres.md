@@ -181,6 +181,14 @@ present would overwrite it. `present()` now returns while `fPowerOff` is set,
 and display-on's existing `fDirty = true` makes the vsync timer repaint the
 latest pending swap.
 
+Build state: CI run `45145911115` (`e92f698`) is green with 0227/0228. Two
+ring images were packed from that kernel: `images/shim-boot-ring-e92f698.img`
+(sha256 `b310dcb7…`, no QUP) and
+`images/shim-boot-ring-e92f698-qup.img` (sha256 `4acef22c…`, `sweeti2c=1`).
+The earlier `images/shim-boot-ring-9dd552a.img` (sha256 `474f9a41…`) stays
+the first boot because it isolates 0225/0226 from the QUP and present-guard
+changes. No image after `5985a74` has been booted.
+
 `shim/build.sh` no longer puts `sweetfb_native=1` on the default command
 line. The default ADT canvas is again 1125x2436, and `SweetFramebuffer`
 crops it to 1080x2160, which removes the red unsupported-screen clock.
@@ -296,23 +304,28 @@ skipped. Rebuild pending.
 1. Boot `images/shim-boot-ring-9dd552a.img` (sha256 `474f9a41…`) and pull
    the ring. Run `tools/ring-verdict.sh` first: it must say post-0225, not
    the old `5985a74` image. Then confirm `address phase still ignored, not
-   programming` and **no** `SWEET HID: touch` phantom lines.
-2. If the gate holds, build a diag with `sweetouchpower=1` and read the
+   programming` and **no** `SWEET HID: touch` phantom lines. Press power
+   after the first frame: the fade must hold and the ring must show the 0225
+   F01 sleep/wake lines.
+2. Boot `images/shim-boot-ring-e92f698.img` (sha256 `b310dcb7…`) for
+   0227/0228. `tools/ring-verdict.sh` must print `off-guard: … presents
+   after it: 0`, and the panel must stay black until display-on.
+3. If the gate holds, boot a diag with `sweetouchpower=1` and read the
    LDO11 APID owner. Toggle only an APPS-owned APID; otherwise implement the
    RPM regulator request. Add `sweetouchgcall=1` only as a separate test.
-3. Once 0227 is built, boot a diag with `sweeti2c=1` and read the QUP
-   `SE version`, `DSX reads over QUP1` and the address test. This is the
-   first boot that can write F12 over QUP and the first that chunks the HID
-   poll; keep it a separate boot from the power test.
-4. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
+4. Boot `images/shim-boot-ring-e92f698-qup.img` (sha256 `4acef22c…`,
+   `sweeti2c=1`) and read the QUP `SE version`, `DSX reads over QUP1` and
+   the address test. This is the first boot that can write F12 over QUP and
+   the first that chunks the HID poll; keep it separate from the power test.
+5. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
    `f12 ctrl20 <- ... 00` and `f12 ctrl28 <- 0x1f ack`, then run the tap
    test and decode X/Y.
-5. Press power after SpringBoard has presented. The expected ring is
+6. Press power after SpringBoard has presented. The expected ring is
    `f01 ctrl ... (sleep)`, `display off, HID paused, DSX asleep`, then the
    reverse (`f01 ctrl ... (normal)`, `display on, HID resumed`) on wake. This
    proves the 0226 stayon change and the whyred fade.
-6. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
-7. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
+7. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
+8. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
    ring header update fails while the boot is otherwise alive.
 
 

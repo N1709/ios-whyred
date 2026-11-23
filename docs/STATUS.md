@@ -1,13 +1,13 @@
 # Current status
 
-Last updated: 2026-11-23. Latest built kernel: `9dd552a` (patches through
-`0226`), run `45037234274` green. Patches `0227` (QUP writes, chunked HID
-poll) and `0228` (drop presents while off) are committed; their CI build is
-in flight. Diagnostic image:
-`images/shim-boot-ring-9dd552a.img`, 5,918,720 B, sha256
-`474f9a419dc766f062e94e1585c51072302653dec497789e881b437e866219a9`.
-The last pulled ring predates this image (`5985a74`), so 0224-0228 are still
-unproven on the phone.
+Last updated: 2026-11-23. Latest built kernel: `e92f698` (patches through
+`0228`), run `45145911115` green. Diagnostic images:
+`images/shim-boot-ring-9dd552a.img` (5,918,720 B, sha256 `474f9a41…`) is the
+first isolation boot for 0225/0226; `images/shim-boot-ring-e92f698.img`
+(5,918,720 B, sha256 `b310dcb7…`) adds 0227/0228; and
+`images/shim-boot-ring-e92f698-qup.img` (5,918,720 B, sha256 `4acef22c…`)
+adds `sweeti2c=1`. The last pulled ring predates all of them (`5985a74`), so
+0224-0228 are still unproven on the phone.
 
 ## One-paragraph summary
 
@@ -19,10 +19,10 @@ controller (Synaptics DSX at I2C `0x20`) is probed before eMMC and streams
 its PDT, but the address phase is still ignored, so the HID poll stays off.
 0224-0227 add a rail re-probe, panel-linked DSX sleep/wake, a bounded
 stayon veto and QUP writes; 0228 drops presents while the panel is off so
-the whyred fade holds. All are committed and building or built, not yet
-booted. The 2026-11-22 black-screen report came from the older `5985a74`
-image: XNU and SpringBoard were alive (1,060 presents, no panic), so it was
-a userland boot stage, not a 0226 regression.
+the whyred fade holds. All are committed and built green in run
+`45145911115`, not yet booted. The 2026-11-22 black-screen report came from
+the older `5985a74` image: XNU and SpringBoard were alive (1,060 presents,
+no panic), so it was a userland boot stage, not a 0226 regression.
 
 ## Where the boot stands (2026-11-23)
 
@@ -56,16 +56,19 @@ a userland boot stage, not a 0226 regression.
    `tools/ring-verdict.sh` on the pulled ring. It must report post-0225,
    not the old `5985a74` image.
 2. Read `address phase still ignored, not programming` and confirm there are
-   no phantom `SWEET HID: touch` lines.
-3. If the gate holds, boot a diag with `sweetouchpower=1`; toggle only an
+   no phantom `SWEET HID: touch` lines. Then press power after the first
+   frame and check the fade plus the 0225 sleep/wake lines.
+3. Boot `images/shim-boot-ring-e92f698.img` (sha256 `b310dcb7…`). It adds
+   0227/0228; the ring must show no `present` after `display off` and the
+   panel must stay black until display-on repaints.
+4. If the gate holds, boot a diag with `sweetouchpower=1`; toggle only an
    APPS-owned LDO11 APID, otherwise implement the RPM regulator request.
-   Try `sweetouchgcall=1` as a separate test. Once 0227 is built, boot a
-   separate `sweeti2c=1` diag and read `DSX reads over QUP1`, the address
-   test and the first QUP-backed F12 write.
-4. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
+   Try `sweetouchgcall=1` as a separate test. Then boot
+   `images/shim-boot-ring-e92f698-qup.img` (sha256 `4acef22c…`,
+   `sweeti2c=1`) and read `DSX reads over QUP1`, the address test and the
+   first QUP-backed F12 write.
+5. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
    `f12 ctrl20 <- ... 00`, `f12 ctrl28 <- 0x1f ack`, then decode X/Y.
-5. Press power after the first frame; expect `f01 ctrl ... (sleep)`,
-   `display off, HID paused, DSX asleep`, then the wake sequence.
 6. Keep `SWEETREBOOT=0` while debugging; investigate the CMD24
    `WRITE_BLOCK` timeout separately.
 
@@ -88,9 +91,9 @@ a userland boot stage, not a 0226 regression.
 
 * There is no local XNU build; each kernel change is one CI run
   (~10-15 min). Run `bash tests/run_tests.sh` before committing.
-* Latest green: `9dd552a`, run `45037234274`.
-* Repack from a CI kernel with `tools/build-touch-diag.sh` or the recorded
-  `build-whyred-9dd552a.sh`; boot only with `fastboot boot`.
+* Latest green: `e92f698`, run `45145911115`.
+* Repack a CI kernel with the two-pass `shim/build.sh` recipe in
+  `docs/history/2026-11.md`; boot only with `fastboot boot`.
 
 ## Latest artifacts
 
@@ -98,6 +101,8 @@ a userland boot stage, not a 0226 regression.
 | --- | --- | --- | --- |
 | `images/shim-boot-ring-9dd552a.img` | `9dd552a` | `474f9a419dc766f062e94e1585c51072302653dec497789e881b437e866219a9` | 5,918,720 B |
 | `images/shim-boot-ring-9dd552a-native.img` | `9dd552a` | `3bb06e3c9eaf10c15f556b9654e9c3172b5ce58f9a4990828078f6d7d43156b5` | 5,918,720 B |
+| `images/shim-boot-ring-e92f698.img` | `e92f698` | `b310dcb7c44c4c66100430f033b2746b0fda2e4fab4f9f8214db632880b4b28e` | 5,918,720 B |
+| `images/shim-boot-ring-e92f698-qup.img` | `e92f698` | `4acef22c35e0c257a5842c38618b05a2ab1ad88006024b7b3e9145547ce5a15e` | 5,918,720 B |
 | `shim-boot-ring-5985a74.img` (last pulled ring) | `5985a74` | — | 5,910,528 B |
 
 Older artifact hashes are in `docs/history/` and git history.
