@@ -1,11 +1,12 @@
 # Current status
 
 Last updated: 2026-11-23. Latest built kernel: `9dd552a` (patches through
-`0226`), run `45037234274` green. Patch `0227` (QUP writes, chunked HID poll)
-is committed and queued for its first CI build. Diagnostic image:
+`0226`), run `45037234274` green. Patches `0227` (QUP writes, chunked HID
+poll) and `0228` (drop presents while off) are committed; their CI build is
+in flight. Diagnostic image:
 `images/shim-boot-ring-9dd552a.img`, 5,918,720 B, sha256
 `474f9a419dc766f062e94e1585c51072302653dec497789e881b437e866219a9`.
-The last pulled ring predates this image (`5985a74`), so 0224-0227 are still
+The last pulled ring predates this image (`5985a74`), so 0224-0228 are still
 unproven on the phone.
 
 ## One-paragraph summary
@@ -16,12 +17,12 @@ console log flusher on SYSTEM and drives the panel. On the October v12 root,
 launchd reaches backboardd and SpringBoard and the lock screen. The touch
 controller (Synaptics DSX at I2C `0x20`) is probed before eMMC and streams
 its PDT, but the address phase is still ignored, so the HID poll stays off.
-0224-0226 add a rail re-probe, panel-linked DSX sleep/wake and a bounded
-stayon veto; 0227 adds QUP writes and a FIFO-sized HID poll. All are
-committed and built or queued, not yet booted. The 2026-11-22 black-screen
-report came from the older `5985a74` image: XNU and SpringBoard were alive
-(1,060 presents, no panic), so it was a userland boot stage, not a 0226
-regression.
+0224-0227 add a rail re-probe, panel-linked DSX sleep/wake, a bounded
+stayon veto and QUP writes; 0228 drops presents while the panel is off so
+the whyred fade holds. All are committed and building or built, not yet
+booted. The 2026-11-22 black-screen report came from the older `5985a74`
+image: XNU and SpringBoard were alive (1,060 presents, no panic), so it was
+a userland boot stage, not a 0226 regression.
 
 ## Where the boot stands (2026-11-23)
 
@@ -39,6 +40,9 @@ regression.
   `sweet_i2c_xfer()` when QUP1 owns the bus, so F12 can be programmed after
   a successful QUP read, and splits the ten-finger HID poll into three-record
   chunks to stay inside the FIFO's 32-byte minimum.
+* `0228` drops `present()` while `fPowerOff` is set. The last ring has 744
+  presents after its second display-off request; without this guard those
+  frames would repaint the whyred software fade and relight the panel.
 * The default canvas is the iPhone X 1125x2436, cropped to the 1080x2160
   panel (`fOffX=20`, `fOffY=138`), which keeps UIKit's red unsupported-screen
   clock away. `SWEETFB_NATIVE=1` is the opt-in native canvas.

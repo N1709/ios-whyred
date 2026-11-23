@@ -18,7 +18,7 @@ Last updated: 2026-11-23.
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
 | Touch (as HID input) | 0222/0223/0225 gate the poll; the last touch ring (pre-0225) said `address phase still ignored`, so the HID poll stays off. 0227 makes the QUP path able to write F12 and chunks the poll to the FIFO |
-| Power button / display off | 0226 bounds `sweetfb_stayon` to the first frame and blanks whyred by fading the boot framebuffer (no DSI); not booted |
+| Power button / display off | 0226 bounds `sweetfb_stayon` to the first frame, blanks whyred by fading the boot framebuffer (no DSI), and 0228 drops presents while off so the fade holds; not booted |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -140,7 +140,7 @@ variants from one kernel:
 The console image is the one to boot next when the screen must show the
 running text; the ring image is the quieter equivalent.
 
-## Rail re-probe, display link, power button and QUP writes 0224-0227 (2026-11-22, not booted)
+## Rail re-probe, display link, power button and QUP writes 0224-0228 (2026-11-22, not booted)
 
 `0224` changes `whyred_touch_power_cycle()` to return three states: `1` for a
 rail that is on after the toggle, `0` when `sweetouchpower` is absent, `-1`
@@ -173,6 +173,14 @@ supported write-only transfers. The ten-finger HID read is split into
 three-record chunks on QUP to stay inside the FIFO's documented 32-byte
 minimum; the bit-bang read stays whole.
 
+`0228` closes the other half of display-off. The 2026-11-22 ring has 1,057
+presents after its first display-off request and 744 after the second, so
+backboardd does not stop drawing when the request is ignored. On whyred the
+panel is blanked only by the software fade into the boot framebuffer; a
+present would overwrite it. `present()` now returns while `fPowerOff` is set,
+and display-on's existing `fDirty = true` makes the vsync timer repaint the
+latest pending swap.
+
 `shim/build.sh` no longer puts `sweetfb_native=1` on the default command
 line. The default ADT canvas is again 1125x2436, and `SweetFramebuffer`
 crops it to 1080x2160, which removes the red unsupported-screen clock.
@@ -199,7 +207,7 @@ patches. They are local code only: no CI build and no boot yet.
 | 0209 | PM660 RTC through the same arbiter; skips the 30 s IORTC wait; calendar fallback | `sweetrtc`, `sweetrtcoff` |
 | 0210 | SDCC v5 exact PIO/cache state, post-write DAT0/CMD13 wait, DMA diagnostics, ADMA2 reads with PIO fallback | `sweetemmc_dma=0`, `sweetemmc_speed=1`, `sweetemmc_dmatest=1` |
 
-All 233 patches apply on the whyred series tip; `drivers/` mirrors are
+All 234 patches apply on the whyred series tip; `drivers/` mirrors are
 regenerated. The next boot must confirm the banner `driver 0210`, the
 ADMA2 self-test, `SWEET KEYS:` lines, `SWEET RTC:` raw/offset and the
 `SWEET FB: present ... us` budget.
@@ -322,7 +330,7 @@ skipped. Rebuild pending.
 | `STATUS.md` | Longer status, artifact table |
 | `touch.md` | DSX probe, F12 setup, band map, boot args |
 | `history/` | Full engineering log, per month |
-| `../xnu/patches/0227-whyred-qup-writes.patch` | Latest patch (0227) |
+| `../xnu/patches/0228-whyred-fb-drop-off-presents.patch` | Latest patch (0228) |
 | `../tools/build-touch-diag.sh` | Pack a diag image from a CI kernel |
 | `../tools/sweet-log-pull.sh` | Pull the ring from SYSTEM |
 

@@ -1037,6 +1037,22 @@ AppleCLCD::present(const uint8_t *rec)
 	uint64_t start = mach_absolute_time();
 	uint32_t mask = get32(rec, 0x104);
 	static int console_only = -1;
+	bool off;
+
+	/*
+	 * 0228: backboardd keeps presenting after RequestPowerChange(0).
+	 * The 2026-11-22 ring has 744 presents after its second display-off
+	 * request. whyred has no DSI panel-off, so a frame painted here would
+	 * overwrite the fade and relight the panel. Drop frames until
+	 * display-on marks the framebuffer dirty; the vsync timer then
+	 * repaints the latest pending swap.
+	 */
+	IOLockLock(fLock);
+	off = fPowerOff;
+	IOLockUnlock(fLock);
+	if (off) {
+		return;
+	}
 
 	/* boot-arg sweetfb_console=1: debugging, the panel keeps showing the kernel console */
 	if (console_only < 0) {

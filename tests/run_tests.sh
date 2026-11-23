@@ -795,10 +795,10 @@ echo "ok   0182 paints the shim's own mark after the fbcon clear"
 # DSX page select.
 grep -q '01\[89\]\[0-9\]' .github/workflows/xnu.yml
 echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
-# The touch chain is gated the same way: a skipped 0219..0227 leaves the old
+# The touch chain is gated the same way: a skipped 0219..0228 leaves the old
 # driver or half the display link behind, so name the whole range.
-grep -q '0219|022\[0-7\]' .github/workflows/xnu.yml
-echo "ok   a skipped 0219..0227 patch fails the build instead of shipping"
+grep -q '0219|022\[0-8\]' .github/workflows/xnu.yml
+echo "ok   a skipped 0219..0228 patch fails the build instead of shipping"
 
 echo "== SWIPE: 0183 proves the digitizer path without touch hardware =="
 P183="xnu/patches/0183-sweet-hid-synthetic-swipe.patch"
@@ -2277,6 +2277,39 @@ assert 'sweet_i2c_xfer(addr, w, wl, NULL, 0)' in mirror
 assert 'step = (32 - 2) / rec;' in mirror
 PY
 echo "ok   0227 programs F12 over QUP and chunks the HID poll"
+
+echo "== DISPLAY: 0228 drops presents while the panel is off =="
+P228="xnu/patches/0228-whyred-fb-drop-off-presents.patch"
+python3 tools/check_patch.py "$P228" -q \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:0228' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:backboardd keeps presenting' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:off = fPowerOff;' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:if (off) {' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:repaints the latest pending swap'
+python3 - <<'PY'
+src = open('xnu/patches/0228-whyred-fb-drop-off-presents.patch',
+           encoding='utf-8').read()
+body = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('+') and not l.startswith('+++'))
+
+# The 2026-11-22 ring kept presenting after display-off (744 presents after
+# the second ignored request). The guard must read fPowerOff under the lock
+# and return before directPresent()/the copy path can paint.
+assert 'off = fPowerOff;' in body
+guard = body.split('off = fPowerOff;', 1)[1]
+assert 'IOLockUnlock(fLock);' in guard
+assert 'if (off) {' in guard
+assert 'return;' in guard.split('if (off) {', 1)[1].split('}', 1)[0]
+
+mirror = open('drivers/display/SweetFramebuffer.cpp', encoding='utf-8').read()
+present = mirror.split('AppleCLCD::present(const uint8_t *rec)', 1)[1]
+assert present.index('off = fPowerOff;') < present.index('directPresent(rec)')
+assert present.index('if (off) {') < present.index('directPresent(rec)')
+# Display-on still marks the frame dirty so the vsync timer can repaint it.
+args = mirror.split('kSweetFBRequestPowerChange:', 1)[1]
+assert 'fFB->fDirty = true;' in args
+PY
+echo "ok   0228 keeps the whyred fade from being repainted while off"
 
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"

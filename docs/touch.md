@@ -130,9 +130,11 @@ whyred inherits the LAVENDER board config, so the DSI/MDP block is compiled
 out and `fDsi == NULL`: there is no DCS panel-off command. Instead the vsync
 timer takes the in-place fade path, halves every channel in the boot
 framebuffer six times, writes black and idles; display-on marks the frame
-dirty and the next present composes normally. This software blank has not
-been booted yet; the ring must show the display transition and the panel
-must go dark before it counts.
+dirty and the next present composes normally. 0228 also drops presents while
+`fPowerOff` is set: the 2026-11-22 ring kept presenting after display-off
+(744 presents after its second request), which would have repainted the fade.
+This software blank has not been booted yet; the ring must show the display
+transition and the panel must go dark before it counts.
 
 Expected ring lines:
 
