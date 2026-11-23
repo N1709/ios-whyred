@@ -39,7 +39,9 @@
 4. Bit-bangs I2C at ~50 kHz (byte-identical to the vendor driver, 0188).
    A high is a release plus a wait for the line to rise; the wait is 500 us
    since 0223 (the old 2 ms wait made a stretched bit expensive), and
-   `sweetouchscl=<us>` overrides it.
+   `sweetouchscl=<us>` overrides it. With `sweeti2c=1`, the scan hands the
+   bus to the BLSP1 QUP1 hardware master afterwards; 0227 makes the QUP
+   write side usable as well as the read side.
 5. Reads the streamed register map in two back-to-back `0x200` windows (the
    cycle is 536 bytes and the pointer position is unknown). This part ignores
    the address phase after the first read, so the PDT records arrive back to
@@ -66,7 +68,10 @@
    `F12 data base + data0 present`. `ctrl28` alone only selects the report
    type; a part left in LPWG keeps its 2D block inactive until the gesture
    byte is cleared, which is the state Android hands over on a warm reboot.
-   This whole step is skipped unless the address phase works.
+   This whole step is skipped unless the address phase works. On the QUP
+   path, 0227 sends the page select as its own write and the register plus
+   data as a second write; before it, every F12 write returned `EIO` once
+   the QUP owned the bus.
 8. Returns. The late probe (`IOKitBSDInit`) reuses the PDT result,
    re-attempts F12 programming if the early pass failed, and runs a
    `sweetouchtouch` second poll of the F12 2D block. The 12-sample poll, the
@@ -80,6 +85,14 @@
    again, and resumes the poll. A part that never reached the address phase is
    left alone.
 
+With `sweeti2c=1` the QUP is the bus master. 0190's transport always accepted
+write-only transfers, but the DSX layer refused them; 0227 closes that gap
+(page select, then register plus one to three data bytes). The HID poll asks
+for ten 8-byte records, larger than the QUP FIFO's documented minimum of 32
+bytes plus two echo bytes, so on QUP it reads three records per transaction;
+the bit-bang path is unchanged. Neither the QUP write path nor the chunked
+poll has run on the phone.
+
 The F12 query block read on this unit:
 
 ```
@@ -91,6 +104,7 @@ The F12 query block read on this unit:
 | Argument | Effect |
 | --- | --- |
 | `sweetouchi2c=1` | run the touch probe (bus scan + chip-ID reads) |
+| `sweeti2c=1` | after the bit-bang scan, make BLSP1 QUP1 the bus master; reads always, writes since 0227; opt-in diagnostic |
 | `sweetouchearly=MS` | run the whole probe at `MS` kernel time, before eMMC |
 | `sweetouchtouch=SEC` | poll the F12 2D block for `SEC` seconds after the late probe (max 60) |
 | `sweetouchscl=US` | bit-bang line-rise wait in microseconds (default 500, clamped 10..20000; 0223) |

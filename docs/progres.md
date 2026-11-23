@@ -17,8 +17,8 @@ Last updated: 2026-11-23.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | 0222/0223/0225 code exists; the last touch ring (pre-0225) said `address phase still ignored`, so the HID poll stays off |
-| Power button / display off | 0226 added (stayon only before the first frame), not booted |
+| Touch (as HID input) | 0222/0223/0225 gate the poll; the last touch ring (pre-0225) said `address phase still ignored`, so the HID poll stays off. 0227 makes the QUP path able to write F12 and chunks the poll to the FIFO |
+| Power button / display off | 0226 bounds `sweetfb_stayon` to the first frame and blanks whyred by fading the boot framebuffer (no DSI); not booted |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -140,7 +140,7 @@ variants from one kernel:
 The console image is the one to boot next when the screen must show the
 running text; the ring image is the quieter equivalent.
 
-## Rail re-probe, display link and power button 0224-0226 (2026-11-22, not booted)
+## Rail re-probe, display link, power button and QUP writes 0224-0227 (2026-11-22, not booted)
 
 `0224` changes `whyred_touch_power_cycle()` to return three states: `1` for a
 rail that is on after the toggle, `0` when `sweetouchpower` is absent, `-1`
@@ -161,7 +161,17 @@ part ignores the address phase entirely.
 `0226` makes `sweetfb_stayon=1` a **boot hold**, not a permanent veto: it
 ignores display-off only before the first userspace present. After that the
 power button and auto-lock can blank the panel; the framebuffer calls
-`whyred_touch_display_power()` before stopping scanout.
+`whyred_touch_display_power()` on the transition. whyred has no DSI/MDP
+mapping, so there is no DCS panel-off: the vsync timer fades the boot
+framebuffer to black in place and idles.
+
+`0227` closes the QUP write gap. Once `sweeti2c=1` made QUP1 the bus master,
+`dsx_write_f()` still returned `EIO`, so F12 could never be programmed on
+that path even if a read addressed the part. The QUP branch sends the page
+select and the register plus data through `sweet_i2c_xfer()`, which already
+supported write-only transfers. The ten-finger HID read is split into
+three-record chunks on QUP to stay inside the FIFO's documented 32-byte
+minimum; the bit-bang read stays whole.
 
 `shim/build.sh` no longer puts `sweetfb_native=1` on the default command
 line. The default ADT canvas is again 1125x2436, and `SweetFramebuffer`
@@ -189,7 +199,7 @@ patches. They are local code only: no CI build and no boot yet.
 | 0209 | PM660 RTC through the same arbiter; skips the 30 s IORTC wait; calendar fallback | `sweetrtc`, `sweetrtcoff` |
 | 0210 | SDCC v5 exact PIO/cache state, post-write DAT0/CMD13 wait, DMA diagnostics, ADMA2 reads with PIO fallback | `sweetemmc_dma=0`, `sweetemmc_speed=1`, `sweetemmc_dmatest=1` |
 
-All 227 patches apply on the whyred series tip; `drivers/` mirrors are
+All 233 patches apply on the whyred series tip; `drivers/` mirrors are
 regenerated. The next boot must confirm the banner `driver 0210`, the
 ADMA2 self-test, `SWEET KEYS:` lines, `SWEET RTC:` raw/offset and the
 `SWEET FB: present ... us` budget.
@@ -282,15 +292,19 @@ skipped. Rebuild pending.
 2. If the gate holds, build a diag with `sweetouchpower=1` and read the
    LDO11 APID owner. Toggle only an APPS-owned APID; otherwise implement the
    RPM regulator request. Add `sweetouchgcall=1` only as a separate test.
-3. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
+3. Once 0227 is built, boot a diag with `sweeti2c=1` and read the QUP
+   `SE version`, `DSX reads over QUP1` and the address test. This is the
+   first boot that can write F12 over QUP and the first that chunks the HID
+   poll; keep it a separate boot from the power test.
+4. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
    `f12 ctrl20 <- ... 00` and `f12 ctrl28 <- 0x1f ack`, then run the tap
    test and decode X/Y.
-4. Press power after SpringBoard has presented. The expected ring is
+5. Press power after SpringBoard has presented. The expected ring is
    `f01 ctrl ... (sleep)`, `display off, HID paused, DSX asleep`, then the
    reverse (`f01 ctrl ... (normal)`, `display on, HID resumed`) on wake. This
-   proves the 0226 stayon change.
-5. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
-6. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
+   proves the 0226 stayon change and the whyred fade.
+6. Keep `SWEETREBOOT=0` while debugging so the phone stays in place.
+7. Investigate the SDHCI command 24 (`WRITE_BLOCK`) timeout separately; the
    ring header update fails while the boot is otherwise alive.
 
 
@@ -308,7 +322,7 @@ skipped. Rebuild pending.
 | `STATUS.md` | Longer status, artifact table |
 | `touch.md` | DSX probe, F12 setup, band map, boot args |
 | `history/` | Full engineering log, per month |
-| `../xnu/patches/0226-whyred-fb-power-off.patch` | Latest patch (0226) |
+| `../xnu/patches/0227-whyred-qup-writes.patch` | Latest patch (0227) |
 | `../tools/build-touch-diag.sh` | Pack a diag image from a CI kernel |
 | `../tools/sweet-log-pull.sh` | Pull the ring from SYSTEM |
 

@@ -1,0 +1,87 @@
+diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
+--- a/bsd/dev/whyred_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -814,8 +814,36 @@
+ 	int i, ok = 1;
+ 
+ 	if (dsx_qup) {
+-		/* the QUP port only implements reads so far */
+-		return EIO;
++		uint8_t w[4];
++		int wl = 0;
++
++		/*
++		 * 0227: sweet_i2c_xfer() ends a write-only transfer with a
++		 * stop and accepts up to four bytes, which is exactly the DSX
++		 * framing (register + 1..3 data bytes). Refusing QUP writes
++		 * here left F12 unprogrammed after the QUP read path had
++		 * addressed the part.
++		 */
++		if (len < 0 || len > 3) {
++			printf("WHYRED TOUCH: QUP write of %d bytes refused\n",
++			    len);
++			return EIO;
++		}
++		if (hi != dsx_page) {
++			uint8_t p[2];
++
++			p[0] = 0xff;
++			p[1] = hi;
++			if (sweet_i2c_xfer(addr, p, 2, NULL, 0) != 0) {
++				return EIO;
++			}
++			dsx_page = hi;
++		}
++		w[wl++] = lo;
++		for (i = 0; i < len; i++) {
++			w[wl++] = buf[i];
++		}
++		return sweet_i2c_xfer(addr, w, wl, NULL, 0) == 0 ? 0 : EIO;
+ 	}
+ 	if (hi != dsx_page) {
+ 		i2c_start();
+@@ -2009,7 +2037,7 @@
+ 	for (;;) {
+ 		int fingers = dsx_f12_fingers;
+ 		int rec = dsx_f12_rec_size;
+-		int n, rc;
++		int step, start, cnt, rc;
+ 
+ 		/*
+ 		 * 0225: the display owns the bus while the panel is off. Lift
+@@ -2038,10 +2066,32 @@
+ 		if (rec > 8) {
+ 			rec = 8;
+ 		}
+-		n = fingers * rec;
++		/*
++		 * 0227: the QUP FIFO is at least 32 bytes and every read
++		 * repeats two tag bytes, so a ten-finger 80-byte read would be
++		 * refused. Split only on QUP; the bit-bang reads the block in
++		 * one transfer. The F12 data block is a plain array of records,
++		 * so addressing each chunk at touch_reg + start * rec reads the
++		 * same bytes.
++		 */
++		step = fingers;
++		if (dsx_qup) {
++			step = (32 - 2) / rec;
++			if (step < 1) {
++				step = 1;
++			}
++			if (step > fingers) {
++				step = fingers;
++			}
++		}
+ 		dsx_hid_busy = 1;
+-		rc = dsx_read_cached(DSX_ADDR, (uint16_t)dsx_f12_touch_reg,
+-		    buf, n);
++		rc = 0;
++		for (start = 0; start < fingers && rc == 0; start += step) {
++			cnt = fingers - start < step ? fingers - start : step;
++			rc = dsx_read_cached(DSX_ADDR,
++			    (uint16_t)(dsx_f12_touch_reg + start * rec),
++			    buf + start * rec, cnt * rec);
++		}
+ 		dsx_hid_busy = 0;
+ 		if (rc != 0) {
+ 			if (errors++ == 0 || (errors % 100) == 0) {

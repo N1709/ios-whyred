@@ -795,10 +795,10 @@ echo "ok   0182 paints the shim's own mark after the fbcon clear"
 # DSX page select.
 grep -q '01\[89\]\[0-9\]' .github/workflows/xnu.yml
 echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
-# The touch chain is gated the same way: a skipped 0219..0226 leaves the old
+# The touch chain is gated the same way: a skipped 0219..0227 leaves the old
 # driver or half the display link behind, so name the whole range.
-grep -q '0219|022\[0-6\]' .github/workflows/xnu.yml
-echo "ok   a skipped 0219..0226 patch fails the build instead of shipping"
+grep -q '0219|022\[0-7\]' .github/workflows/xnu.yml
+echo "ok   a skipped 0219..0227 patch fails the build instead of shipping"
 
 echo "== SWIPE: 0183 proves the digitizer path without touch hardware =="
 P183="xnu/patches/0183-sweet-hid-synthetic-swipe.patch"
@@ -2236,6 +2236,47 @@ assert args.index('whyred_touch_display_power(off ? 0 : 1);') < \
     args.index('fFB->setPanelOn(false);')
 PY
 echo "ok   0226 honours display-off after the first frame and wakes touch"
+
+echo "== TOUCH: 0227 writes F12 over QUP and keeps HID reads inside the FIFO =="
+P227="xnu/patches/0227-whyred-qup-writes.patch"
+python3 tools/check_patch.py "$P227" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:0227' \
+	--added-contains 'bsd/dev/whyred_touch.c:sweet_i2c_xfer(addr, w, wl, NULL, 0)' \
+	--added-contains 'bsd/dev/whyred_touch.c:QUP write of' \
+	--added-contains 'bsd/dev/whyred_touch.c:QUP FIFO is at least 32 bytes' \
+	--added-lacks 'bsd/dev/whyred_touch.c:the QUP port only implements reads so far'
+python3 - <<'PY'
+src = open('xnu/patches/0227-whyred-qup-writes.patch',
+           encoding='utf-8').read()
+body = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('+') and not l.startswith('+++'))
+
+# sweet_i2c_xfer() takes at most four write bytes; the DSX framing is the
+# register byte plus one to three data bytes (F01 ctrl, ctrl20, ctrl28).
+assert 'if (len < 0 || len > 3)' in body
+assert 'w[wl++] = lo;' in body
+assert 'w[wl++] = buf[i];' in body
+# The page select is its own write transaction, exactly like the read path.
+assert 'p[0] = 0xff;' in body
+assert 'p[1] = hi;' in body
+assert 'dsx_page = hi;' in body
+# The page cache is updated only after the page-select write is acked.
+assert body.index('if (sweet_i2c_xfer(addr, p, 2, NULL, 0) != 0)') < \
+    body.index('dsx_page = hi;')
+
+# A ten-finger block is 80 bytes, but the QUP FIFO is at least 32 bytes and
+# every read echoes two tag bytes. Chunk only on QUP; the bit-bang can still
+# read the whole block in one transfer.
+assert 'step = (32 - 2) / rec;' in body
+assert 'start += step' in body
+assert 'dsx_f12_touch_reg + start * rec' in body
+
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+assert 'the QUP port only implements reads so far' not in mirror
+assert 'sweet_i2c_xfer(addr, w, wl, NULL, 0)' in mirror
+assert 'step = (32 - 2) / rec;' in mirror
+PY
+echo "ok   0227 programs F12 over QUP and chunks the HID poll"
 
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
