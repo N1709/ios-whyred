@@ -19,7 +19,12 @@ There is no serial console. The kernel draws its console into ABL's framebuffer;
 
 ## How to do it yourself
 
-You need a Redmi Note 5 / Note 5 Pro (`whyred`, SDM636) with an **unlocked bootloader**, a Linux PC with `fastboot`, and a GitHub account for the kernel build. **Everything on `userdata` is lost.** Boot, vendor_boot, firmware and other partitions are never written. On Xiaomi ABL, `fastboot boot` is often stubbed out; the tested path is the `recovery` partition (`fastboot flash recovery` + `fastboot reboot recovery`), leaving the Android `boot` partition intact.
+You need a Redmi Note 5 / Note 5 Pro (`whyred`, SDM636) with an
+**unlocked bootloader**, a Linux PC with `fastboot`, and a GitHub account for
+the kernel build. The current device already has its HFSX root inside the
+existing `userdata`; do not recreate, format or flash it. Every kernel test
+uses `fastboot boot` from cold fastboot. Boot, recovery, modem, persist,
+firmware, bootloaders and the GPT are never written.
 
 ### 1. Build the kernel
 
@@ -49,6 +54,11 @@ img2simg ios16-root.img ios16-root.simg
 ```
 
 The device tree builder copies `/product` from the real iPhone X device tree. Take `Firmware/all_flash/DeviceTree.d22ap.im4p` from the IPSW, decompress its LZFSE payload (`ipsw img4 im4p extract`) and save it as `research/ipsw-x/d22ap.adt`.
+
+That Apple ADT is intentionally untracked. A GitHub runner can build the
+kernel, but its packaged boot-image artifact has no complete D22AP `/product`
+node and is **not** the P3 hardware-test image. Download the `xnu-kernel`
+artifact and repack locally where `research/ipsw-x/d22ap.adt` exists.
 
 ### 3. Build the boot image
 
@@ -80,7 +90,7 @@ Build the lavender image with `BOARD=lavender shim/build.sh`.
 
 | Boot-arg | Effect |
 | --- | --- |
-| `rd=ufsroot0 ufsrw=1 rootrw=1` | Root on `userdata`, writable |
+| `rd=emmcroot0 emmcrw=1` | Existing HFSX root inside `userdata`, writable |
 | `cpus=4` | All four Gold cores; `cpus=1` is the safe fallback |
 | `sweetfb_noconsole=1` | Stop drawing kernel text over the GUI after the first iOS frame. Leave it out to debug (much slower: every console line is drawn and scrolled by the CPU) |
 | `sweetfb_hz=60` | Panel refresh rate of the CPU frame copy (driver default is now 60) |
@@ -98,24 +108,27 @@ Build the lavender image with `BOARD=lavender shim/build.sh`.
 | `sweethw=1` | Also start sweet's SM7150 key and USB drivers (**unsafe on topaz**, not added) |
 | `launchd_unsecure_cache=1`, `wdt=-1 wdt_test=no_user_checkin` | launchd without AMFI; no hardware watchdog |
 
-### 4. Flash the root and boot
+### 4. Boot the temporary image
 
-The CI artifact (`xnu-kernel.zip`) is **not** flashed: it only contains
-`kernel.development.whyred` (plus `SHA256SUMS`) for `shim/build.sh`. The file
-to flash is the packaged boot image, `shim/out/shim-boot.img`.
+The CI kernel artifact is only input for `shim/build.sh`. Do not flash the
+boot image, recovery, modem, persist, a bootloader, or `userdata`; do not
+format or alter the GPT. The current whyred workflow starts the image from
+RAM only:
 
 ```sh
-fastboot -S 512M flash userdata ios16-root.simg   # ~5 minutes; do not unplug
-# whyred: Xiaomi ABL stubs fastboot boot, so use the recovery slot
-fastboot flash recovery shim/out/shim-boot.img
-fastboot reboot recovery
-# or, on a bootloader that allows it:
-# fastboot boot shim/out/shim-boot.img
+fastboot -s "$WHYRED_SERIAL" boot shim/out/shim-boot.img
 ```
+
+Use cold fastboot (phone off, Volume Down + Power); warm fastboot entered by
+`adb reboot bootloader` rejects `boot` on this unit. Never reboot the phone
+unless the user explicitly asks for that boot. Recovery is read-only and is
+used only to pull the SYSTEM ring after a test.
 
 The shim screen (red) shows `MMFR0`, the Gold hand-off and `SPEED silver=… gold=…` for 8 seconds, then XNU starts. whyred does not show an Apple logo: that logo is drawn by iBoot, which is not in this chain, and the kernel console is on the UART while `kPEAcquireScreen` clears the boot framebuffer. Until the display path is up the panel is black on purpose (see `NOTES.md`). To get back to fastboot, hold Power + Volume down.
 
-A manual run ("Run workflow") has a `build_mode` choice — `both`, `normal` or `log`; a push builds both:
+ A manual run ("Run workflow") has `both`, `normal`, `log`, `quick` and
+`console` choices; a push builds the quiet normal artifact. P3 hardware tests
+are repacked locally as explained above:
 
 | Image | Command line | Use |
 | --- | --- | --- |
