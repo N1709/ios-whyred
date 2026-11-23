@@ -253,6 +253,24 @@ w = mkadt.BOARDS['whyred']
 assert (w['panel_w'], w['panel_h']) == (1080, 2160), w
 assert w['soc'] == 'sdm636', w
 assert mkadt.BOARDS['lavender']['panel_h'] == 2340
+
+# Keep the complete D22AP /product node.  whyred needs the iPhone X's P3
+# artwork facet; lavender deliberately keeps its tested sRGB override.
+def product_props(root):
+    for child in root.children:
+        props = {k: v for k, _flag, v in child.props}
+        if props.get('name') == b'product\0':
+            return props, len(child.props)
+    raise AssertionError('missing /product')
+
+whyred_product, whyred_count = product_props(
+    mkadt.build(seed=b'\0' * 64, board='whyred'))
+lavender_product, lavender_count = product_props(
+    mkadt.build(seed=b'\0' * 64, board='lavender'))
+assert whyred_count >= 60, whyred_count
+assert lavender_count >= 60, lavender_count
+assert whyred_product['artwork-display-gamut'] == b'P3\0'
+assert lavender_product['artwork-display-gamut'] == b'sRGB\0'
 PY
 echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
 
@@ -795,10 +813,10 @@ echo "ok   0182 paints the shim's own mark after the fbcon clear"
 # DSX page select.
 grep -q '01\[89\]\[0-9\]' .github/workflows/xnu.yml
 echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
-# The touch chain is gated the same way: a skipped 0219..0228 leaves the old
-# driver or half the display link behind, so name the whole range.
-grep -q '0219|022\[0-8\]' .github/workflows/xnu.yml
-echo "ok   a skipped 0219..0228 patch fails the build instead of shipping"
+# The touch/display chain is gated the same way: a skipped 0219..0229 leaves
+# the old driver, half the display link or no P3 mode, so name the whole range.
+grep -q '0219|022\[0-9\]' .github/workflows/xnu.yml
+echo "ok   a skipped 0219..0229 patch fails the build instead of shipping"
 
 echo "== SWIPE: 0183 proves the digitizer path without touch hardware =="
 P183="xnu/patches/0183-sweet-hid-synthetic-swipe.patch"
@@ -2310,6 +2328,49 @@ args = mirror.split('kSweetFBRequestPowerChange:', 1)[1]
 assert 'fFB->fDirty = true;' in args
 PY
 echo "ok   0228 keeps the whyred fade from being repainted while off"
+
+echo "== DISPLAY: 0229 publishes the iPhone X P3 mode and current IDs =="
+P229="xnu/patches/0229-whyred-fb-p3-mode.patch"
+python3 tools/check_patch.py "$P229" -q \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:SWEET_FB_COLORIMETRY_P3_D65     14' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:setProperty("ColorElements", colors);' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:setProperty("TimingElements", timings);' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:args->scalarInput[0] == 0x40' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:(uint8_t *)args->structureOutput + 4' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:P3 D65 SDR'
+python3 - <<'PY'
+mirror = open('drivers/display/SweetFramebuffer.cpp', encoding='utf-8').read()
+
+# Apple/Asahi's IOAV enum is 14 for DCI-P3 D65; it is SDR gamma (EOTF 0),
+# full-range RGB, eight bits.  Do not regress to MiniIOMFB's value 1.
+assert '#define SWEET_FB_COLORIMETRY_P3_D65     14' in mirror
+assert '#define SWEET_FB_EOTF_SDR_GAMMA         0' in mirror
+mode = mirror.split('AppleCLCD::publishModes(void)', 1)[1]
+mode = mode.split('AppleCLCD::start(IOService *provider)', 1)[0]
+assert '"PixelEncoding", 0' in mode
+assert '"Depth", 8' in mode
+assert '"Colorimetry", SWEET_FB_COLORIMETRY_P3_D65' in mode
+assert '"EOTF", SWEET_FB_EOTF_SDR_GAMMA' in mode
+assert '"DynamicRange", 0' in mode
+assert '"Active", fLogicalW' in mode
+assert '"Active", fLogicalH' in mode
+
+# The properties must exist before the service is registered.  Block 0x40
+# reports the same color/timing IDs at +4 and must not be zeroed afterwards.
+start = mirror.split('AppleCLCD::start(IOService *provider)', 1)[1]
+start = start.split('\nvoid\nAppleCLCD::vsyncFired(', 1)[0]
+assert start.index('publishModes();') < start.rindex('registerService();')
+method = mirror.split('IOMobileFramebufferUserClient::externalMethod', 1)[1]
+zero = method.index('bzero(args->structureOutput, args->structureOutputSize);')
+write = method.index('(uint8_t *)args->structureOutput + 4')
+assert zero < write
+assert method.count('bzero(args->structureOutput, args->structureOutputSize);') == 1
+supported = method.split('case kSweetFBSupportedFrameInfo:', 1)[1]
+supported = supported.split('case kSweetFBGetBlock:', 1)[0]
+assert 'out[0] = 0;' in supported
+assert 'outCount = 1;' in supported
+PY
+echo "ok   0229 publishes P3 D65 SDR and returns matching active mode IDs"
 
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"

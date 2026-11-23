@@ -19,6 +19,19 @@
 * The chip only answers in a **window during early boot** (before eMMC and
   before the QUP driver takes the bus), so the probe runs there.
 
+## Latest hardware result (2026-11-23)
+
+The P3/e92f698 ring proves the late LDO11 path is safe and active on this
+unit: APID 39 is APPS-owned, enable reads `0xa0`, and both disable and enable
+ACK. The subsequent address test still advances through the byte stream,
+including after F01 reset at `0x26` and the fallback reset at `0x06`:
+`address phase still ignored (streaming)`. Therefore F12 programming, its
+poll and the HID thread are correctly skipped; there are no phantom touch
+events. A rail cycle alone is no longer a candidate fix. The next isolated
+diagnostics are the existing general-call reset and QUP framing, followed by
+F01/F12 setup only if `dsx_addressable` becomes true. Recovery stays
+read-only.
+
 ## What the probe does
 
 `whyred_touch_early()` runs at the top of `santoni_sdhci_init()`:
@@ -133,8 +146,9 @@ framebuffer six times, writes black and idles; display-on marks the frame
 dirty and the next present composes normally. 0228 also drops presents while
 `fPowerOff` is set: the 2026-11-22 ring kept presenting after display-off
 (744 presents after its second request), which would have repainted the fade.
-This software blank has not been booted yet; the ring must show the display
-transition and the panel must go dark before it counts.
+The latest ring shows the transition and no presents after display-off, but
+the SpringBoard gamut crash already leaves the screen black, so visual
+blank/wake behavior is not yet a clean hardware verdict.
 
 Expected ring lines:
 

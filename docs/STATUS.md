@@ -1,40 +1,30 @@
 # Current status
 
-Last updated: 2026-11-23. Latest built kernel: `e92f698` (patches through
-`0228`), run `45145911115` green. Corrected diagnostic images (payload
-rebuilt with `emmcrw=1 cs_enforcement_disable=1
-unentitled_ios_sim_launch=1`): `images/shim-boot-ring-9dd552a.img`
-(5,918,720 B, sha256 `1cc7a4df…`) is the first isolation boot for 0224-0226;
-`images/shim-boot-ring-e92f698.img` (5,918,720 B, sha256 `c61d267b…`) adds
-0227/0228; and `images/shim-boot-ring-e92f698-qup.img` (5,918,720 B, sha256
-`5fd5a252…`) adds `sweeti2c=1`. The first 2026-11-23 images died at initproc
-with `CS_KILLED` because their ad-hoc cmdline omitted those three flags;
-hashes `474f9a41…`, `b310dcb7…` and `4acef22c…` are invalid. No ring exists
-for the corrected images, so 0224-0228 are still unproven on the phone.
+Last updated: 2026-11-23. Latest CI-built kernel: `e92f698` (patches through
+`0228`), run `45145911115` green. Local patch `0229` publishes the P3 D65
+IOMFB mode and passes the full host suite; it is not built or booted yet.
+The latest hardware boot is the already-used
+`shim-boot-ring-e92f698-p3.img` (6,176,768 B, sha256 `265e8171…`). Its fresh
+ring is `/tmp/opencode/logs/ring-recovery-now.txt` (130,322 B, flush 133).
+Do not boot that same image again.
 
 ## One-paragraph summary
 
-The kernel boots from `fastboot boot` into our XNU, brings up eMMC at 8-bit
-high-speed, parses the GPT, mounts the HFSX iOS root read-write, starts the
-console log flusher on SYSTEM and drives the panel. On the October v12 root,
-launchd reaches backboardd and SpringBoard and the lock screen. The touch
-controller (Synaptics DSX at I2C `0x20`) is probed before eMMC and streams
-its PDT, but the address phase is still ignored, so the HID poll stays off.
-0224-0227 add a rail re-probe, panel-linked DSX sleep/wake, a bounded
-stayon veto and QUP writes; 0228 drops presents while the panel is off so
-the whyred fade holds. All are committed and built green in run
-`45145911115`, not yet booted. The first 2026-11-23 images failed at initproc
-with `CS_KILLED` because their ad-hoc payload cmdline dropped the three
-iOS-root flags; corrected images now carry them. The 2026-11-22 black-screen
-report came from the older `5985a74` image: XNU and SpringBoard were alive
-(1,060 presents, no panic), so it was a userland boot stage, not a 0226
-regression.
+The kernel boots from `fastboot boot`, mounts the HFSX iOS root and reaches
+backboardd/SpringBoard. The complete D22AP `/product` node now correctly
+reports P3, but the latest ring proves that the framebuffer runtime mode
+still falls back to sRGB. SpringBoard therefore crashes while loading the P3
+`BoundingPathBitmap-1125x2436-375x812-3.00x`, producing the current black
+screen. Patch 0229 supplies the missing P3 `ColorElements`/`TimingElements`
+and active IDs. The same boot proves LDO11 can be power-cycled safely on this
+unit, but the Synaptics DSX still ignores the register address phase; F12 and
+the HID poll remain safely disabled. Touch must become normal only after the
+lock screen is visible.
 
 ## Where the boot stands (2026-11-23)
 
-* `0224` gives `whyred_touch_power_cycle()` three results (absent, on after
-  an APPS-owned toggle, refused); only a real toggle re-runs the address
-  test before F12 is programmed.
+* The latest ring proves `0224`: LDO11 is APPS-owned, disable/enable ACK and
+  readback remains `0xa0`; the fresh address test still streams.
 * `0225` pauses the HID poll and writes F01 `SENSOR_SLEEP` on display off;
   display on writes `NORMAL_OPERATION | NO_SLEEP_ON`, re-programs F12 and
   only then resumes. `sweetouchgcall=1` is the opt-in general-call reset.
@@ -46,37 +36,32 @@ regression.
   `sweet_i2c_xfer()` when QUP1 owns the bus, so F12 can be programmed after
   a successful QUP read, and splits the ten-finger HID poll into three-record
   chunks to stay inside the FIFO's 32-byte minimum.
-* `0228` drops `present()` while `fPowerOff` is set. The last ring has 744
-  presents after its second display-off request; without this guard those
-  frames would repaint the whyred software fade and relight the panel.
+* `0228` is present in the latest boot: the ring has four presents before
+  display-off and none afterwards. The SpringBoard crash prevents a clean
+  visual power-button verdict.
 * The default canvas is the iPhone X 1125x2436, cropped to the 1080x2160
   panel (`fOffX=20`, `fOffY=138`), which keeps UIKit's red unsupported-screen
   clock away. `SWEETFB_NATIVE=1` is the opt-in native canvas.
-* The last ring (`5985a74`) has the old `display off ignored
-  (sweetfb_stayon)` line and none of the 0225/0226 strings. Ring identity is
-  now checked with `tools/ring-verdict.sh` before drawing conclusions.
+* The latest mode is the correct logical 1125x2436 at 60 Hz but still says
+  `sRGB SDR`; the real product node says P3. That mismatch, not the canvas,
+  is the current SpringBoard crash.
+* `0229` uses the confirmed IOAV values `Colorimetry=14` (DCI-P3 D65),
+  `EOTF=0` (SDR gamma), RGB 8-bit/full range, with color/timing ID 1 and
+  selector 79 block `0x40` returning those IDs at `+4`.
 
 ## Next actions
 
-1. Boot `images/shim-boot-ring-9dd552a.img`; run
-   `tools/ring-verdict.sh` on the pulled ring. It must report post-0225,
-   not the old `5985a74` image.
-2. Read `address phase still ignored, not programming` and confirm there are
-   no phantom `SWEET HID: touch` lines. Then press power after the first
-   frame and check the fade plus the 0225 sleep/wake lines.
-3. Boot `images/shim-boot-ring-e92f698.img` (sha256 `c61d267b…`). It adds
-   0227/0228; the ring must show no `present` after `display off` and the
-   panel must stay black until display-on repaints.
-4. `9dd552a` already carries `sweetouchpower=1`, so read the late LDO11
-   result there; if it refuses a non-APPS APID, implement the RPM regulator
-   request instead of a direct toggle. Try `sweetouchgcall=1` as a separate
-   test. Then boot `images/shim-boot-ring-e92f698-qup.img` (sha256
-   `5fd5a252…`, `sweeti2c=1`) and read `DSX reads over QUP1`, the address
-   test and the first QUP-backed F12 write.
-5. If the address phase works, confirm `f01 ctrl -> 0x84` (NO_SLEEP_ON),
-   `f12 ctrl20 <- ... 00`, `f12 ctrl28 <- 0x1f ack`, then decode X/Y.
-6. Keep `SWEETREBOOT=0` while debugging; investigate the CMD24
-   `WRITE_BLOCK` timeout separately.
+1. Commit/push 0229 and the complete `/product` fix; require a green WHYRED
+   CI build with no skipped patch.
+2. Pack a new ring image (same safe iOS-root flags, P3 ADT, no
+   `sweetfb_native=1`) and report exact path, size and sha256.
+3. Boot only that new image with `fastboot boot`; require the ring to show
+   both the driver's `P3 D65 SDR` line and `FBSDisplayMode ... P3 SDR`, then
+   confirm SpringBoard no longer throws the BoundingPath exception.
+4. Once the lock screen is visible, resume DSX work: test a separate
+   general-call/QUP diagnostic, solve the address phase, program F01/F12,
+   and verify ordinary tap, swipe and multi-touch through `SweetHIDTouch`
+   with no phantom contacts.
 
 ## Touch: what is known
 
@@ -88,6 +73,9 @@ regression.
 * The part ignores the address phase after the first read and keeps a read
   pointer (LPWG/streaming state). 0195/0222/0225 gate every F12 write on
   `dsx_addressable`; a still-streaming part is left alone.
+* The latest boot proves an APPS-owned LDO11 disable/enable cycle succeeds,
+  but it does not restore addressing. Next diagnostics keep general-call
+  reset and QUP framing separate; recovery remains read-only.
 * F12 query block: `01 01 01 02 00 00 00 0e 0f 15 c7 11 12 33 13 49 07 83
   02 0b 81 04 03`.
 * Missing: a coherent addressed read or a successful wake from LPWG, so the
@@ -97,7 +85,7 @@ regression.
 
 * There is no local XNU build; each kernel change is one CI run
   (~10-15 min). Run `bash tests/run_tests.sh` before committing.
-* Latest green: `e92f698`, run `45145911115`.
+* Latest green: `e92f698`, run `45145911115`; 0229 is local/host-green only.
 * Repack a CI kernel with the two-pass `shim/build.sh` recipe in
   `docs/history/2026-11.md`; boot only with `fastboot boot`.
 
@@ -105,6 +93,7 @@ regression.
 
 | Image | Kernel | sha256 | Size |
 | --- | --- | --- | --- |
+| `shim-boot-ring-e92f698-p3.img` (**already booted**) | `e92f698` | `265e8171d6146353b8b94564815285a585d5264668b2313ee8318b55d57830a8` | 6,176,768 B |
 | `images/shim-boot-ring-9dd552a.img` | `9dd552a` | `1cc7a4df27ed62ddadcad8b6f2687fcb1ee644e94acedc20834e82ea7484126f` | 5,918,720 B |
 | `images/shim-boot-ring-e92f698.img` | `e92f698` | `c61d267baffcdd2a22a6963df6f50db28ef748a20811b733e53c6149618de00e` | 5,918,720 B |
 | `images/shim-boot-ring-e92f698-qup.img` | `e92f698` | `5fd5a252f4daa626517db7f1ca26739cc25272eae3fa3711de5ae30b4ff5e949` | 5,918,720 B |

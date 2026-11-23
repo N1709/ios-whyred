@@ -17,8 +17,8 @@ Last updated: 2026-11-23.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | 0222/0223/0225 gate the poll; the last touch ring (pre-0225) said `address phase still ignored`, so the HID poll stays off. 0227 makes the QUP path able to write F12 and chunks the poll to the FIFO |
-| Power button / display off | 0226 bounds `sweetfb_stayon` to the first frame, blanks whyred by fading the boot framebuffer (no DSI), and 0228 drops presents while off so the fade holds; not booted |
+| Touch (as HID input) | Latest P3 ring: LDO11 power-cycle succeeds, but the DSX still ignores the address phase; F12 and HID remain safely off. 0227's QUP path is still untested |
+| Power button / display off | Latest ring reaches `display off, HID paused`; 0228 prevents later presents. Visual blanking is confounded by the SpringBoard crash |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
@@ -30,7 +30,7 @@ Last updated: 2026-11-23.
 | Cellular | Added (0215), not booted |
 | Wallpaper / PosterBoard | Lever added (0216), not booted |
 | Charging | Static 100% fallback; no PM660 gauge |
-| iOS userland (launchd → SpringBoard) | **Works** — boots to the lock screen |
+| iOS userland (launchd → SpringBoard) | Historical root reached the lock screen; latest P3 boot reaches SpringBoard but crashes on `BoundingPathBitmap` because IOMFB still reports sRGB |
 
 Legend: **Works** = verified on the phone; **Added** = code exists but has
 not booted; **No** = not implemented or known blocked; **Static** = a fixed
@@ -50,10 +50,51 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | CPU / memory | 4× Gold A73, 16K pages, GICv3, timers — **works** |
 | eMMC | SDCC v5, 8-bit high-speed, 122,142,720 sectors, GPT parsed — **works** |
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
-| Display | Kernel framebuffer + 4-bar test visible on panel — **works**; 0226 makes the default canvas 1125x2436 (no red clock), not booted |
+| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. Runtime gamut is still sRGB; local patch 0229 publishes P3 D65, not built yet |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
-| iOS userland | launchd → backboardd → SpringBoard reaches the lock screen (October, v12 root); the last boot (old image) was in a userland boot stage, not a hang; touch HID, GPU/Metal and the wallpaper path are the remaining gaps |
-| Touch | DSX at `0x20` streams the PDT; the address phase is still ignored. 0224 re-tests after a real LDO11 toggle; 0225 ties sleep to the panel. Neither is proven on the phone yet |
+| iOS userland | launchd → backboardd → SpringBoard; latest boot crashes before the visible lock screen because the P3 asset facet is paired with an sRGB `FBSDisplayMode` |
+| Touch | DSX at `0x20` streams the PDT; the address phase is still ignored even after the latest ring's successful LDO11 power-cycle. No phantom HID poll starts |
+
+## Latest boot: P3 product is correct, IOMFB is still sRGB (2026-11-23)
+
+The already-booted `shim-boot-ring-e92f698-p3.img` is 6,176,768 B, sha256
+`265e8171d6146353b8b94564815285a585d5264668b2313ee8318b55d57830a8`.
+It has the real 63-property D22AP `/product` node with
+`artwork-display-gamut=P3`, the iPhone X 1125x2436 canvas, no
+`sweetfb_native=1`, and all three iOS-root exec flags. Do not boot this same
+image again.
+
+The fresh recovery pull is `/tmp/opencode/logs/ring-recovery-now.txt`
+(130,322 B, flush 133). It proves:
+
+* backboardd still reports `375x812@3x ... 60Hz sRGB SDR`;
+* SpringBoard crashes on
+  `BoundingPathBitmap-1125x2436-375x812-3.00x` because its asset facet is P3;
+* LDO11 toggles successfully, but the DSX remains streaming and F12/HID are
+  correctly skipped;
+* four frames are presented, then `display off, HID paused`; there are no
+  later presents in this ring.
+
+Local patch `0229-whyred-fb-p3-mode.patch` now publishes
+`TimingElements`/`ColorElements` as RGB 8-bit, P3 D65 (`Colorimetry=14`),
+SDR (`EOTF=0`), and returns color/timing ID 1 from selector 79 block `0x40`.
+The full host suite passes. It is **not built or booted** yet.
+
+Progress estimates: black screen/SpringBoard 78%, touch 70%, status bar 70%,
+GPU 35%, overall 61%.
+
+## Current next actions
+
+1. Commit and push 0229 plus the complete-P3 product-node fix; wait for a
+   green WHYRED CI kernel.
+2. Pack a **new** ring image with the existing e92f698 command line, P3 ADT,
+   no `sweetfb_native=1`; report its path, size and sha256.
+3. Boot it once with `fastboot boot`, pull a fresh ring, and require both
+   `SWEET FB: ... P3 D65 SDR` and `FBSDisplayMode ... P3 SDR` before calling
+   the black-screen fix successful.
+4. After the lock screen is visible, continue the DSX address-phase work
+   until normal tap/swipe/multi-touch reaches `SweetHIDTouch`; test the QUP
+   image separately. Then continue the real Adreno 509 path.
 
 ## CS_KILLED from a bad image cmdline, corrected (2026-11-23)
 

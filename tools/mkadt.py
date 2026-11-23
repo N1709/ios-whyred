@@ -67,7 +67,7 @@ def d22ap_product(path=D22AP_ADT):
     root, _ = adt.parse(open(path, 'rb').read())
     for c in root.children:
         if dict((k, v) for k, f, v in c.props).get('name') == b'product\0':
-            return [(k, v) for k, v in c.props if not f and k not in ('name', 'AAPL,phandle')]
+            return [(k, v) for k, f, v in c.props if not f and k not in ('name', 'AAPL,phandle')]
     raise SystemExit(f'{path}: no /product node')
 
 u32 = lambda *v: struct.pack('<%dI' % len(v), *v)
@@ -204,7 +204,9 @@ def build(seed=None, qemu=False, native=False, board=DEFAULT_BOARD):
     ])
 
     product_props = d22ap_product()
-    if product_props:
+    if product_props and cfg['name'] == 'lavender':
+        # lavender presents a 1080x2340 sRGB panel; whyred is an iPhone X
+        # (D22AP) and needs the real P3 gamut so UIKit finds the P3 artwork.
         product_props = [(k, cstr('sRGB') if k == 'artwork-display-gamut' else v) for k, v in product_props]
     product = [node('product', [ph()] + product_props)] if product_props else []
 
