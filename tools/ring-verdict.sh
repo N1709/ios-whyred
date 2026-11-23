@@ -23,6 +23,7 @@ native=0; has_arg sweetfb_native=1 && native=1
 noconsole=0; has_arg sweetfb_noconsole=1 && noconsole=1
 stayon=0; has_arg sweetfb_stayon=1 && stayon=1
 touchpower=0; has_arg sweetouchpower=1 && touchpower=1
+qup=0; has_arg sweeti2c=1 && qup=1
 
 spring=$(count '^exec SpringBoard$')
 backboard=$(count '^exec backboardd$')
@@ -61,7 +62,7 @@ fi
 
 echo "ring:      $ring"
 echo "image:     $image"
-echo "args:      native=$native noconsole=$noconsole stayon=$stayon touchpower=$touchpower"
+echo "args:      native=$native noconsole=$noconsole stayon=$stayon touchpower=$touchpower sweeti2c=$qup"
 echo "kernel:    alive=$alive"
 echo "display:   old-veto=$old_veto new-veto=$new_veto sleep=$sleep_line wake=$wake_line nosleep=$nosleep"
 echo "console:   nxprov=$nxprov (normal Skywalk provider registration, not a stall)"
