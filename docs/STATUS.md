@@ -3,6 +3,8 @@
 Last updated: 2026-11-23. Latest CI-built kernel: `e92f698` (patches through
 `0228`), run `45145911115` green. Local patch `0229` publishes the P3 D65
 IOMFB mode and passes the full host suite; it is not built or booted yet.
+Run `45210593721` stopped before compile because its host test referenced the
+intentionally untracked D22AP ADT; the replacement uses a synthetic fixture.
 The latest hardware boot is the already-used
 `shim-boot-ring-e92f698-p3.img` (6,176,768 B, sha256 `265e8171…`). Its fresh
 ring is `/tmp/opencode/logs/ring-recovery-now.txt` (130,322 B, flush 133).

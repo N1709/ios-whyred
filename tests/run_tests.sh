@@ -247,6 +247,7 @@ grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0020-stage-bearssl.sh
 grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0026-stage-hfs.sh
 python3 - <<'PY'
 import sys
+import tempfile
 sys.path.insert(0, 'tools')
 import mkadt
 w = mkadt.BOARDS['whyred']
@@ -254,8 +255,31 @@ assert (w['panel_w'], w['panel_h']) == (1080, 2160), w
 assert w['soc'] == 'sdm636', w
 assert mkadt.BOARDS['lavender']['panel_h'] == 2340
 
-# Keep the complete D22AP /product node.  whyred needs the iPhone X's P3
-# artwork facet; lavender deliberately keeps its tested sRGB override.
+# Exercise the three-field ADT property tuples without checking an Apple ADT
+# into git.  A flagged syscfg placeholder must be filtered out.
+fixture_root = mkadt.node('device-tree', children=[mkadt.node('product', [
+    ('artwork-display-gamut', b'P3\0'),
+    ('fixture-kept', mkadt.u32(1)),
+])])
+fixture_root.children[0].props.append(
+    ('fixture-syscfg', 1, b'syscfg/test\0'))
+with tempfile.NamedTemporaryFile(suffix='.adt') as fixture:
+    fixture.write(mkadt.adt.serialize(fixture_root))
+    fixture.flush()
+    copied = dict(mkadt.d22ap_product(fixture.name))
+assert copied['artwork-display-gamut'] == b'P3\0'
+assert copied['fixture-kept'] == mkadt.u32(1)
+assert 'fixture-syscfg' not in copied
+
+# Keep a complete product-property set. whyred needs the iPhone X's P3
+# artwork facet; lavender deliberately keeps its tested sRGB override. Mock
+# only the private input blob, not build() or the board-specific logic.
+fixture_product = [('artwork-display-gamut', b'P3\0')] + [
+    ('fixture-%02d' % i, mkadt.u32(i)) for i in range(59)
+]
+real_d22ap_product = mkadt.d22ap_product
+mkadt.d22ap_product = lambda: list(fixture_product)
+
 def product_props(root):
     for child in root.children:
         props = {k: v for k, _flag, v in child.props}
@@ -267,6 +291,7 @@ whyred_product, whyred_count = product_props(
     mkadt.build(seed=b'\0' * 64, board='whyred'))
 lavender_product, lavender_count = product_props(
     mkadt.build(seed=b'\0' * 64, board='lavender'))
+mkadt.d22ap_product = real_d22ap_product
 assert whyred_count >= 60, whyred_count
 assert lavender_count >= 60, lavender_count
 assert whyred_product['artwork-display-gamut'] == b'P3\0'

@@ -78,7 +78,10 @@ The fresh recovery pull is `/tmp/opencode/logs/ring-recovery-now.txt`
 Local patch `0229-whyred-fb-p3-mode.patch` now publishes
 `TimingElements`/`ColorElements` as RGB 8-bit, P3 D65 (`Colorimetry=14`),
 SDR (`EOTF=0`), and returns color/timing ID 1 from selector 79 block `0x40`.
-The full host suite passes. It is **not built or booted** yet.
+The full host suite passes. It is **not built or booted** yet. First CI run
+`45210593721` stopped before compile because a host assertion referenced the
+intentionally untracked D22AP ADT; its replacement uses a synthetic ADT
+fixture and adds no Apple blob to git.
 
 Progress estimates: black screen/SpringBoard 78%, touch 70%, status bar 70%,
 GPU 35%, overall 61%.
