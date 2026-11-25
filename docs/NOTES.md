@@ -41,18 +41,45 @@ being brought up, but no touch data reaches HID yet.
   GIC SPI 95), SDA GPIO 2, SCL GPIO 3, IRQ 67, rail `pm660_l11`. The DT
   has no DSX reset GPIO; GPIO 66 is the **Novatek** NT36672 reset.
 
-## Driver handover (2026-11-25)
+## Driver handover (2026-11-25, for Claude)
 
-* Patch `0236` (commit `d0d3ebc`) addresses the DSX the way the working
-  vince TD4310 driver does: page select, register address as its own
-  START..STOP transaction, then a fresh read START. No repeated start.
-* It is the default frame and is tried before the old framing matrix.
-* Host tests green. CI run `45613338340` (tip `86d469d`) builds the kernel.
-* Next: `tools/fetch-ci-kernel.sh 45613338340 /tmp/opencode/kernel-0236`,
-  pack `--native --srgb --power`, boot once, pull the ring. Require
-  `frame page|a1stop addressed` or `address phase works` before F12/HID.
-* The temporary root handover file was removed; this section is the
-  driver handover.
+* Tip `4907c72` (docs); touch code `d0d3ebc`/`86d469d`. CI `45613338340`
+  (tip `86d469d`) is **green**. Host suite green.
+* **0236 booted and failed.** Ring pulled from SYSTEM
+  (`ring-0236.txt`; local copy `/tmp/opencode/ring-0236.txt`). The vince
+  frame `page|a1stop` was used for every read and the address phase is still
+  ignored: at `0x00e9` the first read returns F34 `27 00 09 00 21 34`, the
+  second returns F01 `2f 26 0d 04 01 01`; at `0x00e3` it returns
+  `81 4c 00 13 06 01` then `12 0a 29 00 8f d4`. The pointer streams the
+  register map in walk order. **Framing is not the cause; do not add another
+  framing.**
+* Image already booted, do not boot it again: `whyred-ring-0236.img`,
+  sha256 `7002b363d2f35dc274045738747f38316673f1fdc2ed974bfc0200d088d15116`.
+* New root-cause candidate: the panel is a **Tianma TD4310 TDDI**
+  (`dsi_td4310_tianma_fhd_video`); display and touch are one chip. The stock
+  DT comments out `synaptics,reset-gpio` because the **MDSS panel reset**
+  owns it: `qcom,platform-reset-gpio = <&tlmm 53 0>` in
+  `sdm660-mtp.dtsi`, TE `qcom,platform-te-gpio = <&tlmm 59 0>`. GPIO 66 is
+  the **Novatek** reset; the `sweetouchreset=1` ring proved it does nothing
+  to this DSX.
+* Recovery evidence (OrangeFox, stock kernel): `1-0020` binds, the PDT scan
+  works, `productinfo 0x01 0x00`, `buildid 2788281`, `flashprog 0`,
+  `fwu_go_nogo`: device fw `2788281` vs image `2732044`, no reflash. The
+  chip is in app mode after the stock display/touch init, and the iOS kernel
+  never performs that init.
+* Next candidates, in order:
+  1. Pulse the TD4310 reset (GPIO 53) once, then re-init the panel. The
+     display may blank; `SweetFramebuffer` can send DCS over DSI0 but has no
+     TD4310 init sequence, so plan the panel re-init before this boot.
+  2. Speed up the bit-bang: `TOUCH_I2C_DELAY_US` is 10 (about 33 kHz); the
+     stock QUP runs at 400 kHz. Try 2 us, same framing.
+  3. Fix the QUP1 bring-up. The `--qup` image panics at the first
+     `qup[QUP_HW_VERSION]` read ("QUP mapped, probing the SE"): the BLSP1
+     QUP1 register window is dead (CX/NoC or clock). Bit-bang is the only
+     safe path until this is fixed.
+* Read `docs/touch.md` and `docs/STATUS.md` first. The brain note in
+  `brain_ai` (`brain/ios-whyred/2026/11-November/25-Wednesday/`) has the
+  long timeline but is not pushed yet.
 
 ## History index
 
