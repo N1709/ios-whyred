@@ -6,8 +6,13 @@ old pre-0229 image. The user confirmed that `35e591a` did reach the lock
 screen, and that commit's display recipe is native 1080x2160 canvas,
 `/product` sRGB and no mode registry. The series is therefore reverted to
 that display state (0229-0231 removed, driver restored to the 0228 tree)
-while every current touch/storage patch stays. A fresh image is being built;
-the red unsupported-screen bar is accepted for now.
+while every current touch/storage patch stays. The recovery image is built
+and copied to the laptop; the red unsupported-screen bar is accepted for now.
+It is `laptop:/home/n1709/whyred-flash/shim-boot-ring-b971761-native-srgb.img`
+(6,176,768 B, sha256
+`de50ba30309dd3cf0ba14b7c6256d56db4d61147da9bdbb28c091129ece7991a`,
+native canvas with the sRGB product, `sweetlog=1`, `sweetouchpower=1`) and
+has not been booted yet.
 The last hardware ring remains the already-used 0230 image
 `shim-boot-ring-9abe008-p3.img` (5,918,720 B, sha256 `e92bff82…`); do not
 boot that same image again.
@@ -57,10 +62,8 @@ lock screen is visible.
 
 ## Next actions
 
-1. Build and boot the new recovery image (`--native --srgb`, superproject
-   after this revert) with `fastboot boot`; require SpringBoard to reach the
-   lock screen with the red unsupported-screen bar and no BoundingPath
-   exception.
+1. Boot `shim-boot-ring-b971761-native-srgb.img` once with `fastboot boot`
+   (cold fastboot; the phone is in recovery now).
 2. Once the lock screen is visible, resume DSX work: test a separate
    general-call/QUP diagnostic, solve the address phase, program F01/F12,
    and verify ordinary tap, swipe and multi-touch through `SweetHIDTouch`
