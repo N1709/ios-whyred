@@ -297,7 +297,6 @@ try:
 finally:
     if saved_gamut is not None:
         os.environ['SWEET_ADT_GAMUT'] = saved_gamut
-mkadt.d22ap_product = real_d22ap_product
 assert whyred_count >= 60, whyred_count
 assert lavender_count >= 60, lavender_count
 assert whyred_product['artwork-display-gamut'] == b'P3\0'
@@ -312,6 +311,9 @@ try:
 finally:
     del os.environ['SWEET_ADT_GAMUT']
 assert srgb_product['artwork-display-gamut'] == b'sRGB\0'
+# The private D22AP blob is not in git; keep the mock in place for every
+# build above and restore the real loader only now.
+mkadt.d22ap_product = real_d22ap_product
 PY
 echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
 

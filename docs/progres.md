@@ -17,7 +17,7 @@ Last updated: 2026-11-25.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | Latest P3 ring: LDO11 power-cycle succeeds, but the DSX still ignores the address phase; F12 and HID remain safely off. 0227's QUP path is still untested |
+| Touch (as HID input) | Patch 0236 now addresses the DSX the way the working vince TD4310 driver does: page select, address byte with a real STOP, then a fresh read START. Host tests pass; hardware is unproven until the next boot. The older rings still show the address phase ignored |
 | Power button / display off | Latest ring reaches `display off, HID paused`; 0228 prevents later presents. Visual blanking is confounded by the SpringBoard crash |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
@@ -53,7 +53,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Display | Kernel framebuffer works. The recovery build returns to the 35e591a recipe: native 1080x2160 canvas and sRGB `/product`, with the red unsupported-screen bar accepted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | 35e591a reaches the lock screen; the later P3 product identity made SpringBoard throw on `BoundingPathBitmap`. The recovery series drops 0229-0231 and keeps all touch/storage patches |
-| Touch | DSX at `0x20` streams the PDT; the address phase is still ignored even after the latest ring's successful LDO11 power-cycle. No phantom HID poll starts |
+| Touch | DSX at `0x20`. 0236 switches to vince's framing (address byte, STOP, fresh read START) and tries it first; no new ring yet, so the address phase is still unproven on whyred |
 
 ## Revert: back to the 35e591a lock-screen display (2026-11-25)
 
@@ -116,15 +116,29 @@ Progress estimates: black screen/SpringBoard 95%, touch 65% (QUP1 SErrors;
 GPIO66 reset still streams; bit-bang address phase unresolved), status bar
 60%, GPU 35%, overall 72%.
 
+## 0236: the vince address-then-stop framing (2026-11-25)
+
+The sibling `unixnu-vince` repo drives the same Synaptics TD4310 TDDI at
+`0x20` and works. Its `rmi_read()` sends the page select, then the register
+address as its own START..STOP transaction, then a fresh read START; it
+never uses a repeated start. Every whyred framing so far kept the address
+and the read in one repeated-start transfer.
+
+Patch `0236` adds `DFRAME_PAGE_A1_STOP` to both the bit-bang and QUP paths,
+makes it the default and tries it before the old matrix. Host tests pass;
+the first CI run (`45611958791`) failed in the unrelated ADT test because
+the private `research/ipsw-x/d22ap.adt` is not in git, not in the touch
+patch. No hardware ring yet.
+
 ## Current next actions
 
-1. Push the revert, wait for a green `xnu-kernel` run, fetch that kernel and
-   pack `--native --srgb --power`; boot it once with `fastboot boot`.
-2. Require SpringBoard to reach the lock screen with the red bar and no
-   `BoundingPathBitmap` exception, then pull the ring.
-3. After the lock screen is visible, continue the DSX address-phase work
-   until normal tap/swipe/multi-touch reaches `SweetHIDTouch`; test the QUP
-   image separately. Then continue the real Adreno 509 path.
+1. Get a green `xnu-kernel` run for `0236`, fetch that kernel and pack
+   `--native --srgb --power`; boot it once with `fastboot boot`.
+2. Require the ring to show `frame page|a1stop addressed` or
+   `address phase works`; only then expect F12 programming and
+   `WHYRED TOUCH: HID poll`.
+3. Test tap, swipe and multi-touch through `SweetHIDTouch`. Then continue
+   the real Adreno 509 path.
 
 ## CS_KILLED from a bad image cmdline, corrected (2026-11-23)
 

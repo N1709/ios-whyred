@@ -17,6 +17,16 @@ The last hardware ring remains the already-used 0230 image
 `shim-boot-ring-9abe008-p3.img` (5,918,720 B, sha256 `e92bff82…`); do not
 boot that same image again.
 
+2026-11-25: the sibling vince TD4310 driver (`unixnu-vince`,
+`0099-vince-input.patch`) reads the same part with the register address in
+its own START..STOP transaction and a fresh read START; it never uses a
+repeated start. Patch `0236` adds that framing (`page|a1stop`) to both the
+bit-bang and QUP paths, makes it the default and tries it before the old
+matrix. Host tests pass, `d0d3ebc` is pushed; CI run `45611958791` failed in
+the unrelated ADT test (the private `research/ipsw-x/d22ap.adt` is not in
+git), fixed in the follow-up. No hardware ring yet: the ring must show
+`frame page|a1stop addressed` or `address phase works` before F12/HID.
+
 ## One-paragraph summary
 
 The kernel boots from `fastboot boot`, mounts the HFSX iOS root and reaches
@@ -62,8 +72,10 @@ lock screen is visible.
 
 ## Next actions
 
-1. Boot `shim-boot-ring-b971761-native-srgb.img` once with `fastboot boot`
-   (cold fastboot; the phone is in recovery now).
+1. Pack the `0236` CI kernel with `tools/build-ring-image.sh KERNEL OUT
+   --native --srgb --power`, boot it once with `fastboot boot` (cold
+   fastboot), and pull the ring. Require `frame page|a1stop addressed`
+   or `address phase works` before anything else.
 2. Once the lock screen is visible, resume DSX work: test a separate
    general-call/QUP diagnostic, solve the address phase, program F01/F12,
    and verify ordinary tap, swipe and multi-touch through `SweetHIDTouch`
