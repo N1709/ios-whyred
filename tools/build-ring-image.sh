@@ -8,6 +8,7 @@
 #   --qup     append sweeti2c=1 (BLSP1 QUP1 owns the bus; 0227 writes)
 #   --power   append sweetouchpower=1 (late LDO11 toggle, opt-in)
 #   --native  append sweetfb_native=1 (1080x2160 canvas, red fallback clock)
+#   --srgb    force an sRGB /product identity (pre-P3 lock-screen recovery)
 #
 # The default canvas is the iPhone X 1125x2436 that SweetFramebuffer crops to
 # 1080x2160, so UIKit does not draw the red unsupported-screen clock.
@@ -33,14 +34,19 @@ test -s research/ipsw-x/d22ap.adt || {
 qup=0
 power=0
 native=0
+srgb=0
 for arg in "$@"; do
 	case $arg in
 	--qup) qup=1 ;;
 	--power) power=1 ;;
 	--native) native=1 ;;
+	--srgb) srgb=1 ;;
 	*) echo "unknown option: $arg" >&2; exit 2 ;;
 	esac
 done
+if [ "$srgb" = 1 ]; then
+	export SWEET_ADT_GAMUT=sRGB
+fi
 
 # emmcrw=1 makes the HFSX root writable, cs_enforcement_disable=1 disables
 # code-signing enforcement, and unentitled_ios_sim_launch=1 lets the macOS-
@@ -81,13 +87,22 @@ ROOTDEV=emmcroot0 EXTRA_CMDLINE="$common" KPRINTF_SPAM= \
 	KPRINTF_MUTE=1 PANEL_NOCONSOLE=1 \
 	IMAGE_GZ="$gz" bash shim/build.sh "$kernel"
 
-grep -aq 'P3 product / P3 RGB SDR' shim/out/Image || {
-	echo "kernel lacks the final 0231 framebuffer mode" >&2
-	exit 1
-}
+if [ "$srgb" = 1 ]; then
+	# The lock-screen recovery image reverts the 0229-0231 mode experiment,
+	# so the pre-0229 driver must not print any P3 mode line.
+	if grep -aq 'P3 product /' shim/out/Image; then
+		echo "kernel carries the P3 mode experiment; --srgb needs the pre-0229 driver" >&2
+		exit 1
+	fi
+else
+	grep -aq 'P3 product / P3 RGB SDR' shim/out/Image || {
+		echo "kernel lacks the final 0231 framebuffer mode" >&2
+		exit 1
+	}
+fi
 
 # Verify the exact ADT that the second pass packed, not just mkadt.py's input.
-NATIVE="$native" python3 - <<'PY'
+NATIVE="$native" SRGB="$srgb" python3 - <<'PY'
 import os
 import struct
 import sys
@@ -101,7 +116,7 @@ product = nodes.get(b'product\0')
 assert product is not None, 'packed ADT has no /product'
 props = {k: v for k, _f, v in product.props}
 assert len(product.props) >= 60, len(product.props)
-assert props.get('artwork-display-gamut') == b'P3\0', props.get('artwork-display-gamut')
+assert props.get('artwork-display-gamut') == (b'sRGB\0' if os.environ['SRGB'] == '1' else b'P3\0'), props.get('artwork-display-gamut')
 
 arm_io = nodes[b'arm-io\0']
 disp = next(n for n in arm_io.children

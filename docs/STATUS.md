@@ -1,28 +1,27 @@
 # Current status
 
-Last updated: 2026-11-25. The 0230 image booted as `9abe008` and still
-reported `sRGB SDR`, so the BT.709 transport was not the fix. Patch `0231`
-sets `Colorimetry=16` (DisplayP3), the only value that makes QuartzCore 16.7
-set the wide-gamut bit in the display mode word, while retaining the D22AP
-P3 product identity. Run `45558050379` built it green.
-The new, not-yet-booted image is
-`laptop:/home/n1709/whyred-flash/shim-boot-ring-3254283-p3.img`
-(6,176,768 B, sha256 `ffcad6473b5340284e6f97c2feac32d434ff7e615725b397ee496f2b31f87175`).
-The latest hardware boot remains the already-used 0230 image
+Last updated: 2026-11-25. The P3 mode experiment (0229-0231) never fixed the
+black screen: the 0230 boot stayed sRGB and the user's manual test flashed an
+old pre-0229 image. The user confirmed that `35e591a` did reach the lock
+screen, and that commit's display recipe is native 1080x2160 canvas,
+`/product` sRGB and no mode registry. The series is therefore reverted to
+that display state (0229-0231 removed, driver restored to the 0228 tree)
+while every current touch/storage patch stays. A fresh image is being built;
+the red unsupported-screen bar is accepted for now.
+The last hardware ring remains the already-used 0230 image
 `shim-boot-ring-9abe008-p3.img` (5,918,720 B, sha256 `e92bff82…`); do not
 boot that same image again.
 
 ## One-paragraph summary
 
 The kernel boots from `fastboot boot`, mounts the HFSX iOS root and reaches
-backboardd/SpringBoard. The complete D22AP `/product` node now correctly
-reports P3, but the latest ring proves that the framebuffer runtime mode
-still falls back to sRGB. SpringBoard therefore crashes while loading the P3
-`BoundingPathBitmap-1125x2436-375x812-3.00x`, producing the current black
-screen. `0229` supplies valid `ColorElements`/`TimingElements` and active
-IDs while `/product` supplies P3; `0230`'s accepted BT.709 entry still came
-up sRGB, so `0231` names DisplayP3 (16) to match the product identity.
-The same boot proves LDO11 can be
+backboardd/SpringBoard. The 35e591a-era display (native 1080x2160, sRGB
+product, no `ColorElements`) is the last configuration that reached the lock
+screen; the later P3 identity made SpringBoard throw on the P3-only
+`BoundingPathBitmap` while the runtime mode was sRGB. The recovery series
+keeps all touch/storage work and drops 0229-0231, so the display falls back
+to the known lock-screen path with the red unsupported-screen bar accepted.
+The same boot proved LDO11 can be
 power-cycled safely on this unit, but the Synaptics DSX still ignores the register address phase; F12 and
 the HID poll remain safely disabled. Touch must become normal only after the
 lock screen is visible.
@@ -48,21 +47,20 @@ lock screen is visible.
 * The default canvas is the iPhone X 1125x2436, cropped to the 1080x2160
   panel (`fOffX=20`, `fOffY=138`), which keeps UIKit's red unsupported-screen
   clock away. `SWEETFB_NATIVE=1` is the opt-in native canvas.
-* The latest mode is the correct logical 1125x2436 at 60 Hz but still says
-  `sRGB SDR`; the real product node says P3. That mismatch, not the canvas,
-  is the current SpringBoard crash.
-* `0229` publishes the mode arrays and selector 79 current IDs. `0230`'s
-  BT.709 transport still came up as sRGB, so `0231` sets `Colorimetry=16`
-  (DisplayP3) with 8-bit/full-range RGB and `EOTF=0`. Only 16 makes the
-  QuartzCore 16.7 mode parser OR the wide-gamut bit; 1 and 10 do not.
+* The 35e591a lock-screen image used the native 1080x2160 canvas
+  (`sweetfb_native=1`) and an sRGB `/product`; UIKit then draws its red
+  unsupported-screen bar, which the user accepts for now.
+* `0229`-`0231` (P3 `ColorElements` and the wide-gamut colorimetry) are
+  removed from the recovery series. The driver is restored to the 0228 tree,
+  so IOMFB publishes no mode arrays and falls back to sRGB exactly like the
+  35e591a image.
 
 ## Next actions
 
-1. When explicitly requested, boot the new 0231 image with
-   `fastboot boot`; require the ring to show
-   both the driver's `P3 product / P3 RGB SDR` line and
-   `FBSDisplayMode ... P3 SDR`, then
-   confirm SpringBoard no longer throws the BoundingPath exception.
+1. Build and boot the new recovery image (`--native --srgb`, superproject
+   after this revert) with `fastboot boot`; require SpringBoard to reach the
+   lock screen with the red unsupported-screen bar and no BoundingPath
+   exception.
 2. Once the lock screen is visible, resume DSX work: test a separate
    general-call/QUP diagnostic, solve the address phase, program F01/F12,
    and verify ordinary tap, swipe and multi-touch through `SweetHIDTouch`
@@ -90,7 +88,8 @@ lock screen is visible.
 
 * There is no local XNU build; each kernel change is one CI run
   (~10-15 min). Run `bash tests/run_tests.sh` before committing.
-* Latest green: `9abe008`, run `45219477278` (through 0230).
+* Latest green: run `45558050379` (through 0231); the lock-screen recovery
+  series reverts 0229-0231, so its next green run starts at 0228.
 * Repack a CI kernel with the two-pass `shim/build.sh` recipe in
   `docs/history/2026-11.md`; boot only with `fastboot boot`.
 

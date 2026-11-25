@@ -24,11 +24,12 @@ drivers as `whyred_gpu.c`, `whyred_audio.c`, `whyred_wlan.c` and
 audio/modem loaders read the GPT `modem` partition instead of a fixed LBA.
 `0216` adds the `sweetnopb=1` lever for the PosterBoard crash that blocks
 the lock-screen wallpaper. `0217` merges the IOKit GPU service
-(`WhyredGPU`, started by `whyredgpu=30`). The full series (236 patch files,
-through `0230`) applies on the series tip. `0229` built green in run
-`45213483030`; `0230` corrects its RGB wire colorimetry and built green in
-run `45219477278`. Neither was booted before the correction. The
-boot-verification state is in
+(`WhyredGPU`, started by `whyredgpu=30`). The full series (233 patch files,
+through `0228`) applies on the series tip. The P3 mode experiment
+(`0229`-`0231`) was removed on 2026-11-25: the user confirmed that the
+`35e591a` display recipe (native canvas, sRGB `/product`, no mode registry)
+reaches the lock screen, and those three patches only moved the runtime
+gamut. The boot-verification state is in
 [`docs/progres.md`](docs/progres.md).
 
 ## Quick start

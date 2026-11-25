@@ -170,16 +170,16 @@ jobs:
           # 0190/0191 were missing from this range and silently skipped once
           # already: 0189 changed the page-select context that 0190 needed, and
           # every QUP image since was actually the bit-bang build.
-          # 0219..0231 are the touch rename, the F12 address gate, the power
+          # 0219..0228 are the touch rename, the F12 address gate, the power
           # probe, the fast probe, the rail re-probe, the display-linked
           # sleep/HID pause, the QUP writes and the display-off present
-          # guard, followed by the P3 mode contract and the P3 colorimetry
-          # that actually sets wide gamut. 0219's bsd/conf/files
+          # guard. 0229..0231 (the P3 mode experiment) are not in this
+          # lock-screen recovery series. 0219's bsd/conf/files
           # hunk once lost its context when whyred_power.c landed next to
           # sweet_i2c1.c, so dxb skipped
           # 0219..0223 and every "latest" image still ran the old touch code.
           # Treat any skip in that chain as fatal too.
-          if grep -E 'Skipping patch .*(014[2345689]|015[0-9]|016[0-9]|017[0-9]|01[89][0-9]|0219|022[0-9]|023[01])-' build.log; then
+          if grep -E 'Skipping patch .*(014[2345689]|015[0-9]|016[0-9]|017[0-9]|01[89][0-9]|0219|022[0-8])-' build.log; then
             echo "::error::a critical patch was skipped by the build"
             exit 1
           fi

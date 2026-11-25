@@ -204,9 +204,11 @@ def build(seed=None, qemu=False, native=False, board=DEFAULT_BOARD):
     ])
 
     product_props = d22ap_product()
-    if product_props and cfg['name'] == 'lavender':
-        # lavender presents a 1080x2340 sRGB panel; whyred is an iPhone X
-        # (D22AP) and needs the real P3 gamut so UIKit finds the P3 artwork.
+    if product_props and (cfg['name'] == 'lavender' or
+                          os.environ.get('SWEET_ADT_GAMUT') == 'sRGB'):
+        # lavender presents a 1080x2340 sRGB panel. SWEET_ADT_GAMUT=sRGB also
+        # restores whyred's pre-P3 product identity for the lock-screen
+        # recovery image; the default whyred build keeps the real P3 value.
         product_props = [(k, cstr('sRGB') if k == 'artwork-display-gamut' else v) for k, v in product_props]
     product = [node('product', [ph()] + product_props)] if product_props else []
 

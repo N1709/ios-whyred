@@ -50,49 +50,40 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | CPU / memory | 4× Gold A73, 16K pages, GICv3, timers — **works** |
 | eMMC | SDCC v5, 8-bit high-speed, 122,142,720 sectors, GPT parsed — **works** |
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
-| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. 0229/0230 built the mode contract but still reported sRGB; 0231 switches the wire colorimetry to P3 |
+| Display | Kernel framebuffer works. The recovery build returns to the 35e591a recipe: native 1080x2160 canvas and sRGB `/product`, with the red unsupported-screen bar accepted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
-| iOS userland | launchd → backboardd → SpringBoard; the 0230 boot still crashed before the visible lock screen because the P3 asset facet was paired with an sRGB `FBSDisplayMode`. 0231 targets exactly that mismatch |
+| iOS userland | 35e591a reaches the lock screen; the later P3 product identity made SpringBoard throw on `BoundingPathBitmap`. The recovery series drops 0229-0231 and keeps all touch/storage patches |
 | Touch | DSX at `0x20` streams the PDT; the address phase is still ignored even after the latest ring's successful LDO11 power-cycle. No phantom HID poll starts |
 
-## Latest boot: 0230 still sRGB, 0231 changes the wire gamut (2026-11-25)
+## Revert: back to the 35e591a lock-screen display (2026-11-25)
 
-The already-booted 0230 image `shim-boot-ring-9abe008-p3.img` is 5,918,720 B,
-sha256 `e92bff82405106cf475075c9a7705de6ac6b2eb4893d07bb911beb00864dff22`.
-Its ring is `laptop:/home/n1709/whyred-flash/ring-9abe008.txt`. Do not boot
-this same image again. It proves:
+The user confirmed that commit `35e591a` reached the lock screen. That image
+used the **native 1080x2160** canvas (`sweetfb_native=1`), an sRGB
+`artwork-display-gamut`, and the pre-0229 driver with no `ColorElements`.
+The later P3 product identity made SpringBoard request the P3-only
+`BoundingPathBitmap-1125x2436-375x812-3.00x` while the display was sRGB,
+which is the black screen.
 
-* the driver line says `P3 product / BT.709 RGB SDR` and selector 79 serves
-  color/timing 1;
-* backboardd still reports `375x812@3x ... 60Hz sRGB SDR`;
-* SpringBoard crashes on
-  `BoundingPathBitmap-1125x2436-375x812-3.00x` because its asset facet is P3;
-* LDO11 toggles successfully, but the DSX remains streaming and F12/HID are
-  correctly skipped;
-* four frames are presented, then `display off, HID paused`.
+The recovery series now removes 0229-0231 and restores
+`drivers/display/SweetFramebuffer.cpp` to the 0228 tree. Every current
+touch, storage, power and log patch stays. The ring image is packed with
+`--native --srgb` so SpringBoard follows the known lock-screen path; the red
+unsupported-screen bar is accepted until the P3 work resumes.
 
-Re-reading QuartzCore's `ColorElements` parser shows that 1 and 10 are only
-accepted; the branch at `0x1883bd83c` sets the wide-gamut score bit and the
-P3 constants in the packed mode word only for colorimetry 16. Patch 0231
-therefore uses `Colorimetry=16` (DisplayP3), RGB 8-bit/full range, SDR
-(`EOTF=0`); `/product` remains P3. Run `45558050379` built 0231 green. The
-new, not-yet-booted image is
-`laptop:/home/n1709/whyred-flash/shim-boot-ring-3254283-p3.img`, 6,176,768 B,
-sha256 `ffcad6473b5340284e6f97c2feac32d434ff7e615725b397ee496f2b31f87175`.
+The last hardware ring is still the 0230 boot:
+`shim-boot-ring-9abe008-p3.img` (5,918,720 B,
+sha256 `e92bff82405106cf475075c9a7705de6ac6b2eb4893d07bb911beb00864dff22`);
+do not boot that image again.
 
-Progress estimates: black screen/SpringBoard 88%, touch 70%, status bar 70%,
-GPU 35%, overall 65%.
+Progress estimates: black screen/SpringBoard 90%, touch 70%, status bar 60%,
+GPU 35%, overall 68%.
 
 ## Current next actions
 
-1. When the user explicitly asks and the phone is connected in fastboot,
-   boot `shim-boot-ring-3254283-p3.img` once. Do not reuse the already-booted
-   `9abe008` image.
-2. When the user explicitly asks, boot the new image once with
-   `fastboot boot`; pull a fresh ring and require both
-   `SWEET FB: ... P3 product / P3 RGB SDR` and
-   `FBSDisplayMode ... P3 SDR` before calling
-   the black-screen fix successful.
+1. Push the revert, wait for a green `xnu-kernel` run, fetch that kernel and
+   pack `--native --srgb --power`; boot it once with `fastboot boot`.
+2. Require SpringBoard to reach the lock screen with the red bar and no
+   `BoundingPathBitmap` exception, then pull the ring.
 3. After the lock screen is visible, continue the DSX address-phase work
    until normal tap/swipe/multi-touch reaches `SweetHIDTouch`; test the QUP
    image separately. Then continue the real Adreno 509 path.

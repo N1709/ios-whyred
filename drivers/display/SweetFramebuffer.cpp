@@ -81,10 +81,6 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
 #include <libkern/c++/OSCollectionIterator.h>
-#include <libkern/c++/OSArray.h>
-#include <libkern/c++/OSBoolean.h>
-#include <libkern/c++/OSDictionary.h>
-#include <libkern/c++/OSNumber.h>
 #include <kern/thread_call.h>
 #include <IOKit/IOKitKeys.h>
 #include <IOKit/IOLib.h>
@@ -107,9 +103,6 @@ enum {
 	kSweetFBIsMainDisplay           = 18,
 	kSweetFBGetDotPitch             = 28,
 	kSweetFBNotifications           = 72,
-	kSweetFBChangeFrameInfo         = 73,
-	kSweetFBSupportedFrameInfo      = 74,
-	kSweetFBGetBlock                = 79,
 };
 
 #define SWEET_FB_SWAP_REC_SIZE          0x46c
@@ -131,10 +124,6 @@ enum {
 #define SWEET_FB_LOGICAL_W              1125
 #define SWEET_FB_LOGICAL_H              2436
 #define SWEET_FB_FORMAT_BGRA            0x42475241
-#define SWEET_FB_TIMING_ID              1
-#define SWEET_FB_COLOR_ID               1
-#define SWEET_FB_COLORIMETRY_P3_D65     16
-#define SWEET_FB_EOTF_SDR_GAMMA         0
 
 class IOMobileFramebuffer : public IOService {
 	OSDeclareDefaultStructors(IOMobileFramebuffer);
@@ -214,7 +203,6 @@ public:
 	bool          dsiSend(const uint8_t hdr[4], const uint8_t *payload, uint32_t len);
 	void          setPanelOn(bool on);
 	void          setPanelLevel(uint32_t level);
-	void          publishModes(void);
 	void addClient(IOMobileFramebufferUserClient *client);
 	void removeClient(IOMobileFramebufferUserClient *client);
 	void swap(const uint8_t *rec);
@@ -308,80 +296,6 @@ sweet_draw_apple_logo(uintptr_t pixels, uint32_t width, uint32_t height,
 			}
 		}
 	}
-}
-
-static void
-sweet_fb_set_number(OSDictionary *dict, const char *key, uint64_t value)
-{
-	OSNumber *number = OSNumber::withNumber(value, 32);
-
-	if (number != NULL) {
-		dict->setObject(key, number);
-		number->release();
-	}
-}
-
-/*
- * Publish one real internal-panel mode. IOMobileFramebuffer.framework reads
- * these registry arrays and selector 79 block 0x40 names the active IDs. The
- * iPhone X assets are P3 through /product. The 8-bit RGB transport mode must
- * name P3 too: QuartzCore 16.7 drops wire enum 14 and only accepts 16 to set
- * the wide-gamut display mode. Without that bit CADisplay says sRGB and the
- * P3-only BoundingPathBitmap asset lookup fails, which is the black screen.
- */
-void
-AppleCLCD::publishModes(void)
-{
-	OSDictionary *timing = OSDictionary::withCapacity(8);
-	OSDictionary *horizontal = OSDictionary::withCapacity(4);
-	OSDictionary *vertical = OSDictionary::withCapacity(4);
-	OSDictionary *color = OSDictionary::withCapacity(9);
-	OSArray *timings = OSArray::withCapacity(1);
-	OSArray *colors = OSArray::withCapacity(1);
-	const uint32_t rate = 60u << 16;       /* 16.16 fixed point */
-
-	if (timing == NULL || horizontal == NULL || vertical == NULL ||
-	    color == NULL || timings == NULL || colors == NULL) {
-		goto out;
-	}
-	sweet_fb_set_number(color, "ID", SWEET_FB_COLOR_ID);
-	sweet_fb_set_number(color, "PixelEncoding", 0);       /* RGB 4:4:4 */
-	sweet_fb_set_number(color, "Depth", 8);
-	sweet_fb_set_number(color, "Colorimetry", SWEET_FB_COLORIMETRY_P3_D65);
-	sweet_fb_set_number(color, "EOTF", SWEET_FB_EOTF_SDR_GAMMA);
-	sweet_fb_set_number(color, "DynamicRange", 0);        /* full range */
-	sweet_fb_set_number(color, "Score", 1);
-	color->setObject("IsVirtual", kOSBooleanFalse);
-	colors->setObject(color);
-
-	sweet_fb_set_number(horizontal, "Active", fLogicalW);
-	sweet_fb_set_number(horizontal, "Total", fLogicalW);
-	sweet_fb_set_number(horizontal, "SyncRate", rate);
-	sweet_fb_set_number(horizontal, "PreciseSyncRate", rate);
-	sweet_fb_set_number(vertical, "Active", fLogicalH);
-	sweet_fb_set_number(vertical, "Total", fLogicalH);
-	sweet_fb_set_number(vertical, "SyncRate", rate);
-	sweet_fb_set_number(vertical, "PreciseSyncRate", rate);
-	sweet_fb_set_number(timing, "ID", SWEET_FB_TIMING_ID);
-	sweet_fb_set_number(timing, "Score", 1);
-	timing->setObject("IsVirtual", kOSBooleanFalse);
-	timing->setObject("IsOverscanned", kOSBooleanFalse);
-	timing->setObject("HorizontalAttributes", horizontal);
-	timing->setObject("VerticalAttributes", vertical);
-	timing->setObject("ColorModes", colors);
-	timings->setObject(timing);
-
-	setProperty("ColorElements", colors);
-	setProperty("TimingElements", timings);
-	IOLog("SWEET FB: mode IDs color %u timing %u, P3 product / P3 RGB SDR\n",
-	    SWEET_FB_COLOR_ID, SWEET_FB_TIMING_ID);
-out:
-	OSSafeReleaseNULL(timings);
-	OSSafeReleaseNULL(colors);
-	OSSafeReleaseNULL(timing);
-	OSSafeReleaseNULL(horizontal);
-	OSSafeReleaseNULL(vertical);
-	OSSafeReleaseNULL(color);
 }
 
 bool
@@ -544,7 +458,6 @@ AppleCLCD::start(IOService *provider)
 
 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
 	setProperty("external", false);
-	publishModes();
 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
 	registerService();
 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
@@ -1346,9 +1259,6 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	uint64_t out[2] = { 0, 0 };
 	uint32_t outCount = 0;
 
-	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
-		bzero(args->structureOutput, args->structureOutputSize);
-	}
 	switch (selector) {
 	case kSweetFBGetLayerDefaultSurface:
 		out[0] = sweet_surface_port_in_task(fFB->fSurface, fTask);
@@ -1387,22 +1297,6 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 	case kSweetFBGetDotPitch:
 		out[0] = SWEET_FB_DOT_PITCH;
 		outCount = 1;
-		break;
-	case kSweetFBSupportedFrameInfo:
-		/* No alternate frame descriptors; the registry arrays carry the mode. */
-		out[0] = 0;
-		outCount = 1;
-		break;
-	case kSweetFBGetBlock:
-		if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL &&
-		    args->scalarInputCount >= 1 && args->scalarInput[0] == 0x40 &&
-		    args->structureOutputSize >= 12) {
-			uint32_t ids[2] = { SWEET_FB_COLOR_ID, SWEET_FB_TIMING_ID };
-			memcpy((uint8_t *)args->structureOutput + 4, ids, sizeof(ids));
-		}
-		break;
-	case kSweetFBChangeFrameInfo:
-		/* There is one fixed mode, so index zero is already active. */
 		break;
 	case kSweetFBNotifications:
 		if (args->scalarInputCount >= 3 && args->scalarInput[2] < SWEET_FB_NOTIFY_TYPES) {
@@ -1470,6 +1364,9 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 
 	for (uint32_t i = 0; i < args->scalarOutputCount; i++) {
 		args->scalarOutput[i] = i < outCount ? out[i] : 0;
+	}
+	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
+		bzero(args->structureOutput, args->structureOutputSize);
 	}
 	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector))) {
 		if (selector < 64) {

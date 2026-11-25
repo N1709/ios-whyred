@@ -1,10 +1,11 @@
 # Roadmap
 
 
-1. **Visible lock screen:** verify 0231 makes the display mode word P3
-   (`Colorimetry=16`) while the D22AP product identity stays P3, so
-   `FBSDisplayMode` reports P3 and the `BoundingPathBitmap` SpringBoard crash
-   disappears. Do not stack another display variable into that boot.
+1. **Visible lock screen:** the recovery series restores the `35e591a`
+   display recipe (native 1080x2160 canvas, sRGB `/product`, pre-0229
+   driver) so SpringBoard reaches the lock screen again. The red
+   unsupported-screen bar is accepted for now. All touch/storage patches
+   stay. Do not stack another display variable into the first boot.
 2. **Normal touch:** the DSX at `0x20` still streams after the current short
    LDO11 cycle. In separate diagnostics, prove a 200 ms off/readback/on cycle,
    then general-call reset and QUP framing. Only an addressable part gets F01
