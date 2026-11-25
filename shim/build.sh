@@ -124,7 +124,11 @@ if [ "$SWEETFB_NATIVE" = 1 ]; then
 	NATIVE_CMDLINE="sweetfb_native=1 "
 	ADT_ARGS+=(--native)
 fi
-CMDLINE="debug=0x14e serial=3 $DISPLAY_ARGS ${KPRINTF_SPAM}${NATIVE_CMDLINE}sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
+# QUIETBOOT=1 drops -v so XNU does not paint the verbose boot log over the
+# shim Apple mark before SweetFramebuffer draws its own boot mark.
+VERBOSE="-v"
+[ "${QUIETBOOT:-0}" = 1 ] && VERBOSE=""
+CMDLINE="debug=0x14e serial=3 $DISPLAY_ARGS ${KPRINTF_SPAM}${NATIVE_CMDLINE}sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV $VERBOSE keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
 
 # Ensure a minimal ramdisk.bin is always present
 if command -v cpio >/dev/null 2>&1; then

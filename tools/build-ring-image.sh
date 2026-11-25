@@ -10,6 +10,7 @@
 #   --native  append sweetfb_native=1 (1080x2160 canvas, red fallback clock)
 #   --srgb    force an sRGB /product identity (pre-P3 lock-screen recovery)
 #   --reset   append sweetouchreset=1 (pulse GPIO66 before the DSX scan)
+#   --quietboot  drop -v so XNU does not paint the boot log over the mark
 #
 # The default canvas is the iPhone X 1125x2436 that SweetFramebuffer crops to
 # 1080x2160, so UIKit does not draw the red unsupported-screen clock.
@@ -37,6 +38,7 @@ power=0
 native=0
 srgb=0
 reset=0
+quietboot=0
 for arg in "$@"; do
 	case $arg in
 	--qup) qup=1 ;;
@@ -44,6 +46,7 @@ for arg in "$@"; do
 	--native) native=1 ;;
 	--srgb) srgb=1 ;;
 	--reset) reset=1 ;;
+	--quietboot) quietboot=1 ;;
 	*) echo "unknown option: $arg" >&2; exit 2 ;;
 	esac
 done
@@ -60,6 +63,7 @@ common="sweetlog=1 sweetouchi2c=1 sweetouchscl=200 sweetouchfast=1 sweetouchwait
 [ "$qup" = 1 ] && common="$common sweeti2c=1"
 [ "$reset" = 1 ] && common="$common sweetouchreset=1"
 export SWEETFB_NATIVE="$native"
+export QUIETBOOT="$quietboot"
 
 zopfli=${ZOPFLI:-}
 if [ -z "$zopfli" ]; then

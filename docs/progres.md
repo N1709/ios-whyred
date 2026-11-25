@@ -99,9 +99,12 @@ the reset the chip answered zeros (`f01 status 0x00`), F12 was not
 programmed and no HID poll started, so the GPIO66 pulse did not restore
 touch. The display recipe is unchanged.
 
-The next image quiets the shim diagnostics so the panel shows only the
-Apple mark before iOS; the shim already painted the mark at entry, but the
-diagnostic text block read as a bar on the panel.
+The quiet-shim image booted as: Apple mark, then a black frame with text at
+the top, then the mark again, then the lock screen. The text is XNU's
+verbose boot log: the cmdline still carried `-v`, so the kernel painted the
+log over the shim mark before SweetFramebuffer drew its own boot mark. The
+next image (`--quietboot`) drops `-v`; the shim text is already hidden, so
+the mark should stay on the panel until iOS presents.
 
 Boot visuals: the user first described black, then a bar, then the kernel's
 Apple boot mark, then the lock screen, but then withdrew it ("enggak jadi"):
