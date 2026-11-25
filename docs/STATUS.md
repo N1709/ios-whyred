@@ -3,16 +3,14 @@
 Last updated: 2026-11-25. The 0230 image booted as `9abe008` and still
 reported `sRGB SDR`, so the BT.709 transport was not the fix. Patch `0231`
 sets `Colorimetry=16` (DisplayP3), the only value that makes QuartzCore 16.7
-OR the wide-gamut bit into the display mode word, while retaining the D22AP
-P3 product identity. Host tests pass; CI and hardware pending.
-Run `45210593721` stopped before compile because its host test referenced the
-intentionally untracked D22AP ADT; the replacement uses a synthetic fixture.
-Dispatch `45212326756` queued on the high-demand M1 label; CI now targets the
-standard `macos-15-intel` runner instead.
-The latest hardware boot is the already-used
-`shim-boot-ring-e92f698-p3.img` (6,176,768 B, sha256 `265e8171…`). Its fresh
-ring is `/tmp/opencode/logs/ring-recovery-now.txt` (130,322 B, flush 133).
-Do not boot that same image again.
+set the wide-gamut bit in the display mode word, while retaining the D22AP
+P3 product identity. Run `45558050379` built it green.
+The new, not-yet-booted image is
+`laptop:/home/n1709/whyred-flash/shim-boot-ring-3254283-p3.img`
+(6,176,768 B, sha256 `ffcad6473b5340284e6f97c2feac32d434ff7e615725b397ee496f2b31f87175`).
+The latest hardware boot remains the already-used 0230 image
+`shim-boot-ring-9abe008-p3.img` (5,918,720 B, sha256 `e92bff82…`); do not
+boot that same image again.
 
 ## One-paragraph summary
 
@@ -21,8 +19,10 @@ backboardd/SpringBoard. The complete D22AP `/product` node now correctly
 reports P3, but the latest ring proves that the framebuffer runtime mode
 still falls back to sRGB. SpringBoard therefore crashes while loading the P3
 `BoundingPathBitmap-1125x2436-375x812-3.00x`, producing the current black
-screen. Patches 0229/0230 supply valid `ColorElements`/`TimingElements` and
-active IDs while `/product` supplies P3. The same boot proves LDO11 can be
+screen. `0229` supplies valid `ColorElements`/`TimingElements` and active
+IDs while `/product` supplies P3; `0230`'s accepted BT.709 entry still came
+up sRGB, so `0231` names DisplayP3 (16) to match the product identity.
+The same boot proves LDO11 can be
 power-cycled safely on this unit, but the Synaptics DSX still ignores the register address phase; F12 and
 the HID poll remain safely disabled. Touch must become normal only after the
 lock screen is visible.

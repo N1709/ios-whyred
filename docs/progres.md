@@ -75,15 +75,18 @@ Re-reading QuartzCore's `ColorElements` parser shows that 1 and 10 are only
 accepted; the branch at `0x1883bd83c` sets the wide-gamut score bit and the
 P3 constants in the packed mode word only for colorimetry 16. Patch 0231
 therefore uses `Colorimetry=16` (DisplayP3), RGB 8-bit/full range, SDR
-(`EOTF=0`); `/product` remains P3. Host tests pass; 0231 is not yet booted.
+(`EOTF=0`); `/product` remains P3. Run `45558050379` built 0231 green. The
+new, not-yet-booted image is
+`laptop:/home/n1709/whyred-flash/shim-boot-ring-3254283-p3.img`, 6,176,768 B,
+sha256 `ffcad6473b5340284e6f97c2feac32d434ff7e615725b397ee496f2b31f87175`.
 
 Progress estimates: black screen/SpringBoard 88%, touch 70%, status bar 70%,
 GPU 35%, overall 65%.
 
 ## Current next actions
 
-1. Push 0231, wait for a green `xnu-kernel` run, fetch that kernel, pack the
-   ring image and copy it to the laptop. Do not reuse the already-booted
+1. When the user explicitly asks and the phone is connected in fastboot,
+   boot `shim-boot-ring-3254283-p3.img` once. Do not reuse the already-booted
    `9abe008` image.
 2. When the user explicitly asks, boot the new image once with
    `fastboot boot`; pull a fresh ring and require both
