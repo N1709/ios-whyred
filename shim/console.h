@@ -9,6 +9,8 @@
 #define GREEN		0xff00ff00U
 
 extern volatile uint32_t *con_fb;
+/* Nonzero hides the diagnostic text but keeps con_clear/con_draw_apple_logo. */
+extern int con_quiet;
 
 void con_clear(uint32_t bg);
 /* Pure-black panel with the white 208x256 Apple mark, centred for the board */

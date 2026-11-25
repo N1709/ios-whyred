@@ -105,6 +105,7 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 
 void exc_handler(uint64_t slot, uint64_t *regs)
 {
+	con_quiet = 0;	/* panics must stay readable */
 	if (slot == 5) {	/* IRQ from current EL, SPx */
 		uint64_t iar = rsr("icc_iar1_el1");
 		uint32_t id = iar & 0xffffff;
@@ -290,6 +291,9 @@ void shim_main(uint64_t dtb)
 	 * unchanged; the loader repaints a clean mark just before it jumps.
 	 */
 	con_draw_apple_logo();
+	/* The normal ring image shows the Apple mark only; the shim text is
+	 * diagnostic noise on the panel and the loader repaints the mark. */
+	con_quiet = 1;
 	con_str("SHIM", BOARD_NAME " bare-metal shim (" BOARD_SOC ")");
 
 	uint64_t mmfr0 = rsr("id_aa64mmfr0_el1");

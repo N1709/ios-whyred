@@ -91,9 +91,17 @@ The QUP image (`shim-boot-ring-b971761-native-srgb-qup.img`, sha256
 (`ring-qup-panic.txt`, total 14,438 B, flush #4) stops at
 `WHYRED I2C: QUP mapped, probing the SE`. The QUP1 `HW_VERSION` read never
 returned, so BLSP1 QUP1 is not clocked/reachable and the QUP path is unsafe.
-Do not boot that image again. The next experiment keeps bit-bang and adds
-`sweetouchreset=1` (GPIO66 pulse) to see whether a real hardware reset
-restores the address phase; the lock-screen display recipe is unchanged.
+Do not boot that image again. The reset image (`shim-boot-ring-b971761-native-srgb-reset.img`, sha256
+`59fef6d1…`) booted to the lock screen, and its ring (`ring-reset.txt`,
+total 231,677 B, flush #274) shows `reset pulse low 20 ms, high 200 ms +
+50 ms settle` followed by `address phase still ignored (streaming)`. After
+the reset the chip answered zeros (`f01 status 0x00`), F12 was not
+programmed and no HID poll started, so the GPIO66 pulse did not restore
+touch. The display recipe is unchanged.
+
+The next image quiets the shim diagnostics so the panel shows only the
+Apple mark before iOS; the shim already painted the mark at entry, but the
+diagnostic text block read as a bar on the panel.
 
 Boot visuals: the user first described black, then a bar, then the kernel's
 Apple boot mark, then the lock screen, but then withdrew it ("enggak jadi"):
@@ -102,8 +110,8 @@ when the side/power button stays held through boot. Keep the current splash
 until a real complaint is reproducible.
 
 Progress estimates: black screen/SpringBoard 95%, touch 65% (QUP1 SErrors;
-bit-bang address phase still unresolved), status bar 60%, GPU 35%,
-overall 72%.
+GPIO66 reset still streams; bit-bang address phase unresolved), status bar
+60%, GPU 35%, overall 72%.
 
 ## Current next actions
 
