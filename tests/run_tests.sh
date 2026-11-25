@@ -246,6 +246,7 @@ grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0019-stage-libpthread.sh
 grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0020-stage-bearssl.sh
 grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0026-stage-hfs.sh
 python3 - <<'PY'
+import os
 import sys
 import tempfile
 sys.path.insert(0, 'tools')
@@ -287,15 +288,30 @@ def product_props(root):
             return props, len(child.props)
     raise AssertionError('missing /product')
 
-whyred_product, whyred_count = product_props(
-    mkadt.build(seed=b'\0' * 64, board='whyred'))
-lavender_product, lavender_count = product_props(
-    mkadt.build(seed=b'\0' * 64, board='lavender'))
+saved_gamut = os.environ.pop('SWEET_ADT_GAMUT', None)
+try:
+    whyred_product, whyred_count = product_props(
+        mkadt.build(seed=b'\0' * 64, board='whyred'))
+    lavender_product, lavender_count = product_props(
+        mkadt.build(seed=b'\0' * 64, board='lavender'))
+finally:
+    if saved_gamut is not None:
+        os.environ['SWEET_ADT_GAMUT'] = saved_gamut
 mkadt.d22ap_product = real_d22ap_product
 assert whyred_count >= 60, whyred_count
 assert lavender_count >= 60, lavender_count
 assert whyred_product['artwork-display-gamut'] == b'P3\0'
 assert lavender_product['artwork-display-gamut'] == b'sRGB\0'
+
+# The recovery image can ask mkadt for an sRGB whyred product without
+# changing the default that the P3 work will need later.
+os.environ['SWEET_ADT_GAMUT'] = 'sRGB'
+try:
+    srgb_product, _ = product_props(
+        mkadt.build(seed=b'\0' * 64, board='whyred'))
+finally:
+    del os.environ['SWEET_ADT_GAMUT']
+assert srgb_product['artwork-display-gamut'] == b'sRGB\0'
 PY
 echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
 
