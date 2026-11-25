@@ -50,50 +50,32 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | CPU / memory | 4× Gold A73, 16K pages, GICv3, timers — **works** |
 | eMMC | SDCC v5, 8-bit high-speed, 122,142,720 sectors, GPT parsed — **works** |
 | Root volume | HFSX `userdata` mounts read-write as `emmcroot0` — **works** |
-| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. 0229/0230 now build a valid mode contract; new verified image is ready but not booted |
+| Display | Kernel framebuffer works; latest ring presents the correct 1125x2436 iPhone X canvas. 0229/0230 built the mode contract but still reported sRGB; 0231 switches the wire colorimetry to P3 |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
-| iOS userland | launchd → backboardd → SpringBoard; latest boot crashes before the visible lock screen because the P3 asset facet is paired with an sRGB `FBSDisplayMode` |
+| iOS userland | launchd → backboardd → SpringBoard; the 0230 boot still crashed before the visible lock screen because the P3 asset facet was paired with an sRGB `FBSDisplayMode`. 0231 targets exactly that mismatch |
 | Touch | DSX at `0x20` streams the PDT; the address phase is still ignored even after the latest ring's successful LDO11 power-cycle. No phantom HID poll starts |
 
-## Latest boot: P3 product is correct, IOMFB is still sRGB (2026-11-23)
+## Latest boot: 0230 still sRGB, 0231 changes the wire gamut (2026-11-25)
 
-The already-booted `shim-boot-ring-e92f698-p3.img` is 6,176,768 B, sha256
-`265e8171d6146353b8b94564815285a585d5264668b2313ee8318b55d57830a8`.
-It has the real 63-property D22AP `/product` node with
-`artwork-display-gamut=P3`, the iPhone X 1125x2436 canvas, no
-`sweetfb_native=1`, and all three iOS-root exec flags. Do not boot this same
-image again.
+The already-booted 0230 image `shim-boot-ring-9abe008-p3.img` is 5,918,720 B,
+sha256 `e92bff82405106cf475075c9a7705de6ac6b2eb4893d07bb911beb00864dff22`.
+Its ring is `laptop:/home/n1709/whyred-flash/ring-9abe008.txt`. Do not boot
+this same image again. It proves:
 
-The fresh recovery pull is `/tmp/opencode/logs/ring-recovery-now.txt`
-(130,322 B, flush 133). It proves:
-
+* the driver line says `P3 product / BT.709 RGB SDR` and selector 79 serves
+  color/timing 1;
 * backboardd still reports `375x812@3x ... 60Hz sRGB SDR`;
 * SpringBoard crashes on
   `BoundingPathBitmap-1125x2436-375x812-3.00x` because its asset facet is P3;
 * LDO11 toggles successfully, but the DSX remains streaming and F12/HID are
   correctly skipped;
-* four frames are presented, then `display off, HID paused`; there are no
-  later presents in this ring.
+* four frames are presented, then `display off, HID paused`.
 
-Patch `0229-whyred-fb-p3-mode.patch` publishes `TimingElements`/
-`ColorElements` and returns color/timing ID 1 from selector 79 block `0x40`.
-Patch 0230 changed the wire mode to BT.709 (`Colorimetry=1`), but the
-`9abe008` boot still reported `sRGB SDR`. Patch 0231 uses `Colorimetry=16`
-(DisplayP3), RGB 8-bit/full range, SDR (`EOTF=0`); `/product` remains P3.
-Only 16 makes QuartzCore's mode parser set the wide-gamut bit; 1 and 10 are
-accepted but stay sRGB. Host tests pass; 0231 is not yet booted.
-First CI run `45210593721` stopped before compile because a host assertion referenced the
-intentionally untracked D22AP ADT; its replacement uses a synthetic ADT
-fixture and adds no Apple blob to git. Dispatch `45212326756` then queued on
-the high-demand M1 label; the workflow now uses `macos-15-intel`.
-
-The new, not-yet-booted hardware-test image is
-`laptop:/home/n1709/whyred-flash/shim-boot-ring-9abe008-p3.img`, 5,918,720 B,
-sha256 `e92bff82405106cf475075c9a7705de6ac6b2eb4893d07bb911beb00864dff22`.
-Its packed ADT has 63 `/product` properties, P3 and 1125x2436; its payload
-contains the final 0230 string and all required root flags, with no native
-canvas or QUP. It keeps `sweetouchpower=1` to change only the display driver
-relative to the previous P3 boot.
+Re-reading QuartzCore's `ColorElements` parser shows that 1 and 10 are only
+accepted; the branch at `0x1883bd83c` sets the wide-gamut score bit and the
+P3 constants in the packed mode word only for colorimetry 16. Patch 0231
+therefore uses `Colorimetry=16` (DisplayP3), RGB 8-bit/full range, SDR
+(`EOTF=0`); `/product` remains P3. Host tests pass; 0231 is not yet booted.
 
 Progress estimates: black screen/SpringBoard 88%, touch 70%, status bar 70%,
 GPU 35%, overall 65%.
