@@ -70,13 +70,21 @@ touch, storage, power and log patch stays. The ring image is packed with
 `--native --srgb` so SpringBoard follows the known lock-screen path; the red
 unsupported-screen bar is accepted until the P3 work resumes.
 
-The last hardware ring is still the 0230 boot:
-`shim-boot-ring-9abe008-p3.img` (5,918,720 B,
-sha256 `e92bff82405106cf475075c9a7705de6ac6b2eb4893d07bb911beb00864dff22`);
-do not boot that image again.
+The recovery image
+`laptop:/home/n1709/whyred-flash/shim-boot-ring-b971761-native-srgb.img`
+(6,176,768 B, sha256 `de50ba30309dd3cf0ba14b7c6256d56db4d61147da9bdbb28c091129ece7991a`)
+was booted on 2026-11-25: it reaches the **lock screen** and **touch works**.
+That image is used; do not boot it again. Its SYSTEM ring is still on the
+phone and must be pulled from recovery before the next image is judged.
 
-Progress estimates: black screen/SpringBoard 90%, touch 70%, status bar 60%,
-GPU 35%, overall 68%.
+Boot visuals: the user first described black, then a bar, then the kernel's
+Apple boot mark, then the lock screen, but then withdrew it ("enggak jadi"):
+what startled them was Siri appearing on the lock screen, which is normal
+when the side/power button stays held through boot. Keep the current splash
+until a real complaint is reproducible.
+
+Progress estimates: black screen/SpringBoard 95%, touch 90%, status bar 60%,
+GPU 35%, overall 76%.
 
 ## Current next actions
 
