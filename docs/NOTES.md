@@ -38,7 +38,21 @@ being brought up, but no touch data reaches HID yet.
 * Panel: 1080×2160, continuous splash at `0x9d400000`, 32-bit `a8r8g8b8`,
   stride 4320.
 * Touch: Synaptics DSX/RMI4 at `0x20` on BLSP1 QUP1 (`0x0c175000`,
-  GIC SPI 95), SDA GPIO 2, SCL GPIO 3, reset 66, IRQ 67, rail `pm660_l11`.
+  GIC SPI 95), SDA GPIO 2, SCL GPIO 3, IRQ 67, rail `pm660_l11`. The DT
+  has no DSX reset GPIO; GPIO 66 is the **Novatek** NT36672 reset.
+
+## Driver handover (2026-11-25)
+
+* Patch `0236` (commit `d0d3ebc`) addresses the DSX the way the working
+  vince TD4310 driver does: page select, register address as its own
+  START..STOP transaction, then a fresh read START. No repeated start.
+* It is the default frame and is tried before the old framing matrix.
+* Host tests green. CI run `45613338340` (tip `86d469d`) builds the kernel.
+* Next: `tools/fetch-ci-kernel.sh 45613338340 /tmp/opencode/kernel-0236`,
+  pack `--native --srgb --power`, boot once, pull the ring. Require
+  `frame page|a1stop addressed` or `address phase works` before F12/HID.
+* The temporary root handover file was removed; this section is the
+  driver handover.
 
 ## History index
 
