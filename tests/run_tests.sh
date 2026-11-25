@@ -838,10 +838,11 @@ echo "ok   0182 paints the shim's own mark after the fbcon clear"
 # DSX page select.
 grep -q '01\[89\]\[0-9\]' .github/workflows/xnu.yml
 echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
-# The touch/display chain is gated the same way: a skipped 0219..0230 leaves
-# the old driver, half the display link or no P3 mode, so name the whole range.
-grep -q '0219|022\[0-9\]|0230' .github/workflows/xnu.yml
-echo "ok   a skipped 0219..0230 patch fails the build instead of shipping"
+# The touch/display chain is gated the same way: a skipped 0219..0231 leaves
+# the old driver, half the display link, no P3 mode or the sRGB colorimetry,
+# so name the whole range.
+grep -q '0219|022\[0-9\]|023\[01\]' .github/workflows/xnu.yml
+echo "ok   a skipped 0219..0231 patch fails the build instead of shipping"
 grep -q 'runs-on: macos-15-intel' .github/workflows/xnu.yml
 echo "ok   XNU uses the available macOS 15 Intel queue"
 
@@ -2370,20 +2371,27 @@ python3 tools/check_patch.py "$P230" -q \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:SWEET_FB_COLORIMETRY_BT709      1' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:QuartzCore 16.7 rejects P3 wire enum 14 here' \
 	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:P3 product / BT.709 RGB SDR'
+echo "== DISPLAY: 0231 selects the P3 colorimetry that sets wide gamut =="
+P231="xnu/patches/0231-whyred-fb-p3-colorimetry.patch"
+python3 tools/check_patch.py "$P231" -q \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:SWEET_FB_COLORIMETRY_P3_D65     16' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:only accepts 16 to set' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:P3 product / P3 RGB SDR'
 python3 - <<'PY'
 mirror = open('drivers/display/SweetFramebuffer.cpp', encoding='utf-8').read()
 
 # QuartzCore 16.7's RGB ColorElements parser accepts colorimetry 1, 10 or 16;
-# it rejects the wire P3 enum 14. The D22AP /product remains the P3 identity,
-# while the internal panel transport is 8-bit, full-range BT.709 RGB SDR.
-assert '#define SWEET_FB_COLORIMETRY_BT709      1' in mirror
-assert 'SWEET_FB_COLORIMETRY_P3_D65' not in mirror
+# it drops the wire P3 enum 14, and only 16 ORs the wide-gamut bit into the
+# display mode word.  The D22AP /product remains the P3 identity and the
+# internal panel transport is 8-bit, full-range P3 RGB SDR.
+assert '#define SWEET_FB_COLORIMETRY_P3_D65     16' in mirror
+assert 'SWEET_FB_COLORIMETRY_BT709' not in mirror
 assert '#define SWEET_FB_EOTF_SDR_GAMMA         0' in mirror
 mode = mirror.split('AppleCLCD::publishModes(void)', 1)[1]
 mode = mode.split('AppleCLCD::start(IOService *provider)', 1)[0]
 assert '"PixelEncoding", 0' in mode
 assert '"Depth", 8' in mode
-assert '"Colorimetry", SWEET_FB_COLORIMETRY_BT709' in mode
+assert '"Colorimetry", SWEET_FB_COLORIMETRY_P3_D65' in mode
 assert '"EOTF", SWEET_FB_EOTF_SDR_GAMMA' in mode
 assert '"DynamicRange", 0' in mode
 assert '"Active", fLogicalW' in mode
@@ -2404,7 +2412,7 @@ supported = supported.split('case kSweetFBGetBlock:', 1)[0]
 assert 'out[0] = 0;' in supported
 assert 'outCount = 1;' in supported
 PY
-echo "ok   0229/0230 publish a valid P3-product RGB mode and active IDs"
+echo "ok   0229/0230/0231 publish a P3-product P3 RGB mode and active IDs"
 
 echo "== STORAGE: 0212 exposes read-only eMMC and the modem GPT LBA =="
 P212="xnu/patches/0212-whyred-emmc-read-helper.patch"
@@ -2857,7 +2865,7 @@ if grep -Fq 'sweetouchreboot' tools/build-ring-image.sh; then
 	exit 1
 fi
 grep -Fq 'test -s research/ipsw-x/d22ap.adt' tools/build-ring-image.sh
-grep -Fq "P3 product / BT.709 RGB SDR" tools/build-ring-image.sh
+grep -Fq "P3 product / P3 RGB SDR" tools/build-ring-image.sh
 grep -Fq "artwork-display-gamut') == b'P3\\0'" tools/build-ring-image.sh
 grep -Fq "expected = (1080, 2160) if os.environ['NATIVE'] == '1' else (1125, 2436)" \
 	tools/build-ring-image.sh

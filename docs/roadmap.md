@@ -1,10 +1,10 @@
 # Roadmap
 
 
-1. **Visible lock screen:** verify 0229/0230 provide a valid BT.709 RGB wire
-   mode while the D22AP product identity makes `FBSDisplayMode` P3, removing
-   the `BoundingPathBitmap` SpringBoard crash. Do not stack another display
-   variable into that boot.
+1. **Visible lock screen:** verify 0231 makes the display mode word P3
+   (`Colorimetry=16`) while the D22AP product identity stays P3, so
+   `FBSDisplayMode` reports P3 and the `BoundingPathBitmap` SpringBoard crash
+   disappears. Do not stack another display variable into that boot.
 2. **Normal touch:** the DSX at `0x20` still streams after the current short
    LDO11 cycle. In separate diagnostics, prove a 200 ms off/readback/on cycle,
    then general-call reset and QUP framing. Only an addressable part gets F01

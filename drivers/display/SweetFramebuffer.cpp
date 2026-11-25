@@ -133,7 +133,7 @@ enum {
 #define SWEET_FB_FORMAT_BGRA            0x42475241
 #define SWEET_FB_TIMING_ID              1
 #define SWEET_FB_COLOR_ID               1
-#define SWEET_FB_COLORIMETRY_BT709      1
+#define SWEET_FB_COLORIMETRY_P3_D65     16
 #define SWEET_FB_EOTF_SDR_GAMMA         0
 
 class IOMobileFramebuffer : public IOService {
@@ -324,8 +324,10 @@ sweet_fb_set_number(OSDictionary *dict, const char *key, uint64_t value)
 /*
  * Publish one real internal-panel mode. IOMobileFramebuffer.framework reads
  * these registry arrays and selector 79 block 0x40 names the active IDs. The
- * iPhone X assets are P3 through /product. Its 8-bit RGB transport mode is
- * BT.709 (IOAV colorimetry 1); QuartzCore 16.7 rejects P3 wire enum 14 here.
+ * iPhone X assets are P3 through /product. The 8-bit RGB transport mode must
+ * name P3 too: QuartzCore 16.7 drops wire enum 14 and only accepts 16 to set
+ * the wide-gamut display mode. Without that bit CADisplay says sRGB and the
+ * P3-only BoundingPathBitmap asset lookup fails, which is the black screen.
  */
 void
 AppleCLCD::publishModes(void)
@@ -345,7 +347,7 @@ AppleCLCD::publishModes(void)
 	sweet_fb_set_number(color, "ID", SWEET_FB_COLOR_ID);
 	sweet_fb_set_number(color, "PixelEncoding", 0);       /* RGB 4:4:4 */
 	sweet_fb_set_number(color, "Depth", 8);
-	sweet_fb_set_number(color, "Colorimetry", SWEET_FB_COLORIMETRY_BT709);
+	sweet_fb_set_number(color, "Colorimetry", SWEET_FB_COLORIMETRY_P3_D65);
 	sweet_fb_set_number(color, "EOTF", SWEET_FB_EOTF_SDR_GAMMA);
 	sweet_fb_set_number(color, "DynamicRange", 0);        /* full range */
 	sweet_fb_set_number(color, "Score", 1);
@@ -371,7 +373,7 @@ AppleCLCD::publishModes(void)
 
 	setProperty("ColorElements", colors);
 	setProperty("TimingElements", timings);
-	IOLog("SWEET FB: mode IDs color %u timing %u, P3 product / BT.709 RGB SDR\n",
+	IOLog("SWEET FB: mode IDs color %u timing %u, P3 product / P3 RGB SDR\n",
 	    SWEET_FB_COLOR_ID, SWEET_FB_TIMING_ID);
 out:
 	OSSafeReleaseNULL(timings);

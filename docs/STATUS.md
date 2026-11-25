@@ -1,10 +1,10 @@
 # Current status
 
-Last updated: 2026-11-24. Patch `0229` built green in run `45213483030`
-(head `9aa9549`) but is deliberately not booted: QuartzCore 16.7 rejects its
-P3 wire colorimetry 14. Patch `0230` changes the transport mode to the
-accepted BT.709 value 1 while retaining the D22AP P3 product identity; run
-`45219477278` built it green.
+Last updated: 2026-11-25. The 0230 image booted as `9abe008` and still
+reported `sRGB SDR`, so the BT.709 transport was not the fix. Patch `0231`
+sets `Colorimetry=16` (DisplayP3), the only value that makes QuartzCore 16.7
+OR the wide-gamut bit into the display mode word, while retaining the D22AP
+P3 product identity. Host tests pass; CI and hardware pending.
 Run `45210593721` stopped before compile because its host test referenced the
 intentionally untracked D22AP ADT; the replacement uses a synthetic fixture.
 Dispatch `45212326756` queued on the high-demand M1 label; CI now targets the
@@ -51,16 +51,16 @@ lock screen is visible.
 * The latest mode is the correct logical 1125x2436 at 60 Hz but still says
   `sRGB SDR`; the real product node says P3. That mismatch, not the canvas,
   is the current SpringBoard crash.
-* `0229` publishes the mode arrays and selector 79 current IDs. `0230` uses
-  RGB 8-bit/full range, `Colorimetry=1` (BT.709) and `EOTF=0` (SDR gamma).
-  QuartzCore 16.7 accepts RGB colorimetry 1/10/16 and rejects P3 wire enum
-  14; the display identity remains P3 through the real D22AP `/product`.
+* `0229` publishes the mode arrays and selector 79 current IDs. `0230`'s
+  BT.709 transport still came up as sRGB, so `0231` sets `Colorimetry=16`
+  (DisplayP3) with 8-bit/full-range RGB and `EOTF=0`. Only 16 makes the
+  QuartzCore 16.7 mode parser OR the wide-gamut bit; 1 and 10 do not.
 
 ## Next actions
 
-1. When explicitly requested, boot only the new 9abe008 image with
+1. When explicitly requested, boot the new 0231 image with
    `fastboot boot`; require the ring to show
-   both the driver's `P3 product / BT.709 RGB SDR` line and
+   both the driver's `P3 product / P3 RGB SDR` line and
    `FBSDisplayMode ... P3 SDR`, then
    confirm SpringBoard no longer throws the BoundingPath exception.
 2. Once the lock screen is visible, resume DSX work: test a separate

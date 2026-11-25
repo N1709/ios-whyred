@@ -4,7 +4,7 @@ Update this file at every milestone, before handing off, and whenever a boot
 result changes the picture. Keep it short: facts and next actions only. The
 long reasoning belongs in `history/`.
 
-Last updated: 2026-11-24.
+Last updated: 2026-11-25.
 
 ## What works
 
@@ -77,10 +77,11 @@ The fresh recovery pull is `/tmp/opencode/logs/ring-recovery-now.txt`
 
 Patch `0229-whyred-fb-p3-mode.patch` publishes `TimingElements`/
 `ColorElements` and returns color/timing ID 1 from selector 79 block `0x40`.
-Run `45213483030` built it green, but QuartzCore 16.7's RGB-mode parser rejects
-its initial P3 wire enum 14. Patch 0230 changes the mode to accepted BT.709
-(`Colorimetry=1`), RGB 8-bit/full range, SDR (`EOTF=0`); `/product` remains
-P3. Run `45219477278` built 0230 green. Neither 0229 nor 0230 has been booted.
+Patch 0230 changed the wire mode to BT.709 (`Colorimetry=1`), but the
+`9abe008` boot still reported `sRGB SDR`. Patch 0231 uses `Colorimetry=16`
+(DisplayP3), RGB 8-bit/full range, SDR (`EOTF=0`); `/product` remains P3.
+Only 16 makes QuartzCore's mode parser set the wide-gamut bit; 1 and 10 are
+accepted but stay sRGB. Host tests pass; 0231 is not yet booted.
 First CI run `45210593721` stopped before compile because a host assertion referenced the
 intentionally untracked D22AP ADT; its replacement uses a synthetic ADT
 fixture and adds no Apple blob to git. Dispatch `45212326756` then queued on
@@ -94,15 +95,17 @@ contains the final 0230 string and all required root flags, with no native
 canvas or QUP. It keeps `sweetouchpower=1` to change only the display driver
 relative to the previous P3 boot.
 
-Progress estimates: black screen/SpringBoard 82%, touch 70%, status bar 70%,
-GPU 35%, overall 63%.
+Progress estimates: black screen/SpringBoard 88%, touch 70%, status bar 70%,
+GPU 35%, overall 65%.
 
 ## Current next actions
 
-1. When the user is awake and explicitly asks, boot the new 9abe008 image
-   once with `fastboot boot`; do not reuse the old e92f698 P3 image.
-2. Pull a fresh ring and require both
-   `SWEET FB: ... P3 product / BT.709 RGB SDR` and
+1. Push 0231, wait for a green `xnu-kernel` run, fetch that kernel, pack the
+   ring image and copy it to the laptop. Do not reuse the already-booted
+   `9abe008` image.
+2. When the user explicitly asks, boot the new image once with
+   `fastboot boot`; pull a fresh ring and require both
+   `SWEET FB: ... P3 product / P3 RGB SDR` and
    `FBSDisplayMode ... P3 SDR` before calling
    the black-screen fix successful.
 3. After the lock screen is visible, continue the DSX address-phase work

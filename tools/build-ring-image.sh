@@ -81,8 +81,8 @@ ROOTDEV=emmcroot0 EXTRA_CMDLINE="$common" KPRINTF_SPAM= \
 	KPRINTF_MUTE=1 PANEL_NOCONSOLE=1 \
 	IMAGE_GZ="$gz" bash shim/build.sh "$kernel"
 
-grep -aq 'P3 product / BT.709 RGB SDR' shim/out/Image || {
-	echo "kernel lacks the final 0230 framebuffer mode" >&2
+grep -aq 'P3 product / P3 RGB SDR' shim/out/Image || {
+	echo "kernel lacks the final 0231 framebuffer mode" >&2
 	exit 1
 }
 
