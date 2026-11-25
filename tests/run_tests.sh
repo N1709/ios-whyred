@@ -2372,6 +2372,43 @@ assert 'fFB->fDirty = true;' in args
 PY
 echo "ok   0228 keeps the whyred fade from being repainted while off"
 
+echo "== TOUCH: 0236 addresses the DSX the way vince does, address then stop =="
+P236="xnu/patches/0236-whyred-touch-vince-framing.patch"
+python3 tools/check_patch.py "$P236" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:DFRAME_PAGE_A1_STOP' \
+	--added-contains 'bsd/dev/whyred_touch.c:page|a1stop' \
+	--added-contains 'bsd/dev/whyred_touch.c:static int dsx_frame = DFRAME_PAGE_A1_STOP;' \
+	--added-contains 'bsd/dev/whyred_touch.c:the address byte ends with a real stop' \
+	--added-contains 'bsd/dev/whyred_touch.c:sweet_i2c_xfer(addr, NULL, 0, buf, len)' \
+	--added-contains 'bsd/dev/whyred_touch.c:if (dsx_frame_works(DFRAME_PAGE_A1_STOP, a)) {'
+python3 - <<'PY'
+src = open('xnu/patches/0236-whyred-touch-vince-framing.patch',
+           encoding='utf-8').read()
+body = '\n'.join(l[1:] for l in src.splitlines()
+                 if l.startswith('+') and not l.startswith('+++'))
+
+# vince's rmi_read(): page select, then the address byte with a real stop,
+# then a read transaction that starts fresh. No repeated start anywhere.
+stop = body.split('if (frame == DFRAME_PAGE_A1_STOP) {', 1)[1]
+bitbang = stop.split('/* vince: address byte with a stop', 1)[1]
+assert 'i2c_write(lo);' in bitbang
+assert 'i2c_stop();' in bitbang.split('i2c_write(lo);', 1)[1]
+assert bitbang.index('i2c_stop();') < bitbang.index('(addr << 1) | 1')
+# The QUP path must use a write-only transfer followed by a read-only one.
+qup = stop.split('the address byte ends with a real stop', 1)[1]
+assert 'sweet_i2c_xfer(addr, w, 1, NULL, 0)' in qup
+assert 'sweet_i2c_xfer(addr, NULL, 0, buf, len)' in qup
+# The proven framing is tried before the old matrix, not after it.
+diag = src.split('dsx_diag(void)', 1)[1]
+assert diag.index('DFRAME_PAGE_A1_STOP, a') < diag.index('for (frame = 0;')
+
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+assert 'DFRAME_PAGE_A1_STOP' in mirror
+assert 'static int dsx_frame = DFRAME_PAGE_A1_STOP;' in mirror
+assert 'sweet_i2c_xfer(addr, NULL, 0, buf, len)' in mirror
+PY
+echo "ok   0236 stops after the address byte and starts the read fresh"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but

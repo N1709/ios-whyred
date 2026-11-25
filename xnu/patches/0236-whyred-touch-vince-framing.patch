@@ -1,0 +1,119 @@
+diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
+index ed2a7f5..9558cd4 100644
+--- a/bsd/dev/whyred_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -633,16 +633,17 @@ enum dsx_frame {
+ 	DFRAME_A2_BE,		/* 16-bit address, big endian, no page */
+ 	DFRAME_A2_LE,		/* 16-bit address, little endian, no page */
+ 	DFRAME_PAGE_A1_DUMMY,	/* page; address byte + dummy 0x00, restart */
++	DFRAME_PAGE_A1_STOP,	/* page; address byte, STOP; read, STOP */
+ 	DFRAME_COUNT
+ };
+ 
+ static const char *dsx_frame_name[DFRAME_COUNT] = {
+ 	"page|a1", "page+a1", "page|a2be", "page|a2le",
+-	"a1", "a2be", "a2le", "page|a1dup",
++	"a1", "a2be", "a2le", "page|a1dup", "page|a1stop",
+ };
+ 
+-/* The vendor driver's framing until the self test says otherwise. */
+-static int dsx_frame = DFRAME_PAGE_A1;
++/* The framing proven on the sibling vince TD4310: address byte with a stop. */
++static int dsx_frame = DFRAME_PAGE_A1_STOP;
+ 
+ /* Nonzero once the QUP1 master owns the bus; all DSX reads then use it. */
+ static int dsx_qup;
+@@ -672,7 +673,8 @@ dsx_read_q(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 	uint8_t lo = (uint8_t)(reg & 0xff);
+ 	int wl, rc;
+ 
+-	if ((frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
++	if ((frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A1_STOP ||
++	    frame == DFRAME_PAGE_A2_BE ||
+ 	    frame == DFRAME_PAGE_A2_LE) && hi != dsx_page) {
+ 		p[0] = 0xff;
+ 		p[1] = hi;
+@@ -682,6 +684,20 @@ dsx_read_q(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 		}
+ 		dsx_page = hi;
+ 	}
++	if (frame == DFRAME_PAGE_A1_STOP) {
++		/*
++		 * vince's rmi_read(): the address byte ends with a real stop
++		 * and the read is a fresh START. The DSX there never sees a
++		 * repeated start, which is the one thing every whyred framing
++		 * so far had in common.
++		 */
++		w[0] = lo;
++		rc = sweet_i2c_xfer(addr, w, 1, NULL, 0);
++		if (rc != 0) {
++			return rc;
++		}
++		return sweet_i2c_xfer(addr, NULL, 0, buf, len);
++	}
+ 	wl = 0;
+ 	switch (frame) {
+ 	case DFRAME_PAGE_A1:
+@@ -726,6 +742,7 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 	}
+ 
+ 	if ((frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A1_DUMMY ||
++	    frame == DFRAME_PAGE_A1_STOP ||
+ 	    frame == DFRAME_PAGE_A2_BE ||
+ 	    frame == DFRAME_PAGE_A2_LE) && hi != dsx_page) {
+ 		/* page select: 0xFF <page>, its own transaction */
+@@ -740,6 +757,28 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 		dsx_page = hi;
+ 	}
+ 
++	if (frame == DFRAME_PAGE_A1_STOP) {
++		/* vince: address byte with a stop, then a fresh read START */
++		i2c_start();
++		ok &= i2c_write((uint8_t)(addr << 1));
++		ok &= i2c_write(lo);
++		i2c_stop();
++		if (!ok) {
++			return EIO;
++		}
++		i2c_start();
++		ok &= i2c_write((uint8_t)((addr << 1) | 1));
++		if (!ok) {
++			i2c_stop();
++			return EIO;
++		}
++		for (i = 0; i < len; i++) {
++			buf[i] = i2c_read(i + 1 < len);
++		}
++		i2c_stop();
++		return 0;
++	}
++
+ 	i2c_start();
+ 	ok &= i2c_write((uint8_t)(addr << 1));
+ 	switch (frame) {
+@@ -1034,7 +1073,25 @@ dsx_diag(void)
+ 
+ 	printf("WHYRED TOUCH: framing matrix over %s\n",
+ 	    dsx_qup ? "QUP1 (hardware I2C)" : "bit-bang");
++	/*
++	 * 0236: the sibling vince TD4310 driver sends the address byte with a
++	 * real stop and starts the read fresh. Try that framing first and only
++	 * fall back to the old matrix when it does not address the part.
++	 */
++	if (dsx_frame_works(DFRAME_PAGE_A1_STOP, a)) {
++		dsx_dump(dsx_frame_name[DFRAME_PAGE_A1_STOP], DSX_PDT_START,
++		    a, sizeof(a));
++		printf("WHYRED TOUCH: frame %s addressed\n",
++		    dsx_frame_name[DFRAME_PAGE_A1_STOP]);
++		dsx_frame = DFRAME_PAGE_A1_STOP;
++		return;
++	}
++	printf("WHYRED TOUCH: frame %s did not address the chip\n",
++	    dsx_frame_name[DFRAME_PAGE_A1_STOP]);
+ 	for (frame = 0; frame < DFRAME_COUNT; frame++) {
++		if (frame == DFRAME_PAGE_A1_STOP) {
++			continue;
++		}
+ 		if (dsx_frame_works(frame, a)) {
+ 			dsx_dump(dsx_frame_name[frame], DSX_PDT_START, a,
+ 			    sizeof(a));
