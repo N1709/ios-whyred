@@ -55,7 +55,7 @@ fi
 common="sweetlog=1 sweetouchi2c=1 sweetouchscl=200 sweetouchfast=1 sweetouchwait=0 launchd_unsecure_cache=1 emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1"
 [ "$power" = 1 ] && common="$common sweetouchpower=1"
 [ "$qup" = 1 ] && common="$common sweeti2c=1"
-[ "$native" = 1 ] && common="$common sweetfb_native=1"
+export SWEETFB_NATIVE="$native"
 
 zopfli=${ZOPFLI:-}
 if [ -z "$zopfli" ]; then
