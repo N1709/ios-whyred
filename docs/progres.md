@@ -77,14 +77,24 @@ was booted on 2026-11-25: it reaches the **lock screen** and **touch works**.
 That image is used; do not boot it again. Its SYSTEM ring is still on the
 phone and must be pulled from recovery before the next image is judged.
 
+Ring `ring-b971761.txt` (total 448,325 B, flush #393) confirms the lock
+screen boot: `SWEET FB: boot mark drawn`, `AppleCLCD 1080x2160`, 2,425 layer
+swaps, `display off/on` cycles from backboardd. Touch never started: the
+image's boot-args have **no `sweeti2c=1`**, so the probe ran the bit-bang
+path and the DSX kept streaming (`address phase still ignored (streaming)`,
+`skipping the F12 poll`). The bit-bang cannot issue the repeated start the
+address phase needs. The next image adds `--qup` (`sweeti2c=1`); the ring
+must then show the QUP scan and an address phase that works before F12/HID.
+
 Boot visuals: the user first described black, then a bar, then the kernel's
 Apple boot mark, then the lock screen, but then withdrew it ("enggak jadi"):
 what startled them was Siri appearing on the lock screen, which is normal
 when the side/power button stays held through boot. Keep the current splash
 until a real complaint is reproducible.
 
-Progress estimates: black screen/SpringBoard 95%, touch 90%, status bar 60%,
-GPU 35%, overall 76%.
+Progress estimates: black screen/SpringBoard 95%, touch 70% (lock screen
+boot but DSX address phase/QUP still to prove), status bar 60%, GPU 35%,
+overall 74%.
 
 ## Current next actions
 
