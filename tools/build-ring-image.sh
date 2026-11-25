@@ -126,7 +126,7 @@ expected = (1080, 2160) if os.environ['NATIVE'] == '1' else (1125, 2436)
 actual = (struct.unpack('<I', dprops['canvas-width'])[0],
           struct.unpack('<I', dprops['canvas-height'])[0])
 assert actual == expected, (actual, expected)
-print('verified packed ADT: complete P3 product, %dx%d canvas' % actual)
+print('verified packed ADT: complete %s product, %dx%d canvas' % ('sRGB' if os.environ['SRGB'] == '1' else 'P3', actual))
 PY
 
 mkdir -p "$(dirname "$out")"
