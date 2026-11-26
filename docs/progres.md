@@ -4,7 +4,7 @@ Update this file at every milestone, before handing off, and whenever a boot
 result changes the picture. Keep it short: facts and next actions only. The
 long reasoning belongs in `history/`.
 
-Last updated: 2026-11-25.
+Last updated: 2026-11-26.
 
 ## What works
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-25.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | Patch 0236 now addresses the DSX the way the working vince TD4310 driver does: page select, address byte with a real STOP, then a fresh read START. Host tests pass; hardware is unproven until the next boot. The older rings still show the address phase ignored |
+| Touch (as HID input) | 0236 booted and **failed**: `page|a1stop` still streams, so the framing is not the cause. 0237 pulses GPIO 66, writes F01 `0x80` (reset alone left the part asleep in 0197) and refuses every F01 write while the address phase is ignored. Not booted |
 | Power button / display off | Latest ring reaches `display off, HID paused`; 0228 prevents later presents. Visual blanking is confounded by the SpringBoard crash |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
@@ -53,7 +53,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Display | Kernel framebuffer works. The recovery build returns to the 35e591a recipe: native 1080x2160 canvas and sRGB `/product`, with the red unsupported-screen bar accepted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | 35e591a reaches the lock screen; the later P3 product identity made SpringBoard throw on `BoundingPathBitmap`. The recovery series drops 0229-0231 and keeps all touch/storage patches |
-| Touch | DSX at `0x20`. 0236 switches to vince's framing (address byte, STOP, fresh read START) and tries it first; no new ring yet, so the address phase is still unproven on whyred |
+| Touch | DSX at `0x20`. 0236 booted and the address phase still streams; framing is ruled out. 0237 adds reset + F01 wake (`0x80`) and gates every F01 write on the address test. The cheap GPIO 66 hypothesis is next; the documented fallback is the TD4310 TDDI panel reset (GPIO 53) plus a panel re-init |
 
 ## Revert: back to the 35e591a lock-screen display (2026-11-25)
 
@@ -112,33 +112,51 @@ what startled them was Siri appearing on the lock screen, which is normal
 when the side/power button stays held through boot. Keep the current splash
 until a real complaint is reproducible.
 
-Progress estimates: black screen/SpringBoard 95%, touch 65% (QUP1 SErrors;
-GPIO66 reset still streams; bit-bang address phase unresolved), status bar
-60%, GPU 35%, overall 72%.
+Progress estimates: black screen/SpringBoard 95%, touch 65% (address phase
+still streams after 0236; 0237 is a safety gate only), status bar 60%, GPU
+35%, overall 72%.
 
-## 0236: the vince address-then-stop framing (2026-11-25)
+## 0236 booted: framing is not the cause (2026-11-26)
 
-The sibling `unixnu-vince` repo drives the same Synaptics TD4310 TDDI at
-`0x20` and works. Its `rmi_read()` sends the page select, then the register
-address as its own START..STOP transaction, then a fresh read START; it
-never uses a repeated start. Every whyred framing so far kept the address
-and the read in one repeated-start transfer.
+The 0236 ring (`ring-0236.txt`, image `whyred-ring-0236.img`, sha256
+`7002b363…`) uses `page|a1stop` for every read and still streams. At
+`0x00e9` the first read returns F34 `27 00 09 00 21 34`, the second F01
+`2f 26 0d 04 01 01`; at `0x00e3` it returns `81 4c 00 13 06 01` then
+`12 0a 29 00 8f d4`. The part advances its internal pointer by one record
+per read and ignores the address byte, exactly like the repeated-start
+framings. **Do not add another framing.**
 
-Patch `0236` adds `DFRAME_PAGE_A1_STOP` to both the bit-bang and QUP paths,
-makes it the default and tries it before the old matrix. Host tests pass;
-the first CI run (`45611958791`) failed in the unrelated ADT test because
-the private `research/ipsw-x/d22ap.adt` is not in git, not in the touch
-patch. No hardware ring yet.
+Two more facts from the same ring: the F01 control read returned `0xc7`
+(stream bytes, not the control register) and the driver wrote `0xc4` back
+as the wake value; and `sweetouchreset` was **not** set in 0236, so GPIO 66
+was never pulsed in that boot. 0197 (reset, no wake) read zeros; 0198 (no
+reset) read real bytes but streamed.
+
+## 0237: stop writing F01 through the stream (2026-11-26)
+
+Patch `0237` is a safety patch, not a fix. While `addressable` is false the
+read of `0x0d` is stream data, not the control register, so 0236's `0xc7`
+read and `0xc4` write went to whatever register the stream pointer was on.
+0237 refuses every F01 control write until the address phase works; the
+addressed path is unchanged.
+
+GPIO 66 stays forbidden: it is the Novatek reset (`rules.md` §9), and the
+0197 reset-only boot already left the part returning zeros. Do not add a
+"reset then wake" variant through it.
 
 ## Current next actions
 
-1. Get a green `xnu-kernel` run for `0236`, fetch that kernel and pack
-   `--native --srgb --power`; boot it once with `fastboot boot`.
-2. Require the ring to show `frame page|a1stop addressed` or
-   `address phase works`; only then expect F12 programming and
-   `WHYRED TOUCH: HID poll`.
-3. Test tap, swipe and multi-touch through `SweetHIDTouch`. Then continue
-   the real Adreno 509 path.
+1. Commit and push `0237` with the docs. No hardware change.
+2. Ask the user before the next boot. The documented root cause is the
+   TD4310 TDDI panel reset (GPIO 53). It needs a panel re-init
+   (`<1 1>, <0 5>, <1 35>` plus the TD4310 on-command), which
+   `SweetFramebuffer` does not have yet; a wrong sequence can blank the
+   display, so prepare that image first.
+3. Cheaper fallbacks before the panel reset: 2 us bit-bang
+   (`sweetouchscl=2`) and the QUP1 bring-up (QUP1 panics with SError
+   `0xbf000002`).
+4. Only after the address phase works: F12, the HID poll, then tap, swipe
+   and multi-touch through `SweetHIDTouch`.
 
 ## CS_KILLED from a bad image cmdline, corrected (2026-11-23)
 

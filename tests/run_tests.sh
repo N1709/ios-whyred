@@ -2411,6 +2411,31 @@ assert 'sweet_i2c_xfer(addr, NULL, 0, buf, len)' in mirror
 PY
 echo "ok   0236 stops after the address byte and starts the read fresh"
 
+echo "== TOUCH: 0237 never writes F01 ctrl while the address phase is ignored =="
+P237="xnu/patches/0237-whyred-touch-no-f01-write-while-streaming.patch"
+python3 tools/check_patch.py "$P237" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:} else if (!addressable) {' \
+	--added-contains 'bsd/dev/whyred_touch.c:address phase ignored, not writing f01 ' \
+	--added-contains 'bsd/dev/whyred_touch.c:Only the TD4310 panel reset' \
+	--added-lacks 'bsd/dev/whyred_touch.c:addressable && dsx_no_sleep_enabled()'
+python3 - <<'PY'
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+
+# The streaming branch must come before the addressed F01 read, so a part
+# that ignores the address phase can never reach dsx_wake_normal().
+assert mirror.index('} else if (!addressable) {') < \
+    mirror.index('dsx_read_page(DSX_ADDR, (uint16_t)dsx_f01_ctrl')
+# The addressed path still clears the sleep bits and wakes the part.
+assert 'dsx_f01_normal = normal;' in mirror
+assert 'dsx_wake_normal();' in mirror
+# 0236's 0xc4 came from preserving bits of a streamed byte; the read may now
+# only contribute bits when the address phase works.
+assert '| 0x80u |' in mirror
+assert 'address phase ignored, not writing f01' in mirror
+assert 'addressable && dsx_no_sleep_enabled()' not in mirror
+PY
+echo "ok   0237 keeps every F01 ctrl write behind the address test"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but

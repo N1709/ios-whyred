@@ -41,10 +41,11 @@ being brought up, but no touch data reaches HID yet.
   GIC SPI 95), SDA GPIO 2, SCL GPIO 3, IRQ 67, rail `pm660_l11`. The DT
   has no DSX reset GPIO; GPIO 66 is the **Novatek** NT36672 reset.
 
-## Driver handover (2026-11-25, for Claude)
+## Driver handover (2026-11-26, for Claude)
 
-* Tip `4907c72` (docs); touch code `d0d3ebc`/`86d469d`. CI `45613338340`
-  (tip `86d469d`) is **green**. Host suite green.
+* Tip `7b59f42` (0237 + docs); touch code `d0d3ebc`/`86d469d`. CI
+  `45613338340` (tip `86d469d`) is **green**; the 0237 run is pending.
+  Host suite green.
 * **0236 booted and failed.** Ring pulled from SYSTEM
   (`ring-0236.txt`; local copy `/tmp/opencode/ring-0236.txt`). The vince
   frame `page|a1stop` was used for every read and the address phase is still
@@ -55,13 +56,18 @@ being brought up, but no touch data reaches HID yet.
   framing.**
 * Image already booted, do not boot it again: `whyred-ring-0236.img`,
   sha256 `7002b363d2f35dc274045738747f38316673f1fdc2ed974bfc0200d088d15116`.
-* New root-cause candidate: the panel is a **Tianma TD4310 TDDI**
+* `0237` is a safety gate, not a fix: while `addressable` is false it
+  refuses every F01 control write, because 0236 read `0xc7` and wrote
+  `0xc4` through the stream pointer. GPIO 66 is not pulsed.
+* Root cause: the panel is a **Tianma TD4310 TDDI**
   (`dsi_td4310_tianma_fhd_video`); display and touch are one chip. The stock
   DT comments out `synaptics,reset-gpio` because the **MDSS panel reset**
   owns it: `qcom,platform-reset-gpio = <&tlmm 53 0>` in
   `sdm660-mtp.dtsi`, TE `qcom,platform-te-gpio = <&tlmm 59 0>`. GPIO 66 is
   the **Novatek** reset; the `sweetouchreset=1` ring proved it does nothing
-  to this DSX.
+  to this DSX. **Do not pulse GPIO 66** (`rules.md` §9). Only the TD4310
+  panel reset (GPIO 53) followed by its on-command re-init can bring the
+  touch half back.
 * Recovery evidence (OrangeFox, stock kernel): `1-0020` binds, the PDT scan
   works, `productinfo 0x01 0x00`, `buildid 2788281`, `flashprog 0`,
   `fwu_go_nogo`: device fw `2788281` vs image `2732044`, no reflash. The

@@ -1,0 +1,29 @@
+diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
+index 9558cd4..b6b0c71 100644
+--- a/bsd/dev/whyred_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -1786,11 +1786,22 @@ dsx_reset_probe(void)
+ 	}
+ 	if (!dsx_f01_ctrl) {
+ 		printf("WHYRED TOUCH: no F01 control base, skipping configure\n");
++	} else if (!addressable) {
++		/*
++		 * 0237: ring 0236 read 0xc7 here and wrote 0xc4 back as the
++		 * "wake" value. While the address phase is ignored this is
++		 * not the control register at all: the write lands on
++		 * whatever register the stream pointer is on. 0222 gated the
++		 * F12 ctrl20/ctrl28 writes for the same reason; gate F01 too.
++		 * Only the TD4310 panel reset (GPIO 53) may make the part
++		 * addressable again; GPIO 66 is the Novatek reset.
++		 */
++		printf("WHYRED TOUCH: address phase ignored, not writing f01 "
++		    "ctrl\n");
+ 	} else if (dsx_read_page(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1) ==
+ 	    0) {
+ 		uint8_t normal = (uint8_t)((v & ~0x07u) | 0x80u |
+-		    (addressable && dsx_no_sleep_enabled() ? 0x04u :
+-		    (v & 0x04u)));
++		    (dsx_no_sleep_enabled() ? 0x04u : (v & 0x04u)));
+ 
+ 		printf("WHYRED TOUCH: f01 ctrl read 0x%02x -> 0x%02x\n",
+ 		    v, normal);

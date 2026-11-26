@@ -22,10 +22,20 @@ boot that same image again.
 its own START..STOP transaction and a fresh read START; it never uses a
 repeated start. Patch `0236` adds that framing (`page|a1stop`) to both the
 bit-bang and QUP paths, makes it the default and tries it before the old
-matrix. Host tests pass, `d0d3ebc` is pushed; CI run `45611958791` failed in
-the unrelated ADT test (the private `research/ipsw-x/d22ap.adt` is not in
-git), fixed in the follow-up. No hardware ring yet: the ring must show
-`frame page|a1stop addressed` or `address phase works` before F12/HID.
+matrix. CI run `45613338340` is green.
+
+2026-11-26: **0236 booted and failed.** The ring (`ring-0236.txt`, image
+`whyred-ring-0236.img`, sha256 `7002b363…`) shows the same stream: at
+`0x00e9` read 1 is F34 `27 00 09 00 21 34`, read 2 is F01
+`2f 26 0d 04 01 01`; at `0x00e3` read 1 is `81 4c 00 13 06 01`, read 2 is
+`12 0a 29 00 8f d4`. Framing is ruled out. The ring also caught the F01
+control read as `0xc7` and the old driver writing `0xc4` back through the
+stream pointer. Patch `0237` is therefore a safety gate: it refuses every
+F01 control write while `addressable` is false and leaves the addressed path
+unchanged. GPIO 66 is not pulsed; it is the Novatek reset (`rules.md` §9),
+and the 0197 reset-only boot already left the part returning zeros.
+If the address phase still streams, the next patch is the TD4310 TDDI panel
+reset (GPIO 53) plus a panel re-init; prepare that sequence before booting.
 
 ## One-paragraph summary
 
@@ -72,14 +82,15 @@ lock screen is visible.
 
 ## Next actions
 
-1. Pack the `0236` CI kernel with `tools/build-ring-image.sh KERNEL OUT
-   --native --srgb --power`, boot it once with `fastboot boot` (cold
-   fastboot), and pull the ring. Require `frame page|a1stop addressed`
-   or `address phase works` before anything else.
-2. Once the lock screen is visible, resume DSX work: test a separate
-   general-call/QUP diagnostic, solve the address phase, program F01/F12,
-   and verify ordinary tap, swipe and multi-touch through `SweetHIDTouch`
-   with no phantom contacts.
+1. Commit and push `0237` with the docs; CI must be green. No hardware
+   change in this patch.
+2. Ask the user before the next boot. Build 0238 only after the TD4310
+   panel reset (GPIO 53, sequence `<1 1>, <0 5>, <1 35>`) and its on-command
+   re-init are in `SweetFramebuffer`; a wrong sequence can blank the panel.
+3. Cheaper checks first if the user prefers no display risk: 2 us bit-bang
+   (`sweetouchscl=2`) and the QUP1 bring-up (SError `0xbf000002`).
+4. Once the address phase works, program F01/F12 and verify ordinary tap,
+   swipe and multi-touch through `SweetHIDTouch` with no phantom contacts.
 
 ## Touch: what is known
 
