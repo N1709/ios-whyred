@@ -2850,64 +2850,8 @@ whyred_touch_early(void)
 	return 0;
 }
 
+static void whyred_panel_reset_thread(void *, wait_result_t);
 static int touch_panel_reset_started;
-
-/*
- * 0238: the DSX is only addressable in the vendor's 0.9-3.2 s window; the
- * iOS late probe runs after eMMC (~64 s), so it always sees the LPWG stream.
- * With sweetpanelreset=1 the probe is deferred until userland has presented
- * a frame, then GPIO 53 resets the TD4310 TDDI (touch included), the panel
- * on-command is replayed, and the probe runs on a fresh part.
- */
-static void
-whyred_panel_reset_thread(void *arg, __unused wait_result_t wr)
-{
-	struct touch_pin rst;
-	vm_offset_t north;
-	uint32_t wait = 3000;
-	int i, ready = 0, rc, ms;
-
-	(void)arg;
-	(void)PE_parse_boot_argn("sweetpanelwait", &wait, sizeof(wait));
-	printf("WHYRED TOUCH: panel reset armed, waiting for userland\n");
-	for (i = 0; i < 1200; i++) {
-		if (sweet_fb_userland_ready()) {
-			ready = 1;
-			break;
-		}
-		(void)tsleep(&touch_panel_reset_started, PZERO, "sweetprst",
-		    hz / 10);		/* 100 ms, yields the CPU */
-	}
-	if (!ready) {
-		printf("WHYRED TOUCH: no userland frame after 120 s, not "
-		    "resetting the panel\n");
-		return;
-	}
-	for (ms = (int)wait; ms > 0; ms -= 100) {
-		(void)tsleep(&touch_panel_reset_started, PZERO, "sweetpwt",
-		    hz / 10);
-	}
-	printf("WHYRED TOUCH: userland up, pulsing panel reset GPIO %d\n",
-	    WHYRED_PANEL_RST);
-	north = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_NORTH,
-	    0x50000, VM_WIMG_IO);
-	if (north == 0) {
-		printf("WHYRED TOUCH: panel reset TLMM map failed\n");
-		return;
-	}
-	pin_setup(&rst, north, WHYRED_PANEL_RST);
-	pin_out(&rst, 1);
-	delay(1000);			/* DT: <1 1> */
-	pin_out(&rst, 0);
-	delay(5000);			/* DT: <0 5> */
-	pin_out(&rst, 1);
-	delay(35000);			/* DT: <1 35> */
-	printf("WHYRED TOUCH: panel reset pulse done\n");
-	rc = sweet_panel_init_td4310();
-	printf("WHYRED TOUCH: TD4310 init rc %d, probing touch\n", rc);
-	touch_panel_reset_started = 2;	/* run the body, do not defer again */
-	(void)whyred_touch_probe();
-}
 
 int
 whyred_touch_probe(void)
@@ -3164,6 +3108,63 @@ whyred_touch_probe(void)
 	dsx_probe_complete = 1;
 	dsx_hid_start();
 	return acks ? 0 : ENXIO;
+}
+
+/*
+ * 0238: the DSX is only addressable in the vendor's 0.9-3.2 s window; the
+ * iOS late probe runs after eMMC (~64 s), so it always sees the LPWG stream.
+ * With sweetpanelreset=1 the probe is deferred until userland has presented
+ * a frame, then GPIO 53 resets the TD4310 TDDI (touch included), the panel
+ * on-command is replayed, and the probe runs on a fresh part.
+ */
+static void
+whyred_panel_reset_thread(void *arg, __unused wait_result_t wr)
+{
+	struct touch_pin rst;
+	vm_offset_t north;
+	uint32_t wait = 3000;
+	int i, ready = 0, rc, ms;
+
+	(void)arg;
+	(void)PE_parse_boot_argn("sweetpanelwait", &wait, sizeof(wait));
+	printf("WHYRED TOUCH: panel reset armed, waiting for userland\n");
+	for (i = 0; i < 1200; i++) {
+		if (sweet_fb_userland_ready()) {
+			ready = 1;
+			break;
+		}
+		(void)tsleep(&touch_panel_reset_started, PZERO, "sweetprst",
+		    hz / 10);		/* 100 ms, yields the CPU */
+	}
+	if (!ready) {
+		printf("WHYRED TOUCH: no userland frame after 120 s, not "
+		    "resetting the panel\n");
+		return;
+	}
+	for (ms = (int)wait; ms > 0; ms -= 100) {
+		(void)tsleep(&touch_panel_reset_started, PZERO, "sweetpwt",
+		    hz / 10);
+	}
+	printf("WHYRED TOUCH: userland up, pulsing panel reset GPIO %d\n",
+	    WHYRED_PANEL_RST);
+	north = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_NORTH,
+	    0x50000, VM_WIMG_IO);
+	if (north == 0) {
+		printf("WHYRED TOUCH: panel reset TLMM map failed\n");
+		return;
+	}
+	pin_setup(&rst, north, WHYRED_PANEL_RST);
+	pin_out(&rst, 1);
+	delay(1000);			/* DT: <1 1> */
+	pin_out(&rst, 0);
+	delay(5000);			/* DT: <0 5> */
+	pin_out(&rst, 1);
+	delay(35000);			/* DT: <1 35> */
+	printf("WHYRED TOUCH: panel reset pulse done\n");
+	rc = sweet_panel_init_td4310();
+	printf("WHYRED TOUCH: TD4310 init rc %d, probing touch\n", rc);
+	touch_panel_reset_started = 2;	/* run the body, do not defer again */
+	(void)whyred_touch_probe();
 }
 
 #else /* !ARM64_BOARD_CONFIG_WHYRED */
