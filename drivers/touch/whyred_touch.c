@@ -3123,6 +3123,7 @@ whyred_panel_reset_thread(void *arg, __unused wait_result_t wr)
 	struct touch_pin rst;
 	vm_offset_t north;
 	uint32_t wait = 3000;
+	uint32_t probe_wait = 800;
 	int i, ready = 0, rc, ms;
 
 	(void)arg;
@@ -3162,7 +3163,20 @@ whyred_panel_reset_thread(void *arg, __unused wait_result_t wr)
 	delay(35000);			/* DT: <1 35> */
 	printf("WHYRED TOUCH: panel reset pulse done\n");
 	rc = sweet_panel_init_td4310();
-	printf("WHYRED TOUCH: TD4310 init rc %d, probing touch\n", rc);
+	/*
+	 * 0239: the DSX only answers RMI4 about 0.9-3.2 s after the TDDI
+	 * reset; a probe at ~0.1 s reads the boot stream, not the register
+	 * map. The vendor driver probes at 0.92 s. Wait here, then probe
+	 * inside the window.
+	 */
+	(void)PE_parse_boot_argn("sweetpaneltouchwait", &probe_wait,
+	    sizeof(probe_wait));
+	printf("WHYRED TOUCH: TD4310 init rc %d, waiting %u ms for the DSX\n",
+	    rc, probe_wait);
+	for (ms = (int)probe_wait; ms > 0; ms -= 100) {
+		(void)tsleep(&touch_panel_reset_started, PZERO, "sweetptw",
+		    hz / 10);
+	}
 	touch_panel_reset_started = 2;	/* run the body, do not defer again */
 	(void)whyred_touch_probe();
 }

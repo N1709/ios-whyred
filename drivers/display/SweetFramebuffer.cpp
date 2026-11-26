@@ -362,7 +362,31 @@ AppleCLCD::start(IOService *provider)
 		sweet_console_muted = 1;
 		IOLog("SWEET FB: boot mark drawn, console muted until iOS presents\n");
 	}
-#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(ARM64_BOARD_CONFIG_LAVENDER)
+#if defined(ARM64_BOARD_CONFIG_WHYRED)
+	/*
+	 * whyred is sdm660: the DSI0 controller is at 0x0c994000 (live DT
+	 * qcom,mdss_dsi_ctrl0@c994000), not the sm6115/topaz 0x05e94000.
+	 * whyred also defines ARM64_BOARD_CONFIG_LAVENDER, so the topaz block
+	 * below is compiled out and fDsi stays NULL; the TD4310 on-command
+	 * after a panel reset could never be sent. Map the real controller
+	 * here and keep the DCS state the reset thread needs.
+	 */
+	fDsi = (volatile uint8_t *)ml_io_map(0x0c994000, 0x1000);
+	fDsiBuf = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+	    kIODirectionInOut | kIOMemoryPhysicallyContiguous, page_size, 0x00000000fffff000ull);
+	fDsiBufPhys = fDsiBuf ? fDsiBuf->getPhysicalSegment(0, NULL, kIOMemoryMapperNone) : 0;
+	fBlLock = IOLockAlloc();
+	fBlLevel = 0x133;                       /* panel init level (stock DT) */
+	fBlSent = ~0u;
+	fBlCall = thread_call_allocate(&AppleCLCD::blWork, this);
+	if (fDsi != NULL) {
+		IOLog("SWEET FB: whyred DSI0 ctrl %#x at 0x0c994000, DCS 0x51\n",
+		    *(volatile uint32_t *)(fDsi + 0x004));
+		setProperty("IOMFBBrightnessLevel", (unsigned long long)(200u << 16), 32);
+	} else {
+		IOLog("SWEET FB: whyred DSI0 map 0x0c994000 FAILED\n");
+	}
+#elif !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(ARM64_BOARD_CONFIG_LAVENDER)
 	fVig0 = (volatile uint32_t *)ml_io_map(0x05e05000, 0x1000);
 	fCtl0 = (volatile uint32_t *)ml_io_map(0x05e02000, 0x1000);
 	fDsi = (volatile uint8_t *)ml_io_map(0x05e94000, 0x1000);
@@ -807,6 +831,8 @@ AppleCLCD::panelInitTd4310(void)
 	bool ok = true;
 
 	if (fDsi == NULL || fDsiBuf == NULL || fBlLock == NULL) {
+		IOLog("SWEET FB: TD4310 init skipped (dsi %p buf %p lock %p)\n",
+		    (void *)fDsi, (void *)fDsiBuf, (void *)fBlLock);
 		return false;
 	}
 	IOLockLock(fBlLock);

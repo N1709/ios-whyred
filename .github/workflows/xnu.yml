@@ -353,7 +353,7 @@ jobs:
           # panel init can blank the display.
           PANEL_RESET="${{ inputs.panel_reset || 'off' }}"
           if [ "$PANEL_RESET" = "on" ]; then
-            COMMON="$COMMON sweetpanelreset=1 sweetpanelwait=3000"
+            COMMON="$COMMON sweetpanelreset=1 sweetpanelwait=3000 sweetpaneltouchwait=800"
           fi
           # Quick mode: keep the touch probe out of the boot-critical path
           # without disabling it. 0223 lowers the bit-bang line wait and lets

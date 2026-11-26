@@ -1,6 +1,15 @@
 # Current status
 
-Last updated: 2026-11-25. The P3 mode experiment (0229-0231) never fixed the
+Last updated: 2026-11-26. Patch `0239` fixes the 0238 negative: the
+TD4310 re-init never ran because `fDsi` was mapped at topaz's
+`0x05e94000`, while whyred's sdm660 DSI0 is at `0x0c994000` (live DT
+`qcom,mdss_dsi_ctrl0@c994000`). whyred now maps the real base, the DSI
+offsets are checked against the stock whyred kernel, and the reset thread
+waits 800 ms (`sweetpaneltouchwait`) after the panel on-command before
+probing the DSX. Host tests are green; not booted. The rest of this page
+describes the pre-0238 state.
+
+The P3 mode experiment (0229-0231) never fixed the
 black screen: the 0230 boot stayed sRGB and the user's manual test flashed an
 old pre-0229 image. The user confirmed that `35e591a` did reach the lock
 screen, and that commit's display recipe is native 1080x2160 canvas,
