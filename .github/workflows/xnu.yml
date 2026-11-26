@@ -33,6 +33,13 @@ on:
           - "off"
           - "on"
         default: "off"
+      panel_reset:
+        description: on (0238 - reset TD4310 GPIO 53 + touch probe after userland) / off
+        type: choice
+        options:
+          - "off"
+          - "on"
+        default: "off"
   push:
     branches: [main, santoni, lavender, whyred]
     paths:
@@ -338,6 +345,16 @@ jobs:
           # bit-bang framing; the HID poll starts after the probe unless
           # sweetouchhid=0.
           COMMON="$COMMON launchd_unsecure_cache=1 $FB_ARG sweetouchi2c=1 sweetouchwait=0"
+          # 0238: opt-in only. The late probe normally runs at ~64 s, long
+          # after the vendor's 0.9-3.2 s window, so the DSX only streams.
+          # With sweetpanelreset=1 the probe waits for the first userland
+          # present, pulses GPIO 53 (TD4310 panel reset), replays the panel
+          # on-command and probes the part again. Off unless asked: a wrong
+          # panel init can blank the display.
+          PANEL_RESET="${{ inputs.panel_reset || 'off' }}"
+          if [ "$PANEL_RESET" = "on" ]; then
+            COMMON="$COMMON sweetpanelreset=1 sweetpanelwait=3000"
+          fi
           # Quick mode: keep the touch probe out of the boot-critical path
           # without disabling it. 0223 lowers the bit-bang line wait and lets
           # sweetouchfast=1 skip the two 0x200 stream reads; the address test

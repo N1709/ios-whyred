@@ -74,9 +74,12 @@ being brought up, but no touch data reaches HID yet.
   chip is in app mode after the stock display/touch init, and the iOS kernel
   never performs that init.
 * Next candidates, in order:
-  1. Pulse the TD4310 reset (GPIO 53) once, then re-init the panel. The
-     display may blank; `SweetFramebuffer` can send DCS over DSI0 but has no
-     TD4310 init sequence, so plan the panel re-init before this boot.
+  1. `0238` (written, not booted): `sweetpanelreset=1` waits for the first
+     userland present, pulses the TD4310 reset (GPIO 53), replays the panel
+     on-command and probes again. The display may blank; the `log` image
+     keeps a ring to pull. If GPIO 53 is not wired to the DSX (live DT has no
+     `synaptics,reset-gpio`), the probe still streams and that is a clean
+     negative.
   2. Speed up the bit-bang: `TOUCH_I2C_DELAY_US` is 10 (about 33 kHz); the
      stock QUP runs at 400 kHz. Try 2 us, same framing.
   3. Fix the QUP1 bring-up. The `--qup` image panics at the first

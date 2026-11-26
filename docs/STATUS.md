@@ -82,13 +82,18 @@ lock screen is visible.
 
 ## Next actions
 
-1. Commit and push `0237` with the docs; CI must be green. No hardware
-   change in this patch.
-2. Ask the user before the next boot. Build 0238 only after the TD4310
-   panel reset (GPIO 53, sequence `<1 1>, <0 5>, <1 35>`) and its on-command
-   re-init are in `SweetFramebuffer`; a wrong sequence can blank the panel.
-3. Cheaper checks first if the user prefers no display risk: 2 us bit-bang
-   (`sweetouchscl=2`) and the QUP1 bring-up (SError `0xbf000002`).
+1. `0237` is pushed (`8578480`). `0238` is written and host-tested: opt-in
+   `sweetpanelreset=1` defers the touch probe until userland has presented a
+   frame, pulses GPIO 53 (`<1 1>, <0 5>, <1 35>`), replays the TD4310
+   on-command, then probes the DSX. Normal boot is unchanged; the workflow
+   has a `panel_reset=on` input.
+2. Ask the user before the next boot. Prefer the `log` image so a blank
+   panel still leaves a ring to pull; the reset runs ~3 s after the first
+   userland present, so the lock screen must be up first.
+3. If GPIO 53 turns out not to reset the DSX (live DT has no
+   `synaptics,reset-gpio`), the result is a clean negative: panel blinks,
+   probe still streams. Then 2 us bit-bang (`sweetouchscl=2`) and QUP1
+   (SError `0xbf000002`).
 4. Once the address phase works, program F01/F12 and verify ordinary tap,
    swipe and multi-touch through `SweetHIDTouch` with no phantom contacts.
 

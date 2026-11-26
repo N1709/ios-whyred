@@ -71,6 +71,7 @@ sweet_hold_set(SweetSurface **set, bool on)
 }
 class AppleCLCD;
 static AppleCLCD *sweet_cons_fb;
+static AppleCLCD *sweet_panel_fb;   /* for the late panel reset / touch probe */
 static void sweet_cons_show(void);
 class OSDictionary;
 static void sweet_bl_log(const char *who, OSDictionary *d);
@@ -153,6 +154,7 @@ public:
 	IOLock       *fLock;            /* swaps and client list */
 	OSArray      *fClients;
 	uint32_t      fSwapID;
+	uint32_t      fUserPresents;    /* swaps from userland, not the console */
 	bool          fConsolePaused;
 	uint8_t       fPending[SWEET_FB_SWAP_REC_SIZE];     /* latest swap, not yet shown */
 	bool          fDirty;
@@ -203,6 +205,7 @@ public:
 	bool          dsiSend(const uint8_t hdr[4], const uint8_t *payload, uint32_t len);
 	void          setPanelOn(bool on);
 	void          setPanelLevel(uint32_t level);
+	bool          panelInitTd4310(void);
 	void addClient(IOMobileFramebufferUserClient *client);
 	void removeClient(IOMobileFramebufferUserClient *client);
 	void swap(const uint8_t *rec);
@@ -310,6 +313,9 @@ AppleCLCD::start(IOService *provider)
 	sweet_busy_init();
 	PE_current_console(&video);
 	fPhys = video.v_baseAddr;
+	fUserPresents = 0;
+	fSwapID = 0;
+	fDirty = false;
 	fWidth = (uint32_t)video.v_width;
 	fHeight = (uint32_t)video.v_height;
 	fRowBytes = (uint32_t)video.v_rowBytes;
@@ -462,6 +468,7 @@ AppleCLCD::start(IOService *provider)
 	registerService();
 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+	sweet_panel_fb = this;
 	return true;
 }
 
@@ -629,6 +636,7 @@ static bool sweet_fb_swap_log_ready;
 void
 AppleCLCD::swap(const uint8_t *rec)
 {
+	fUserPresents++;
 	SweetSurface *held[4] = {};
 	uint32_t mask = get32(rec, 0x104);
 	for (uint32_t i = 0; i < 4 && i < SWEET_FB_LAYERS; i++) {
@@ -771,6 +779,72 @@ AppleCLCD::setPanelLevel(uint32_t level)
 	if (logs++ < 8 || !done) {
 		IOLog("SWEET FB: panel level %#x: %s\n", level, done ? "done" : "NO DONE");
 	}
+}
+
+/*
+ * 0238: TD4310 on-command from the stock DT. Used after the panel reset
+ * (GPIO 53) has been pulsed, so the DSI video path is already running and
+ * this only re-initialises the panel side. The reset itself is done by the
+ * touch driver, which owns the TLMM mapping.
+ */
+bool
+AppleCLCD::panelInitTd4310(void)
+{
+	static const uint8_t c11[] = { 0x11, 0x00 };
+	static const uint8_t b0[] = { 0xB0, 0x04 };
+	static const uint8_t d6[] = { 0xD6, 0x01 };
+	static const uint8_t ea[] = { 0xEA, 0x0A };
+	static const uint8_t c51[] = { 0x51, 0xFF };
+	static const uint8_t c53[] = { 0x53, 0x2C };
+	static const uint8_t ce[] = {
+		0xCE, 0x55, 0x40, 0x56, 0x6E, 0x87, 0x95, 0xA0, 0xB0, 0xC0,
+		0xC2, 0xC9, 0xCE, 0xDF, 0xE3, 0xE4, 0xEC, 0xFF, 0x04, 0x00,
+		0x00, 0x04, 0x46, 0x04, 0x69, 0x5A
+	};
+	static const uint8_t c55[] = { 0x55, 0x00 };
+	static const uint8_t c35[] = { 0x35, 0x00 };
+	static const uint8_t c29[] = { 0x29, 0x00 };
+	bool ok = true;
+
+	if (fDsi == NULL || fDsiBuf == NULL || fBlLock == NULL) {
+		return false;
+	}
+	IOLockLock(fBlLock);
+	ok &= dsiDcsLong(c11, sizeof(c11));
+	IODelay(70000);			/* DT: 0x46 ms after sleep-out */
+	ok &= dsiDcsLong(b0, sizeof(b0));
+	ok &= dsiDcsLong(d6, sizeof(d6));
+	ok &= dsiDcsLong(ea, sizeof(ea));
+	ok &= dsiDcsLong(c51, sizeof(c51));
+	ok &= dsiDcsLong(c53, sizeof(c53));
+	ok &= dsiDcsLong(ce, sizeof(ce));
+	ok &= dsiDcsLong(c55, sizeof(c55));
+	ok &= dsiDcsLong(c35, sizeof(c35));
+	ok &= dsiDcsLong(c29, sizeof(c29));
+	IODelay(20000);			/* DT: 0x14 ms after display-on */
+	IOLockUnlock(fBlLock);
+	if (ok) {
+		setPanelLevel(fBlLevel);
+	}
+	IOLog("SWEET FB: TD4310 on-command %s\n", ok ? "done" : "FAILED");
+	return ok;
+}
+
+extern "C" int
+sweet_fb_userland_ready(void)
+{
+	return sweet_panel_fb != NULL && sweet_panel_fb->fUserPresents != 0;
+}
+
+extern "C" int
+sweet_panel_init_td4310(void)
+{
+	AppleCLCD *fb = sweet_panel_fb;
+
+	if (fb == NULL) {
+		return -1;
+	}
+	return fb->panelInitTd4310() ? 0 : -1;
 }
 
 /*

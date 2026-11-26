@@ -17,7 +17,7 @@ Last updated: 2026-11-26.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | 0236 booted and **failed**: `page|a1stop` still streams, so the framing is not the cause. 0237 pulses GPIO 66, writes F01 `0x80` (reset alone left the part asleep in 0197) and refuses every F01 write while the address phase is ignored. Not booted |
+| Touch (as HID input) | 0236 booted and **failed**: `page|a1stop` still streams, so the framing is not the cause. 0237 is a safety gate only: it refuses every F01 write while the address phase is ignored and does not pulse GPIO 66. 0238 is the opt-in GPIO 53 TD4310 reset after userland, not booted |
 | Power button / display off | Latest ring reaches `display off, HID paused`; 0228 prevents later presents. Visual blanking is confounded by the SpringBoard crash |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
@@ -53,7 +53,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Display | Kernel framebuffer works. The recovery build returns to the 35e591a recipe: native 1080x2160 canvas and sRGB `/product`, with the red unsupported-screen bar accepted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | 35e591a reaches the lock screen; the later P3 product identity made SpringBoard throw on `BoundingPathBitmap`. The recovery series drops 0229-0231 and keeps all touch/storage patches |
-| Touch | DSX at `0x20`. 0236 booted and the address phase still streams; framing is ruled out. 0237 adds reset + F01 wake (`0x80`) and gates every F01 write on the address test. The cheap GPIO 66 hypothesis is next; the documented fallback is the TD4310 TDDI panel reset (GPIO 53) plus a panel re-init |
+| Touch | DSX at `0x20`. 0236 booted and the address phase still streams; framing is ruled out. 0237 gates every F01 write on the address test. 0238 (opt-in `sweetpanelreset=1`) waits for the first userland present, pulses the TD4310 panel reset GPIO 53, replays the panel on-command and probes again; normal boot unchanged. The 2 us bit-bang and QUP1 remain the cheaper fallbacks |
 
 ## Revert: back to the 35e591a lock-screen display (2026-11-25)
 
@@ -144,17 +144,29 @@ GPIO 66 stays forbidden: it is the Novatek reset (`rules.md` §9), and the
 0197 reset-only boot already left the part returning zeros. Do not add a
 "reset then wake" variant through it.
 
+## 0238: panel reset after userland (2026-11-26)
+
+The late probe runs at ~64 s, long after the vendor's 0.9-3.2 s window, so
+the DSX only streams by then. `0238` makes that a choice: with
+`sweetpanelreset=1` the probe starts a thread that waits for
+`SweetFramebuffer` to report the first userland present (`swap()` count),
+waits `sweetpanelwait` ms (default 3000), pulses GPIO 53
+(`<1 1>, <0 5>, <1 35>`), replays the TD4310 on-command from the stock DT
+through `AppleCLCD::panelInitTd4310()`, then runs the normal probe. Without
+the boot argument `whyred_touch_probe()` is byte-for-byte the old path.
+Workflow input `panel_reset=on` adds the argument. Host checks pass
+(`check_patch.py`, `extract_drivers.py --check`); not booted.
+
 ## Current next actions
 
-1. Commit and push `0237` with the docs. No hardware change.
-2. Ask the user before the next boot. The documented root cause is the
-   TD4310 TDDI panel reset (GPIO 53). It needs a panel re-init
-   (`<1 1>, <0 5>, <1 35>` plus the TD4310 on-command), which
-   `SweetFramebuffer` does not have yet; a wrong sequence can blank the
-   display, so prepare that image first.
-3. Cheaper fallbacks before the panel reset: 2 us bit-bang
-   (`sweetouchscl=2`) and the QUP1 bring-up (QUP1 panics with SError
-   `0xbf000002`).
+1. Commit and push `0238`; build the `log` image with `panel_reset=on`.
+2. Ask the user before the next boot. The reset runs ~3 s after the first
+   userland present, so the lock screen must be up; a wrong panel init can
+   blank the display, which is why this is opt-in and why the ring image is
+   preferred.
+3. If GPIO 53 does not reset the DSX (live DT has no
+   `synaptics,reset-gpio`), the probe will still stream: a clean negative,
+   then 2 us bit-bang (`sweetouchscl=2`) and QUP1.
 4. Only after the address phase works: F12, the HID poll, then tap, swipe
    and multi-touch through `SweetHIDTouch`.
 
@@ -456,7 +468,7 @@ and SDHCI CMD24 separately.
 | `STATUS.md` | Longer status, artifact table |
 | `touch.md` | DSX probe, F12 setup, band map, boot args |
 | `history/` | Full engineering log, per month |
-| `../xnu/patches/0228-whyred-fb-drop-off-presents.patch` | Latest patch (0228) |
+| `../xnu/patches/0238-whyred-panel-reset-after-userland.patch` | Latest patch (0238) |
 | `../tools/build-touch-diag.sh` | Pack a diag image from a CI kernel |
 | `../tools/sweet-log-pull.sh` | Pull the ring from SYSTEM |
 
