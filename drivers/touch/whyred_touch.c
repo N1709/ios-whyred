@@ -2850,7 +2850,6 @@ whyred_touch_early(void)
 	return 0;
 }
 
-static int whyred_touch_probe_now(void);
 static int touch_panel_reset_started;
 
 /*
@@ -2906,37 +2905,12 @@ whyred_panel_reset_thread(void *arg, __unused wait_result_t wr)
 	printf("WHYRED TOUCH: panel reset pulse done\n");
 	rc = sweet_panel_init_td4310();
 	printf("WHYRED TOUCH: TD4310 init rc %d, probing touch\n", rc);
-	(void)whyred_touch_probe_now();
+	touch_panel_reset_started = 2;	/* run the body, do not defer again */
+	(void)whyred_touch_probe();
 }
 
 int
 whyred_touch_probe(void)
-{
-	uint32_t on = 0, reset = 0;
-	thread_t thread;
-
-	if (!PE_parse_boot_argn("sweetouchi2c", &on, sizeof(on)) || !on) {
-		return 0;
-	}
-	if (!PE_parse_boot_argn("sweetpanelreset", &reset, sizeof(reset)) ||
-	    !reset) {
-		return whyred_touch_probe_now();
-	}
-	if (touch_panel_reset_started) {
-		return 0;
-	}
-	touch_panel_reset_started = 1;
-	if (kernel_thread_start(whyred_panel_reset_thread, NULL, &thread) !=
-	    KERN_SUCCESS) {
-		printf("WHYRED TOUCH: panel reset thread start failed\n");
-		return whyred_touch_probe_now();
-	}
-	thread_deallocate(thread);
-	return 0;
-}
-
-static int
-whyred_touch_probe_now(void)
 {
 	vm_offset_t south, north;
 	uint32_t on = 0, pulse = 0, wait, halt, qup = 0, reboot = 0;
@@ -2946,12 +2920,35 @@ whyred_touch_probe_now(void)
 	int addr, acks = 0, pulsed, saw_rmi = 0;
 	uint32_t touch_s;
 	uint32_t rst_cfg, rst_io, irq_cfg, irq_io;
+	uint32_t reset = 0;
 
 	if (touch_probe_done) {
 		return 0;
 	}
 	if (!PE_parse_boot_argn("sweetouchi2c", &on, sizeof(on)) || !on) {
 		return 0;
+	}
+	/*
+	 * 0238: with sweetpanelreset=1 the first call only starts the thread
+	 * that waits for userland; the thread then calls this function again
+	 * with touch_panel_reset_started == 2 and the body below runs.
+	 */
+	if (touch_panel_reset_started < 2 &&
+	    PE_parse_boot_argn("sweetpanelreset", &reset, sizeof(reset)) &&
+	    reset) {
+		thread_t thread;
+
+		if (touch_panel_reset_started != 0) {
+			return 0;
+		}
+		touch_panel_reset_started = 1;
+		if (kernel_thread_start(whyred_panel_reset_thread, NULL,
+		    &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+			return 0;
+		}
+		printf("WHYRED TOUCH: panel reset thread start failed\n");
+		touch_panel_reset_started = 0;
 	}
 	touch_probe_done = 1;
 	touch_line_wait_config();

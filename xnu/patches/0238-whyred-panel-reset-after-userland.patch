@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
-index b6b0c71..5108c3e 100644
+index b6b0c71..acd0e27 100644
 --- a/bsd/dev/whyred_touch.c
 +++ b/bsd/dev/whyred_touch.c
 @@ -65,6 +65,11 @@ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
@@ -22,11 +22,10 @@ index b6b0c71..5108c3e 100644
  
  #define TOUCH_I2C_DELAY_US	10	/* half a bit, ~50 kHz. Ring 0198 read
  					 * real bytes at 10 us; ring 0199 read
-@@ -2844,8 +2850,93 @@ whyred_touch_early(void)
+@@ -2844,6 +2850,65 @@ whyred_touch_early(void)
  	return 0;
  }
  
-+static int whyred_touch_probe_now(void);
 +static int touch_panel_reset_started;
 +
 +/*
@@ -82,40 +81,50 @@ index b6b0c71..5108c3e 100644
 +	printf("WHYRED TOUCH: panel reset pulse done\n");
 +	rc = sweet_panel_init_td4310();
 +	printf("WHYRED TOUCH: TD4310 init rc %d, probing touch\n", rc);
-+	(void)whyred_touch_probe_now();
++	touch_panel_reset_started = 2;	/* run the body, do not defer again */
++	(void)whyred_touch_probe();
 +}
 +
  int
  whyred_touch_probe(void)
-+{
-+	uint32_t on = 0, reset = 0;
-+	thread_t thread;
-+
-+	if (!PE_parse_boot_argn("sweetouchi2c", &on, sizeof(on)) || !on) {
-+		return 0;
-+	}
-+	if (!PE_parse_boot_argn("sweetpanelreset", &reset, sizeof(reset)) ||
-+	    !reset) {
-+		return whyred_touch_probe_now();
-+	}
-+	if (touch_panel_reset_started) {
-+		return 0;
-+	}
-+	touch_panel_reset_started = 1;
-+	if (kernel_thread_start(whyred_panel_reset_thread, NULL, &thread) !=
-+	    KERN_SUCCESS) {
-+		printf("WHYRED TOUCH: panel reset thread start failed\n");
-+		return whyred_touch_probe_now();
-+	}
-+	thread_deallocate(thread);
-+	return 0;
-+}
-+
-+static int
-+whyred_touch_probe_now(void)
  {
- 	vm_offset_t south, north;
- 	uint32_t on = 0, pulse = 0, wait, halt, qup = 0, reboot = 0;
+@@ -2855,6 +2920,7 @@ whyred_touch_probe(void)
+ 	int addr, acks = 0, pulsed, saw_rmi = 0;
+ 	uint32_t touch_s;
+ 	uint32_t rst_cfg, rst_io, irq_cfg, irq_io;
++	uint32_t reset = 0;
+ 
+ 	if (touch_probe_done) {
+ 		return 0;
+@@ -2862,6 +2928,28 @@ whyred_touch_probe(void)
+ 	if (!PE_parse_boot_argn("sweetouchi2c", &on, sizeof(on)) || !on) {
+ 		return 0;
+ 	}
++	/*
++	 * 0238: with sweetpanelreset=1 the first call only starts the thread
++	 * that waits for userland; the thread then calls this function again
++	 * with touch_panel_reset_started == 2 and the body below runs.
++	 */
++	if (touch_panel_reset_started < 2 &&
++	    PE_parse_boot_argn("sweetpanelreset", &reset, sizeof(reset)) &&
++	    reset) {
++		thread_t thread;
++
++		if (touch_panel_reset_started != 0) {
++			return 0;
++		}
++		touch_panel_reset_started = 1;
++		if (kernel_thread_start(whyred_panel_reset_thread, NULL,
++		    &thread) == KERN_SUCCESS) {
++			thread_deallocate(thread);
++			return 0;
++		}
++		printf("WHYRED TOUCH: panel reset thread start failed\n");
++		touch_panel_reset_started = 0;
++	}
+ 	touch_probe_done = 1;
+ 	touch_line_wait_config();
+ 
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
 index 5c1c748..b63a9a5 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
