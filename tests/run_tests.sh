@@ -2506,6 +2506,27 @@ assert 'red: still streaming' in mirror
 PY
 echo "ok   0243 runs the probe after PE_init_platform and shows green/red"
 
+echo "== TOUCH: 0244 moves the early probe after the VM is up =="
+P244="xnu/patches/0244-whyred-touch-early-hook-v2.patch"
+python3 tools/check_patch.py "$P244" -q \
+	--added-contains 'osfmk/arm/arm_init.c:whyred_touch_early' \
+	--added-contains 'osfmk/arm/arm_init.c:0244'
+python3 - <<'PY'
+patch = open('xnu/patches/0244-whyred-touch-early-hook-v2.patch',
+             encoding='utf-8').read()
+# 0243's pre-VM call must be removed, and the new one must sit right before
+# machine_startup(), after arm_vm_init() has made ml_io_map() usable.
+assert '-#if defined(ARM64_BOARD_CONFIG_WHYRED)' in patch
+removed = [l for l in patch.splitlines()
+           if l.startswith('-') and 'whyred_touch_early();' in l]
+added = [l for l in patch.splitlines()
+         if l.startswith('+') and 'whyred_touch_early();' in l]
+assert removed and added
+assert patch.index(added[0]) < patch.index('machine_startup(args);')
+assert 'pmap_map_bd' in patch
+PY
+echo "ok   0244 removes the pre-VM hook and probes before machine_startup"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but

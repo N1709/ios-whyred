@@ -1,0 +1,46 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -366,20 +366,6 @@
+ 
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
+ 	sweet_early_mark(2, "PE_init_platform done");
+-#if defined(ARM64_BOARD_CONFIG_WHYRED)
+-	/*
+-	 * 0243: probe the DSX before IOKit starts matching drivers. The old
+-	 * hook at the top of santoni_sdhci_init() runs at ~11.8 s, long after
+-	 * the vendor driver's 0.9-3.2 s window. The boot args and the fixed
+-	 * framebuffer address are available here; whyred_touch_early() waits
+-	 * for sweetouchearly=MS and returns at once when it is not set.
+-	 */
+-	{
+-		extern int whyred_touch_early(void);
+-
+-		(void)whyred_touch_early();
+-	}
+-#endif
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();
+@@ -683,6 +669,21 @@
+ 	 * against string vulnerabilities
+ 	 */
+ 	__stack_chk_guard &= ~(0xFFULL << 8);
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++	/*
++	 * 0244: run the DSX probe here, after arm_vm_init() and
++	 * cpu_timebase_init(), but before machine_startup() starts IOKit.
++	 * The 0243 hook ran after the first PE_init_platform(FALSE), before
++	 * the VM was initialized, so ml_io_map() took the bootstrap path and
++	 * panicked in pmap_map_bd(). whyred_touch_early() waits for
++	 * sweetouchearly=MS and returns at once when it is not set.
++	 */
++	{
++		extern int whyred_touch_early(void);
++
++		(void)whyred_touch_early();
++	}
++#endif
+ 	machine_startup(args);
+ }
+ 
