@@ -1,0 +1,101 @@
+diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
+--- a/bsd/dev/whyred_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -1296,6 +1296,7 @@
+ static int dsx_display_on = 1;
+ static int dsx_probe_complete;	/* the late probe reached its end */
+ static int dsx_addressable;	/* F34 reads back twice after the reset */
++static int dsx_readonly;	/* sweetouchreadonly=1: no register writes */
+ static uint64_t dsx_early_start_ms;
+ static uint64_t dsx_early_end_ms;
+ 
+@@ -1398,6 +1399,11 @@
+ 		    sleep ? "sleep" : "wake");
+ 		return -1;
+ 	}
++	if (dsx_readonly) {
++		printf("WHYRED TOUCH: readonly=1, f01 %s skipped\n",
++		    sleep ? "sleep" : "wake");
++		return 0;
++	}
+ 	want = (uint8_t)(v & ~0x07u);
+ 	if (sleep) {
+ 		want |= 0x01u;		/* SENSOR_SLEEP */
+@@ -1673,6 +1679,8 @@
+ 	uint8_t c[DSX_PDT_ENTRY_SIZE], d[DSX_PDT_ENTRY_SIZE];
+ 	int i, ok;
+ 
++	printf("WHYRED TOUCH: addr test at %llu ms, readonly %d\n",
++	    (unsigned long long)touch_now_ms(), dsx_readonly);
+ 	if (dsx_read_page(DSX_ADDR, DSX_PDT_START, a, sizeof(a)) != 0 ||
+ 	    dsx_read_page(DSX_ADDR, DSX_PDT_START, b, sizeof(b)) != 0 ||
+ 	    dsx_read_page(DSX_ADDR,
+@@ -1771,8 +1779,13 @@
+ {
+ 	uint8_t v = 0;
+ 	uint32_t fast = 0;
++	uint32_t readonly = 0;
+ 	int addressable;
+ 
++	if (PE_parse_boot_argn("sweetouchreadonly", &readonly,
++	    sizeof(readonly))) {
++		dsx_readonly = readonly != 0;
++	}
+ 	if (dsx_early_marks_on) {
+ 		touch_early_mark(7, 0xff800000);	/* maroon: before reset */
+ 	}
+@@ -1782,17 +1795,19 @@
+ 		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
+ 	}
+ 	addressable = dsx_addr_works();
+-	if (!addressable && dsx_f01_wake_blind()) {
++	if (dsx_readonly) {
++		printf("WHYRED TOUCH: readonly=1, no register writes\n");
++	} else if (!addressable && dsx_f01_wake_blind()) {
+ 		addressable = dsx_addr_works();
+ 	}
+-	if (!addressable && dsx_general_call_reset()) {
++	if (!dsx_readonly && !addressable && dsx_general_call_reset()) {
+ 		addressable = dsx_addr_works();
+ 	}
+-	if (!addressable) {
++	if (!dsx_readonly && !addressable) {
+ 		(void)dsx_sw_reset();
+ 		addressable = dsx_addr_works();
+ 	}
+-	if (!addressable && dsx_f01_cmd != DSX_F01_CMD) {
++	if (!dsx_readonly && !addressable && dsx_f01_cmd != DSX_F01_CMD) {
+ 		printf("WHYRED TOUCH: still streaming after reset at 0x%02x, "
+ 		    "trying the RMI4 default 0x%02x\n", dsx_f01_cmd,
+ 		    DSX_F01_CMD);
+@@ -1838,6 +1853,8 @@
+ 		 */
+ 		printf("WHYRED TOUCH: address phase ignored, not writing f01 "
+ 		    "ctrl\n");
++	} else if (dsx_readonly) {
++		printf("WHYRED TOUCH: readonly=1, not writing f01 ctrl\n");
+ 	} else if (dsx_read_page(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1) ==
+ 	    0) {
+ 		uint8_t normal = (uint8_t)((v & ~0x07u) | 0x80u |
+@@ -1983,6 +2000,10 @@
+ 	uint8_t q5[10], q8[10], v, rpt, c23[2] = { 0, 0 };
+ 	int q5n, q8n, ctrl23, ctrl28, data0, rc, i5, i8;
+ 
++	if (dsx_readonly) {
++		printf("WHYRED TOUCH: readonly=1, f12 program skipped\n");
++		return -1;
++	}
+ 	dsx_f12_programmed = 0;
+ 	dsx_f12_touch_reg = 0;
+ 	dsx_f12_report_ctrl = 0;
+@@ -2237,6 +2258,10 @@
+ 	uint32_t on = 1;
+ 	thread_t thread;
+ 
++	if (dsx_readonly) {
++		printf("WHYRED TOUCH: readonly=1, hid poll not started\n");
++		return;
++	}
+ 	if (dsx_hid_started || !dsx_f12_found || !dsx_f12_touch_reg) {
+ 		return;
+ 	}

@@ -2464,6 +2464,29 @@ assert 'addressable && dsx_no_sleep_enabled()' not in mirror
 PY
 echo "ok   0237 keeps every F01 ctrl write behind the address test"
 
+echo "== TOUCH: 0242 read-only boot writes no register before the address test =="
+P242="xnu/patches/0242-whyred-touch-readonly.patch"
+python3 tools/check_patch.py "$P242" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchreadonly' \
+	--added-contains 'bsd/dev/whyred_touch.c:readonly=1, no register writes' \
+	--added-contains 'bsd/dev/whyred_touch.c:readonly=1, f12 program skipped' \
+	--added-contains 'bsd/dev/whyred_touch.c:addr test at %llu ms, readonly %d'
+python3 - <<'PY'
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+
+# The opt-in flag must gate every state-changing path, not only the probe.
+assert 'static int dsx_readonly;' in mirror
+assert 'if (!dsx_readonly && !addressable && dsx_general_call_reset())' in mirror
+assert 'if (!dsx_readonly && !addressable) {' in mirror
+assert 'readonly=1, not writing f01 ctrl' in mirror
+assert 'readonly=1, f01 %s skipped' in mirror
+assert 'readonly=1, hid poll not started' in mirror
+# The address test still runs and records when it ran, so an early probe can
+# be compared with the late one in the same ring.
+assert 'addr test at %llu ms, readonly %d' in mirror
+PY
+echo "ok   0242 leaves the DSX untouched and timestamps every address test"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but
