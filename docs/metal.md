@@ -113,8 +113,19 @@ The Mesa build needs Xcode, the iPhoneOS SDK, `meson`, `ninja`, `mako`,
 The result is `userland/plugin/out/WhyredMetal.bundle` and
 `out/whyredmetal_test`.
 
-Copy it to `/System/Library/Extensions/WhyredMetal.bundle` in the iOS root
-(the root-image builder, not a partition write) and boot with:
+The `whymetal` macOS workflow builds the same bundle on a runner; its first
+green run is `45943080501` (commit `eccb11d`, artifact `WhyredMetal.bundle`,
+8 MB thin arm64, `NSPrincipalClass = WhyredMetalDevice`). No local Mac is
+needed.
+
+Install it into the mounted iOS root (the root-image builder, not a
+partition write):
+
+```sh
+sudo userland/plugin/install-whyredmetal.sh /mnt/iosroot
+```
+
+Then boot with:
 
 ```
 whyredgpu=30 whyredmetal=1

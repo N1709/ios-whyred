@@ -23,7 +23,7 @@ Last updated: 2026-11-26.
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
 | Panel 60 Hz / present timing | Added (0207), not booted |
-| GPU / Metal | Ladder + IOKit service (0211/0217); 0240 adds the pool, `kWhyredSubmitBuf` and the Metal properties, not booted. A5xx userland + host tests + `WhyredMetal` plug-in source in `N1709/whyred-metal/userland/plugin/` (build on macOS pending, `docs/metal.md`) |
+| GPU / Metal | Ladder + IOKit service (0211/0217); 0240 adds the pool, `kWhyredSubmitBuf` and the Metal properties, not booted. A5xx userland + host tests + `WhyredMetal` plug-in in `N1709/whyred-metal/userland/plugin/`; bundle **built** by CI `45943080501`, not installed, ladder never run (`docs/metal.md`) |
 | Wi-Fi | Added (0214), not booted |
 | Bluetooth | No |
 | Audio | Added (0213), not booted |
@@ -112,9 +112,9 @@ what startled them was Siri appearing on the lock screen, which is normal
 when the side/power button stays held through boot. Keep the current splash
 until a real complaint is reproducible.
 
-Progress estimates: black screen/SpringBoard 95%, touch 65% (address phase
+Progress estimates: lock screen/SpringBoard 95%, touch 68% (address phase
 still streams after 0236; 0237 is a safety gate only), status bar 60%, GPU
-35%, overall 72%.
+kernel 40%, plug-in 35% (bundle built, not installed), overall 75%.
 
 ## 0236 booted: framing is not the cause (2026-11-26)
 
@@ -157,9 +157,29 @@ the boot argument `whyred_touch_probe()` is byte-for-byte the old path.
 Workflow input `panel_reset=on` adds the argument. Host checks pass
 (`check_patch.py`, `extract_drivers.py --check`); not booted.
 
+## Metal activation (2026-11-27)
+
+`WhyredMetal.bundle` is built: `whymetal` CI run `45943080501` (commit
+`eccb11d`), 8 MB thin arm64, `NSPrincipalClass = WhyredMetalDevice`, ad-hoc
+signed. Activation is the lavender order, but the whyred ladder has never
+run, so do not jump to `whyredmetal=1`:
+
+1. Boot `whyredgpu=4`; confirm the GX GDSC and RBBM/CP reads.
+2. Boot `whyredgpu=12`; confirm the ring, microcode and fence.
+3. Boot `whyredgpu=30`; confirm `WhyredGPU` appears and the self-test fence.
+4. Install the bundle with
+   `userland/plugin/install-whyredmetal.sh /mnt/iosroot` (or the root-image
+   builder) and boot `whyredgpu=30 whyredmetal=1`.
+5. Check `MTLCreateSystemDefaultDevice()` and `/var/root/whyredmetal.log`.
+
+Each step needs its own image and the user's permission; never boot the same
+image twice. The laptop holds the images and the root; it was unreachable on
+2026-11-27.
+
 ## Current next actions
 
-1. Commit and push `0238`; build the `log` image with `panel_reset=on`.
+1. Fetch `ring-0239-native.txt` from the laptop and read the DSI0/TD4310
+   reset, GPIO 53 and DSX address phase.
 2. Ask the user before the next boot. The reset runs ~3 s after the first
    userland present, so the lock screen must be up; a wrong panel init can
    blank the display, which is why this is opt-in and why the ring image is

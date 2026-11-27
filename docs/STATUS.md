@@ -14,8 +14,12 @@ describes the pre-0238 state.
 host-checked, not booted. The whyred A5xx userland layer and host tests live
 in [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal), and its
 `userland/plugin/` now holds the `WhyredMetal` plug-in source (adapted from
-lavender-metal, renamed for `WhyredGPU`, compiler GPU id 509). It is **not
-built yet**: that needs macOS + the iOS Mesa archives (`docs/metal.md`).
+lavender-metal, renamed for `WhyredGPU`, compiler GPU id 509). It is **built**:
+the `whymetal` macOS workflow run `45943080501` (commit `eccb11d`) produced an
+8 MB thin arm64 `WhyredMetal.bundle` (`NSPrincipalClass`
+`WhyredMetalDevice`, ad-hoc signed). The bundle still has to be installed in
+the iOS root and the GPU ladder has to run before `whyredmetal=1` is set
+(`docs/metal.md`).
 
 The P3 mode experiment (0229-0231) never fixed the
 black screen: the 0230 boot stayed sRGB and the user's manual test flashed an
