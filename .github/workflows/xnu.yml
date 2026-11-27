@@ -186,7 +186,7 @@ jobs:
           # sweet_i2c1.c, so dxb skipped
           # 0219..0223 and every "latest" image still ran the old touch code.
           # Treat any skip in that chain as fatal too.
-          if grep -E 'Skipping patch .*(014[2345689]|015[0-9]|016[0-9]|017[0-9]|01[89][0-9]|0219|022[0-8])-' build.log; then
+          if grep -E 'Skipping patch .*(014[2345689]|015[0-9]|016[0-9]|017[0-9]|01[89][0-9]|0219|022[0-8]|023[6-9]|024[01])-' build.log; then
             echo "::error::a critical patch was skipped by the build"
             exit 1
           fi

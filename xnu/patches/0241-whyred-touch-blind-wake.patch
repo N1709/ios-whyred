@@ -1,0 +1,51 @@
+diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
+--- a/bsd/dev/whyred_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -1729,6 +1729,37 @@
+ }
+ 
+ /*
++ * 0241: the vendor resume writes F01 control before it trusts any read. In
++ * LPWG the part ignores addressed reads but still ACKs the write, so a blind
++ * write is the only way back into application mode. Clear the three sleep
++ * bits, set NO_SLEEP_ON and keep CONFIGURED: the value the vendor's
++ * synaptics_rmi4_sleep_enable(false) produces. Opt-in because the write lands
++ * on the stream pointer while the part is not addressable.
++ */
++static int
++dsx_f01_wake_blind(void)
++{
++	uint8_t v = 0x84;
++	uint32_t on = 0;
++	int rc;
++
++	if (!PE_parse_boot_argn("sweetouchwake", &on, sizeof(on)) || !on) {
++		return 0;
++	}
++	if (!dsx_f01_ctrl) {
++		return 0;
++	}
++	dsx_page = -1;
++	rc = dsx_write_f(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1);
++	printf("WHYRED TOUCH: blind f01 ctrl 0x%04x <- 0x%02x %s\n",
++	    dsx_f01_ctrl, v, rc == 0 ? "ack" : "nack");
++	if (rc == 0) {
++		delay(50000);
++	}
++	return rc == 0;
++}
++
++/*
+  * 0206 order: map first, reset second. The stream is the only place the real
+  * F01 command base can be read on this unit, and the reset must go to that
+  * base. If the part is already addressable (cold boot, pointer at 0) no reset
+@@ -1751,6 +1782,9 @@
+ 		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
+ 	}
+ 	addressable = dsx_addr_works();
++	if (!addressable && dsx_f01_wake_blind()) {
++		addressable = dsx_addr_works();
++	}
+ 	if (!addressable && dsx_general_call_reset()) {
+ 		addressable = dsx_addr_works();
+ 	}
