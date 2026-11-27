@@ -73,9 +73,11 @@ unsupported-screen bar is accepted until the P3 work resumes.
 The recovery image
 `laptop:/home/n1709/whyred-flash/shim-boot-ring-b971761-native-srgb.img`
 (6,176,768 B, sha256 `de50ba30309dd3cf0ba14b7c6256d56db4d61147da9bdbb28c091129ece7991a`)
-was booted on 2026-11-25: it reaches the **lock screen** and **touch works**.
-That image is used; do not boot it again. Its SYSTEM ring is still on the
-phone and must be pulled from recovery before the next image is judged.
+was booted on 2026-11-25: it reaches the **lock screen**, but touch does not
+work in iOS. The only working touch so far is the **recovery** vendor driver
+(2026-10-30), which runs on QUP hardware I2C; the XNU bit-bang path still
+streams. That image is used; do not boot it again. Its SYSTEM ring is still on
+the phone and must be pulled from recovery before the next image is judged.
 
 Ring `ring-b971761.txt` (total 448,325 B, flush #393) confirms the lock
 screen boot: `SWEET FB: boot mark drawn`, `AppleCLCD 1080x2160`, 2,425 layer
