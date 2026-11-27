@@ -34,6 +34,11 @@
 # it, so the probe's own lines can be read on the phone without a recovery
 # round trip. It costs boot time (every line is painted), so it is off by
 # default.
+#
+# SWEETOUCHREADONLY=1 adds `sweetouchreadonly=1`: the probe writes no DSX
+# register at all (F01/F12/general call/reset), only the page select and the
+# reads an address test needs. Use it for a diagnostic boot that must not
+# change the chip state.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -42,6 +47,7 @@ reset=${SWEETRESET:-1}
 early=${SWEETEARLY:-0}
 reboot=${SWEETREBOOT:-1}
 power=${SWEETOUCHPOWER:-0}
+ro=${SWEETOUCHREADONLY:-0}
 out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}
 
 arg=${1:?usage: build-touch-diag.sh RUN_ID|KERNEL}
@@ -56,6 +62,7 @@ echo "kernel: $kernel ($(stat -c%s "$kernel") bytes)"
 # Same command line as the existing diag image: muted console (the ring has
 # the log), the ring on, and the touch probe with its 30 s F12 poll.
 cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweetouchpower=$power sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=$reboot"
+[ "$ro" = 1 ] && cmdl="$cmdl sweetouchreadonly=1"
 if [ "$early" != 0 ]; then
 	cmdl="$cmdl sweetouchearly=$early"
 fi
