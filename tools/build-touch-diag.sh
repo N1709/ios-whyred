@@ -39,6 +39,11 @@
 # register at all (F01/F12/general call/reset), only the page select and the
 # reads an address test needs. Use it for a diagnostic boot that must not
 # change the chip state.
+#
+# SWEETOUCHFAST=1 adds `sweetouchfast=1`: skip the 512-byte stream scan and
+# use the known F01/F12 bases, so the address test is the first addressed
+# read. Without it the scan advances the DSX read pointer and the test
+# reports stream bytes even when the address phase would work.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -48,6 +53,7 @@ early=${SWEETEARLY:-0}
 reboot=${SWEETREBOOT:-1}
 power=${SWEETOUCHPOWER:-0}
 ro=${SWEETOUCHREADONLY:-0}
+fast=${SWEETOUCHFAST:-0}
 out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}
 
 arg=${1:?usage: build-touch-diag.sh RUN_ID|KERNEL}
@@ -63,6 +69,7 @@ echo "kernel: $kernel ($(stat -c%s "$kernel") bytes)"
 # the log), the ring on, and the touch probe with its 30 s F12 poll.
 cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweetouchpower=$power sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=$reboot"
 [ "$ro" = 1 ] && cmdl="$cmdl sweetouchreadonly=1"
+[ "$fast" = 1 ] && cmdl="$cmdl sweetouchfast=1"
 if [ "$early" != 0 ]; then
 	cmdl="$cmdl sweetouchearly=$early"
 fi
