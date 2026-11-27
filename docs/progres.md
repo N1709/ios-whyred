@@ -53,7 +53,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Display | Kernel framebuffer works. The recovery build returns to the 35e591a recipe: native 1080x2160 canvas and sRGB `/product`, with the red unsupported-screen bar accepted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | 35e591a reaches the lock screen; the later P3 product identity made SpringBoard throw on `BoundingPathBitmap`. The recovery series drops 0229-0231 and keeps all touch/storage patches |
-| Touch | DSX at `0x20`. 0239 native booted: the panel reset thread ran, GPIO 53 pulsed, `TD4310 on-command done`, init rc 0, then the DSX still streamed. The gcall boot shows the **first** addressed read returns the real F34 record and the **second** returns the next PDT record, so the part honors one address and then keeps its pointer moving. Framing, the panel reset and the I2C general call (`0x00/0x06` NACKs) are ruled out; 0237 still gates every F01 write. The stock ROM's DSX firmware is `2788281`, the chip's own buildid. 0242 read-only booted with zero register writes and still streamed after the first read, so the state is not caused by our writes; the recovery vendor driver parks the part in LPWG at 3.35 s. Cold boot straight to XNU is next |
+| Touch | DSX at `0x20`. 0239 native booted: the panel reset thread ran, GPIO 53 pulsed, `TD4310 on-command done`, init rc 0, then the DSX still streamed. The gcall boot shows the **first** addressed read returns the real F34 record and the **second** returns the next PDT record, so the part honors one address and then keeps its pointer moving. Framing, the panel reset and the I2C general call (`0x00/0x06` NACKs) are ruled out; 0237 still gates every F01 write. The stock ROM's DSX firmware is `2788281`, the chip's own buildid. 0242 read-only booted with zero register writes and still streamed after the first read, so the state is not caused by our writes; the recovery vendor driver parks the part in LPWG at 3.35 s. 0243's pre-VM hook panicked in `pmap_map_bd`; 0244 moves the probe before `machine_startup()`. Next: cold-boot the 0244 diag with `sweetouchfast=1` |
 
 ## Revert: back to the 35e591a lock-screen display (2026-11-25)
 
@@ -199,15 +199,15 @@ chose this). It is not flashed yet; the phone is disconnected.
 
 ## Current next actions
 
-1. Cold boot straight to XNU with `shim-boot-0242-gpu4-ro.img` (power off,
-   then fastboot, no recovery boot in between) and compare the early and late
-   address tests. The first read-only boot came from recovery, whose vendor
-   driver suspends the DSX into LPWG at 3.35 s, so the chip was already
-   streaming when XNU probed it at 11.8 s.
-2. If the cold-boot early test still streams, move the probe before 3 s or
-   find the real wake sequence. If it works, program F12 on that boot. Only
-   reflash `/home/n1709/whyred-flash/ts-fw-2788281.img` (same buildid) if a
-   cold boot still shows the part in LPWG before any host write.
+1. CI 0244 is the current build. It moves the early DSX probe from after the
+   first `PE_init_platform(FALSE)` (0243, which panicked in `pmap_map_bd`
+   because `arm_vm_init()` had not run yet) to just before
+   `machine_startup()`. Build the diag image with `sweetouchfast=1` and
+   `sweetouchreadonly=1`, cold boot it, and read the bottom band: green means
+   the address phase works, red means the part still streams.
+2. If green, program F12 on that boot and start the HID poll. If red, run one
+   read-only gap sweep (post-read delay 0/100/500/1000/5000 us) to find the
+   timing the bit-bang needs; do not add another framing or reset.
 3. GPU ladder after 0217/0240 apply for real: `whyredgpu=12`, `whyredgpu=30`,
    then `whyredgpu=30 whyredmetal=1`; check `MTLCreateSystemDefaultDevice()`
    and `/var/root/whyredmetal.log`.
