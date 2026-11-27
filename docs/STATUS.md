@@ -1,6 +1,6 @@
 # Current status
 
-Last updated: 2026-11-26. Patch `0239` fixes the 0238 negative: the
+Last updated: 2026-11-27. Patch `0239` fixes the 0238 negative: the
 TD4310 re-init never ran because `fDsi` was mapped at topaz's
 `0x05e94000`, while whyred's sdm660 DSI0 is at `0x0c994000` (live DT
 `qcom,mdss_dsi_ctrl0@c994000`). whyred now maps the real base, the DSI
@@ -8,6 +8,13 @@ offsets are checked against the stock whyred kernel, and the reset thread
 waits 800 ms (`sweetpaneltouchwait`) after the panel on-command before
 probing the DSX. Host tests are green; not booted. The rest of this page
 describes the pre-0238 state.
+
+2026-11-27: patch `0240` adds the GPU service's contiguous pool,
+`kWhyredSubmitBuf` and the Metal plug-in properties (`whyredmetal=1`); it is
+host-checked, not booted. The whyred A5xx userland layer and host tests live
+in [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal); its Metal
+plug-in is not started, so the bundle build is still lavender-metal + hakios
+(`docs/metal.md`).
 
 The P3 mode experiment (0229-0231) never fixed the
 black screen: the 0230 boot stayed sRGB and the user's manual test flashed an

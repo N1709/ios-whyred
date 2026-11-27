@@ -24,8 +24,9 @@ drivers as `whyred_gpu.c`, `whyred_audio.c`, `whyred_wlan.c` and
 audio/modem loaders read the GPT `modem` partition instead of a fixed LBA.
 `0216` adds the `sweetnopb=1` lever for the PosterBoard crash that blocks
 the lock-screen wallpaper. `0217` merges the IOKit GPU service
-(`WhyredGPU`, started by `whyredgpu=30`). The full series (233 patch files,
-through `0228`) applies on the series tip. The P3 mode experiment
+(`WhyredGPU`, started by `whyredgpu=30`); `0240` adds its contiguous pool,
+submit-by-buffer and the Metal plug-in properties. The full series (239 patch
+files, through `0240`) applies on the series tip. The P3 mode experiment
 (`0229`-`0231`) was removed on 2026-11-25: the user confirmed that the
 `35e591a` display recipe (native canvas, sRGB `/product`, no mode registry)
 reaches the lock screen, and those three patches only moved the runtime
@@ -73,7 +74,9 @@ open-source releases (xnu, IOHIDFamily, libpthread, hfs),
 [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build),
 [ipsw](https://github.com/blacktop/ipsw), Qualcomm/Xiaomi's published Linux
 kernel sources, and the hardware work in
-[MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa). The Metal service
+[MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa). The whyred GPU
+work lives in
+[N1709/whyred-metal](https://github.com/N1709/whyred-metal); the Metal service
 and the A5xx plug-in follow
 [aLpHa-Git-69/lavender-metal](https://github.com/aLpHa-Git-69/lavender-metal)
 and [oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel)

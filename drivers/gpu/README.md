@@ -14,7 +14,9 @@
 - **State:** compiled and host-checked, **not booted on whyred**. The ladder
   is off unless `whyredgpu=N`; `30` starts the service, `31` also runs its
   self-test.
-- **Metal:** the userland `WhyredMetal.bundle` is built from
+- **Metal:** the whyred A5xx layer and host tests live in
+  [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal); its Metal
+  plug-in is not started. The `WhyredMetal.bundle` itself is built from
   `lavender-metal` + hakios's Mesa patches on macOS; see `docs/metal.md`.
   It is not in this repository and needs the service verified first.
 - **Next, in order:**

@@ -96,7 +96,9 @@ being brought up, but no touch data reaches HID yet.
   `MetalPluginName`/`MetalPluginClassName` properties (`whyredmetal=1`);
   `whyredgpuclk=160|266` is the opt-in PLL/RCG switch. Host tests green,
   **not booted**.
-* The userland `WhyredMetal.bundle` comes from
+* The whyred A5xx userland layer, fake CP and host tests live in
+  [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal); its Metal
+  plug-in is not started. The `WhyredMetal.bundle` comes from
   `aLpHa-Git-69/lavender-metal` (`cc5b8db`) plus hakios's Mesa patches
   (`63fc2b4`); build steps and the rename list are in `docs/metal.md`.
 * Order: `whyredgpu=4` -> `12` -> `30/31` -> install bundle -> `30

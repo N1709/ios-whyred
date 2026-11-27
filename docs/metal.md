@@ -1,18 +1,33 @@
 # Metal on whyred
 
-The Metal path has two halves:
+The Metal path has three parts:
 
 1. **Kernel service** (`drivers/gpu/`, patch `0240`): the Adreno 509 command
    processor, the `WhyredGPU` IOKit service, contiguous buffers and synchronous
    PM4 submission.
-2. **Userland plug-in** (`WhyredMetal.bundle`): the `MTLDevice` implementation,
-   the A5xx PM4 builders and the AIR -> NIR -> ir3 shader compiler. It is built
-   from `aLpHa-Git-69/lavender-metal` and hakios's Mesa patches; it is not in
-   this repository.
+2. **Whyred userland layer** (`N1709/whyred-metal`): the A5xx register/PM4
+   layer, the fake command processor and its host tests.
+3. **Metal plug-in** (`WhyredMetal.bundle`): the `MTLDevice` implementation,
+   the render/compute builders and the AIR -> NIR -> ir3 shader compiler. It
+   is adapted from `aLpHa-Git-69/lavender-metal` and hakios's Mesa patches; it
+   is not in this repository.
 
 The kernel half is merged and host-checked. The plug-in still has to be built
 on a Mac and copied into the iOS root. Neither half has run on whyred yet: the
 GPU ladder itself has never been booted (`drivers/gpu/README.md`).
+
+## Whyred GPU repository
+
+[`N1709/whyred-metal`](https://github.com/N1709/whyred-metal) is the whyred
+implementation: `userland/include/whyred-metal/` (A5xx registers, PM4 packets,
+fake CP), `userland/tests/cp_test.cpp`, the hardware map in
+`docs/HARDWARE-A509.md`, the plan and the ladder notes. Its `kernel/` copies
+are older snapshots of this patch series; the patches here are canonical.
+
+Its own status table lists the Metal plug-in as **not started**, so there is no
+bundle to build from it yet. The plug-in source to adapt is lavender-metal's
+`LavenderMetal.m` (the only part that has run on iOS, on lavender); it opens
+the service by name and uses selectors 0-5.
 
 ## Kernel side (0240)
 
@@ -59,8 +74,10 @@ The clock values are the SDM660 GPUCC values; whyred uses the same
 
 Sources:
 
+- `https://github.com/N1709/whyred-metal`: the whyred A5xx layer, fake CP and
+  host tests. The plug-in is added here, not in ios-whyred.
 - `https://github.com/aLpHa-Git-69/lavender-metal` at `cc5b8db`
-  (`userland/`, the A5xx layer and the plug-in).
+  (`userland/`, the plug-in `LavenderMetal.m` and its A5xx builders).
 - `https://github.com/oosexgang/hakios-xnu-kernel` at `63fc2b4`,
   `components/metal/plugin/tools/mesa` (the AIR front end, ir3 patches and
   `hakios-drm`). MIT; see `userland/hk/NOTICE` in lavender-metal.

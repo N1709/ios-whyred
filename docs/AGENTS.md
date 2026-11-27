@@ -39,6 +39,10 @@ the Android / Linux sources for this exact phone before guessing:
 - `/home/n1709/linux/` - mainline Linux (7.2.10) with
   `drivers/mmc/host/sdhci-msm.c` and `drivers/mmc/host/sdhci.c`; useful for
   the standard SDHCI state machine and quirks.
+- `https://github.com/N1709/whyred-metal` - the whyred GPU work: A5xx
+  register/PM4 layer, fake CP and host tests, `docs/HARDWARE-A509.md` and
+  `docs/PLAN.md`. Its `kernel/` files are older snapshots; the patch series
+  here is canonical.
 - The MIUI files came from the Xiaomi whyred kernel source (`whyred-o-oss` /
   `whyred-q-oss` branches on Xiaomi_Kernel_OpenSource). If the local copy is
   lost, re-fetch those files rather than reconstructing register behaviour

@@ -12,6 +12,7 @@ concrete action, the latest images and their hashes.
 | [`STATUS.md`](STATUS.md) | Current state, next actions, latest images |
 | [`touch.md`](touch.md) | Synaptics DSX probe, F12 setup, panel band map, touch boot args |
 | [`build-and-boot.md`](build-and-boot.md) | Boot path, build steps, repository layout |
+| [`metal.md`](metal.md) | GPU kernel service, `whyred-metal`, `WhyredMetal.bundle` pipeline |
 | [`hardware.md`](hardware.md) | SoC, memory, storage, panel and pin facts |
 | [`patches.md`](patches.md) | The XNU patch series |
 | [`roadmap.md`](roadmap.md) | What is left |
