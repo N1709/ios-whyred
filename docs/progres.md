@@ -53,7 +53,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Display | Kernel framebuffer works. The recovery build returns to the 35e591a recipe: native 1080x2160 canvas and sRGB `/product`, with the red unsupported-screen bar accepted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | 35e591a reaches the lock screen; the later P3 product identity made SpringBoard throw on `BoundingPathBitmap`. The recovery series drops 0229-0231 and keeps all touch/storage patches |
-| Touch | DSX at `0x20`. 0236 booted and the address phase still streams; framing is ruled out. 0237 gates every F01 write on the address test. 0238 (opt-in `sweetpanelreset=1`) waits for the first userland present, pulses the TD4310 panel reset GPIO 53, replays the panel on-command and probes again; normal boot unchanged. The 2 us bit-bang and QUP1 remain the cheaper fallbacks |
+| Touch | DSX at `0x20`. 0239 native booted: the panel reset thread ran, GPIO 53 pulsed, `TD4310 on-command done`, init rc 0, then the DSX still streamed (`address phase still ignored`). Framing and the panel reset are ruled out; 0237 still gates every F01 write. The 2 us bit-bang and QUP1 remain the cheaper fallbacks |
 
 ## Revert: back to the 35e591a lock-screen display (2026-11-25)
 
