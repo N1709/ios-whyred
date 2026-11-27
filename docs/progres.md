@@ -4,7 +4,7 @@ Update this file at every milestone, before handing off, and whenever a boot
 result changes the picture. Keep it short: facts and next actions only. The
 long reasoning belongs in `history/`.
 
-Last updated: 2026-11-26.
+Last updated: 2026-11-27.
 
 ## What works
 
@@ -17,7 +17,7 @@ Last updated: 2026-11-26.
 | Console log ring | **Works** |
 | Kernel log / panic dump | **Works** |
 | Touch (probe) | **Works** |
-| Touch (as HID input) | 0236 booted and **failed**: `page|a1stop` still streams, so the framing is not the cause. 0237 is a safety gate only: it refuses every F01 write while the address phase is ignored and does not pulse GPIO 66. 0238 is the opt-in GPIO 53 TD4310 reset after userland, not booted |
+| Touch (as HID input) | 0236 booted and **failed**: `page|a1stop` still streams, so the framing is not the cause. 0237 is a safety gate only: it refuses every F01 write while the address phase is ignored and does not pulse GPIO 66. 0238 is the opt-in GPIO 53 TD4310 reset after userland. 0240 gcall booted: `general call reset nack`, both F01 software resets ACK but the stream stays. 0241 adds the opt-in `sweetouchwake=1` blind F01 `0x0D = 0x84`, CI `45973969934`, not booted |
 | Power button / display off | Latest ring reaches `display off, HID paused`; 0228 prevents later presents. Visual blanking is confounded by the SpringBoard crash |
 | Buttons | Added (0208), not booted |
 | RTC / date | Added (0209), not booted |
@@ -53,7 +53,7 @@ drivers, and make the Synaptics touch controller work as real HID input.
 | Display | Kernel framebuffer works. The recovery build returns to the 35e591a recipe: native 1080x2160 canvas and sRGB `/product`, with the red unsupported-screen bar accepted |
 | Console log | Ring flusher on SYSTEM (`SANTONILOG1`), pull with `../tools/sweet-log-pull.sh` — **works** |
 | iOS userland | 35e591a reaches the lock screen; the later P3 product identity made SpringBoard throw on `BoundingPathBitmap`. The recovery series drops 0229-0231 and keeps all touch/storage patches |
-| Touch | DSX at `0x20`. 0239 native booted: the panel reset thread ran, GPIO 53 pulsed, `TD4310 on-command done`, init rc 0, then the DSX still streamed (`address phase still ignored`). Framing and the panel reset are ruled out; 0237 still gates every F01 write. The 2 us bit-bang and QUP1 remain the cheaper fallbacks |
+| Touch | DSX at `0x20`. 0239 native booted: the panel reset thread ran, GPIO 53 pulsed, `TD4310 on-command done`, init rc 0, then the DSX still streamed (`address phase still ignored`). Framing, the panel reset and the I2C general call (`0x00/0x06` NACKs) are ruled out; 0237 still gates every F01 write. The stock ROM's DSX firmware is `2788281`, the chip's own buildid, so a recovery reflash is same-version. 0241 blind F01 wake is the next boot |
 
 ## Revert: back to the 35e591a lock-screen display (2026-11-25)
 
@@ -197,14 +197,15 @@ chose this). It is not flashed yet; the phone is disconnected.
 
 ## Current next actions
 
-1. Flash the prepared root image to `userdata` (user action, cold fastboot),
-   stay in fastboot and boot the 0240 image with `whyredgpu=4`; do not boot
-   Android. Use a new image for each ladder step: 12, then 30.
-2. Boot `whyredgpu=30 whyredmetal=1` and check
-   `MTLCreateSystemDefaultDevice()` and `/var/root/whyredmetal.log`.
-3. Touch: 0239 ruled out the panel reset; the address phase still streams.
-   The remaining candidates are the 2 us bit-bang (`sweetouchscl=2`) and
-   QUP1; do not pulse GPIO 66 or add another framing.
+1. Boot `shim-boot-0241-gpu4-wake.img` once (0241 kernel from CI
+   `45973969934`, cmdline `whyredgpu=4 sweetouchwake=1`) and look for
+   `blind f01 ctrl ... ack` followed by `address phase works`.
+2. If it still streams: reflash the matching firmware from recovery
+   (`/home/n1709/whyred-flash/ts-fw-2788281.img`, same buildid as the chip),
+   then a 200 ms LDO11 cycle, then a cold boot.
+3. GPU ladder: `whyredgpu=12`, `whyredgpu=30`, then
+   `whyredgpu=30 whyredmetal=1`; check `MTLCreateSystemDefaultDevice()` and
+   `/var/root/whyredmetal.log`.
 4. Only after the address phase works: F12, the HID poll, then tap, swipe
    and multi-touch through `SweetHIDTouch`.
 
