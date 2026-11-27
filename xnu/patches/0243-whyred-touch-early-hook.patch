@@ -1,0 +1,50 @@
+diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
+--- a/bsd/dev/whyred_touch.c
++++ b/bsd/dev/whyred_touch.c
+@@ -2770,6 +2770,7 @@
+ touch_end_mark(void)
+ {
+ 	volatile uint32_t *fb = touch_fb();
++	uint32_t color = dsx_addressable ? 0xff00ff00 : 0xffff0000;
+ 	uint32_t x, y;
+ 
+ 	if (fb == NULL) {
+@@ -2780,10 +2781,12 @@
+ 		    (uint64_t)y * (TOUCH_FB_STRIDE / 4u);
+ 
+ 		for (x = 80; x < 980; x++) {
+-			line[x] = 0xff00ff40;	/* lime: early probe returned */
++			line[x] = color;
+ 		}
+ 	}
+-	printf("WHYRED TOUCH: end mark\n");
++	printf("WHYRED TOUCH: end mark %s\n",
++	    dsx_addressable ? "green: address phase works" :
++	    "red: still streaming");
+ }
+ 
+ /*
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -366,6 +366,20 @@
+ 
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
+ 	sweet_early_mark(2, "PE_init_platform done");
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++	/*
++	 * 0243: probe the DSX before IOKit starts matching drivers. The old
++	 * hook at the top of santoni_sdhci_init() runs at ~11.8 s, long after
++	 * the vendor driver's 0.9-3.2 s window. The boot args and the fixed
++	 * framebuffer address are available here; whyred_touch_early() waits
++	 * for sweetouchearly=MS and returns at once when it is not set.
++	 */
++	{
++		extern int whyred_touch_early(void);
++
++		(void)whyred_touch_early();
++	}
++#endif
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();

@@ -2487,6 +2487,25 @@ assert 'addr test at %llu ms, readonly %d' in mirror
 PY
 echo "ok   0242 leaves the DSX untouched and timestamps every address test"
 
+echo "== TOUCH: 0243 probes before IOKit and paints the result =="
+P243="xnu/patches/0243-whyred-touch-early-hook.patch"
+python3 tools/check_patch.py "$P243" -q \
+	--added-contains 'osfmk/arm/arm_init.c:whyred_touch_early' \
+	--added-contains 'osfmk/arm/arm_init.c:ARM64_BOARD_CONFIG_WHYRED' \
+	--added-contains 'bsd/dev/whyred_touch.c:green: address phase works' \
+	--added-contains 'bsd/dev/whyred_touch.c:red: still streaming'
+python3 - <<'PY'
+patch = open('xnu/patches/0243-whyred-touch-early-hook.patch',
+             encoding='utf-8').read()
+# The call must sit after PE_init_platform, not in the driver match path.
+assert patch.index('PE_init_platform') < patch.index('whyred_touch_early')
+mirror = open('drivers/touch/whyred_touch.c', encoding='utf-8').read()
+assert 'uint32_t color = dsx_addressable ? 0xff00ff00 : 0xffff0000;' in mirror
+assert 'green: address phase works' in mirror
+assert 'red: still streaming' in mirror
+PY
+echo "ok   0243 runs the probe after PE_init_platform and shows green/red"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but

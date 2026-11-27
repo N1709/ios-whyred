@@ -2770,6 +2770,7 @@ static void
 touch_end_mark(void)
 {
 	volatile uint32_t *fb = touch_fb();
+	uint32_t color = dsx_addressable ? 0xff00ff00 : 0xffff0000;
 	uint32_t x, y;
 
 	if (fb == NULL) {
@@ -2780,10 +2781,12 @@ touch_end_mark(void)
 		    (uint64_t)y * (TOUCH_FB_STRIDE / 4u);
 
 		for (x = 80; x < 980; x++) {
-			line[x] = 0xff00ff40;	/* lime: early probe returned */
+			line[x] = color;
 		}
 	}
-	printf("WHYRED TOUCH: end mark\n");
+	printf("WHYRED TOUCH: end mark %s\n",
+	    dsx_addressable ? "green: address phase works" :
+	    "red: still streaming");
 }
 
 /*
