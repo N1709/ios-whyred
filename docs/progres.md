@@ -23,7 +23,7 @@ Last updated: 2026-11-26.
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
 | Panel 60 Hz / present timing | Added (0207), not booted |
-| GPU / Metal | Ladder + IOKit service (0211/0217); 0240 adds the pool, `kWhyredSubmitBuf` and the Metal properties, not booted. A5xx userland + host tests + `WhyredMetal` plug-in in `N1709/whyred-metal/userland/plugin/`; bundle **built** by CI `45943080501`, not installed, ladder never run (`docs/metal.md`) |
+| GPU / Metal | Ladder + IOKit service (0211/0217); 0240 adds the pool, `kWhyredSubmitBuf` and the Metal properties, not booted. A5xx userland + host tests + `WhyredMetal` plug-in in `N1709/whyred-metal/userland/plugin/`; bundle **built** by CI `45943080501` and **installed in the Oct 26 root image** (`ios16-root.raw`), not flashed, ladder never run (`docs/metal.md`) |
 | Wi-Fi | Added (0214), not booted |
 | Bluetooth | No |
 | Audio | Added (0213), not booted |
@@ -114,7 +114,8 @@ until a real complaint is reproducible.
 
 Progress estimates: lock screen/SpringBoard 95%, touch 68% (address phase
 still streams after 0236; 0237 is a safety gate only), status bar 60%, GPU
-kernel 40%, plug-in 35% (bundle built, not installed), overall 75%.
+kernel 40%, plug-in 40% (bundle built and in the root image, not flashed),
+overall 76%.
 
 ## 0236 booted: framing is not the cause (2026-11-26)
 
@@ -167,26 +168,43 @@ run, so do not jump to `whyredmetal=1`:
 1. Boot `whyredgpu=4`; confirm the GX GDSC and RBBM/CP reads.
 2. Boot `whyredgpu=12`; confirm the ring, microcode and fence.
 3. Boot `whyredgpu=30`; confirm `WhyredGPU` appears and the self-test fence.
-4. Install the bundle with
-   `userland/plugin/install-whyredmetal.sh /mnt/iosroot` (or the root-image
-   builder) and boot `whyredgpu=30 whyredmetal=1`.
+4. Flash the prepared root image (the bundle is already inside it) to
+   `userdata`, then boot `whyredgpu=30 whyredmetal=1`.
 5. Check `MTLCreateSystemDefaultDevice()` and `/var/root/whyredmetal.log`.
 
 Each step needs its own image and the user's permission; never boot the same
-image twice. The laptop holds the images and the root; it was unreachable on
-2026-11-27.
+image twice. The laptop holds the images and the root.
+
+## Bundle installed in the root image (2026-11-27)
+
+The 8 MB `WhyredMetal.bundle` is now inside the iOS root image, not only on
+the laptop. `laptop:/home/n1709/iosroot-extract/ios16-root.raw` (16 GiB,
+Oct 26) carries `/System/Library/Extensions/WhyredMetal.bundle` with
+root:wheel ownership, `755` on the bundle/executable and `644` on
+`Info.plist` and `_CodeSignature/CodeResources`. The three file hashes match
+the CI artifact (`Info.plist f3d7e36d…`, `WhyredMetal 2c10ea39…`,
+`CodeResources 362288a7…`).
+
+The injection ran in a QEMU guest (Debian 6.1.0-47 kernel plus
+`hfsplus`/`nls_utf8`), because the laptop's running 7.3.5 kernel lost its
+modules when 7.3.6 was installed and `modprobe hfsplus` failed. No sudo and
+no host kernel module were needed. `fsck.hfsplus -fn` says `The volume
+iOSRoot appears to be OK`.
+
+Image sha256 `1c100b5832ee2ab3967cb351c92edf89835102f6fec64e766efa156aa40cf26b`.
+This is the **Oct 26** root, so flashing it resets the iOS data (the user
+chose this). It is not flashed yet; the phone is disconnected.
 
 ## Current next actions
 
-1. Fetch `ring-0239-native.txt` from the laptop and read the DSI0/TD4310
-   reset, GPIO 53 and DSX address phase.
-2. Ask the user before the next boot. The reset runs ~3 s after the first
-   userland present, so the lock screen must be up; a wrong panel init can
-   blank the display, which is why this is opt-in and why the ring image is
-   preferred.
-3. If GPIO 53 does not reset the DSX (live DT has no
-   `synaptics,reset-gpio`), the probe will still stream: a clean negative,
-   then 2 us bit-bang (`sweetouchscl=2`) and QUP1.
+1. Flash the prepared root image to `userdata` (user action, cold fastboot),
+   stay in fastboot and boot the 0240 image with `whyredgpu=4`; do not boot
+   Android. Use a new image for each ladder step: 12, then 30.
+2. Boot `whyredgpu=30 whyredmetal=1` and check
+   `MTLCreateSystemDefaultDevice()` and `/var/root/whyredmetal.log`.
+3. Touch: 0239 ruled out the panel reset; the address phase still streams.
+   The remaining candidates are the 2 us bit-bang (`sweetouchscl=2`) and
+   QUP1; do not pulse GPIO 66 or add another framing.
 4. Only after the address phase works: F12, the HID poll, then tap, swipe
    and multi-touch through `SweetHIDTouch`.
 

@@ -17,9 +17,11 @@ in [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal), and its
 lavender-metal, renamed for `WhyredGPU`, compiler GPU id 509). It is **built**:
 the `whymetal` macOS workflow run `45943080501` (commit `eccb11d`) produced an
 8 MB thin arm64 `WhyredMetal.bundle` (`NSPrincipalClass`
-`WhyredMetalDevice`, ad-hoc signed). The bundle still has to be installed in
-the iOS root and the GPU ladder has to run before `whyredmetal=1` is set
-(`docs/metal.md`).
+`WhyredMetalDevice`, ad-hoc signed). The bundle is now installed in the
+Oct 26 root image (`laptop:/home/n1709/iosroot-extract/ios16-root.raw`,
+sha256 `1c100b5832ee2ab3967cb351c92edf89835102f6fec64e766efa156aa40cf26b`,
+fsck OK); that image still has to be flashed to `userdata`, and the GPU
+ladder has to run before `whyredmetal=1` is set (`docs/metal.md`).
 
 The P3 mode experiment (0229-0231) never fixed the
 black screen: the 0230 boot stayed sRGB and the user's manual test flashed an

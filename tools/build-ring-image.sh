@@ -59,6 +59,8 @@ fi
 # config kernel exec iOS-platform binaries. Without all three, launchd is
 # killed with OS_REASON_EXEC / EXIT_REASON_WRONG_PLATFORM (CS_KILLED).
 common="sweetlog=1 sweetouchi2c=1 sweetouchscl=200 sweetouchfast=1 sweetouchwait=0 launchd_unsecure_cache=1 emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1"
+# EXTRA_ARGS carries milestone switches such as whyredgpu=N / whyredmetal=1.
+[ -n "${EXTRA_ARGS:-}" ] && common="$common $EXTRA_ARGS"
 [ "$power" = 1 ] && common="$common sweetouchpower=1"
 [ "$qup" = 1 ] && common="$common sweeti2c=1"
 [ "$reset" = 1 ] && common="$common sweetouchreset=1"
