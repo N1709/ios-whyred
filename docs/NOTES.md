@@ -90,6 +90,19 @@ being brought up, but no touch data reaches HID yet.
   `brain_ai` (`brain/ios-whyred/2026/11-November/25-Wednesday/`) has the
   long timeline but is not pushed yet.
 
+## GPU / Metal (0240)
+
+* The kernel service now has the pool, `kWhyredSubmitBuf` and the
+  `MetalPluginName`/`MetalPluginClassName` properties (`whyredmetal=1`);
+  `whyredgpuclk=160|266` is the opt-in PLL/RCG switch. Host tests green,
+  **not booted**.
+* The userland `WhyredMetal.bundle` comes from
+  `aLpHa-Git-69/lavender-metal` (`cc5b8db`) plus hakios's Mesa patches
+  (`63fc2b4`); build steps and the rename list are in `docs/metal.md`.
+* Order: `whyredgpu=4` -> `12` -> `30/31` -> install bundle -> `30
+  whyredmetal=1`. The GPU ladder has never run on whyred, so do not skip
+  step 4/12.
+
 ## History index
 
 | File | Range |

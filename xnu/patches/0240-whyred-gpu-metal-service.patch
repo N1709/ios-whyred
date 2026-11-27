@@ -1,0 +1,640 @@
+diff --git a/bsd/dev/whyred_gpu.c b/bsd/dev/whyred_gpu.c
+--- a/bsd/dev/whyred_gpu.c
++++ b/bsd/dev/whyred_gpu.c
+@@ -134,12 +134,14 @@
+ 	thread_block(THREAD_CONTINUE_NULL);
+ }
+ 
+-/* Announce, then give the log 2 s to leave the machine. */
++static int whyred_fast_boot;
++
++/* Announce; bring-up steps pause 2 s for log flush, service mode (whyredgpu>=30) uses 10 ms. */
+ static void
+ whyred_announce(const char *what)
+ {
+ 	printf("WHYREDGPU: about to %s\n", what);
+-	whyred_wait(2000);
++	whyred_wait(whyred_fast_boot ? 10 : 2000);
+ }
+ 
+ /* Poll a bit until it equals want; returns the last value. */
+@@ -296,6 +298,82 @@
+ 	wr(gpucc, CC_LDO_PWRSWITCH_CTRL, ctl);
+ }
+ 
++/*
++ * 0240: GPU clock (boot-arg whyredgpuclk=160|266). The ladder leaves the GFX3D RCG on XO (cfg 0, 19.2 MHz), which is
++ * 14x slower than the 266 MHz Android runs the Adreno 509 at; a full-screen QuartzCore draw then outlasts the
++ * service's waits. The GPUCC is the same qcom,gpucc-sdm660 block, so the PLL/RCG values are the ones measured on
++ * the SDM660 reference; whyredgpu=4 must confirm the PLL lock before this is used for a boot that matters.
++ *   160 MHz: GPU PLL1 (0x40) L 0x21 ALPHA 0x55_55555600 USER_CTL 0x01200101, RCG cfg 0x303
++ *   266 MHz: GPU PLL0 (0x00) L 0x1b ALPHA 0xb5_55555600 USER_CTL 0x01200001, RCG cfg 0x103
++ */
++#define PLL_MODE        0x00u
++#define PLL_L           0x04u
++#define PLL_ALPHA       0x08u
++#define PLL_ALPHA_U     0x0cu
++#define PLL_USER_CTL    0x10u
++#define PLL_USER_CTL_U  0x14u
++#define PLL_CONFIG_CTL  0x18u
++#define PLL_TEST_CTL    0x20u
++#define PLL_TEST_CTL_U  0x24u
++
++static void
++whyred_gpu_clock(void)
++{
++	uint32_t mhz = 0, base, l, alpha, alpha_u, user, cfg, v;
++	int i;
++
++	if (!PE_parse_boot_argn("whyredgpuclk", &mhz, sizeof(mhz)) || mhz == 0) {
++		return;
++	}
++	if (mhz == 160) {
++		base = CC_GPU_PLL1_MODE; l = 0x21; alpha = 0x55555600u; alpha_u = 0x55; user = 0x01200101u; cfg = 0x303;
++	} else if (mhz == 266) {
++		base = CC_GPU_PLL0_MODE; l = 0x1b; alpha = 0x55555600u; alpha_u = 0xb5; user = 0x01200001u; cfg = 0x103;
++	} else {
++		printf("WHYREDGPU: whyredgpuclk=%u is not 160 or 266\n", mhz);
++		return;
++	}
++	printf("WHYREDGPU: clock: gfx3d rcg cfg %08x, PLL mode %08x -> %u MHz\n", rd(gpucc, CC_GFX3D_RCG_CFG),
++	    rd(gpucc, base + PLL_MODE), mhz);
++	wr(gpucc, base + PLL_MODE, 0);
++	wr(gpucc, base + PLL_L, l);
++	wr(gpucc, base + PLL_ALPHA, alpha);
++	wr(gpucc, base + PLL_ALPHA_U, alpha_u);
++	wr(gpucc, base + PLL_USER_CTL, user);
++	wr(gpucc, base + PLL_USER_CTL_U, 4);
++	wr(gpucc, base + PLL_CONFIG_CTL, 0x4001055bu);
++	wr(gpucc, base + PLL_TEST_CTL, 0);
++	wr(gpucc, base + PLL_TEST_CTL_U, 0);
++	wr(gpucc, base + PLL_MODE, 2);			/* BYPASSNL */
++	whyred_wait(1);
++	wr(gpucc, base + PLL_MODE, 6);			/* RESET_N */
++	for (i = 0; i < 100; i++) {
++		v = rd(gpucc, base + PLL_MODE);
++		if (v & 0x80000000u) {
++			break;
++		}
++		whyred_wait(1);
++	}
++	printf("WHYREDGPU: clock: PLL mode %08x after %d ms (%s)\n", rd(gpucc, base + PLL_MODE), i,
++	    (i < 100) ? "locked" : "NOT locked");
++	if (i >= 100) {
++		wr(gpucc, base + PLL_MODE, 0);
++		return;
++	}
++	wr(gpucc, base + PLL_MODE, 7);			/* OUTCTRL */
++	whyred_wait(1);
++	wr(gpucc, CC_GFX3D_RCG_CFG, cfg);
++	wr(gpucc, CC_GFX3D_RCG_CMD, rd(gpucc, CC_GFX3D_RCG_CMD) | 1u);
++	for (i = 0; i < 100; i++) {
++		if (!(rd(gpucc, CC_GFX3D_RCG_CMD) & 1u)) {
++			break;
++		}
++		whyred_wait(1);
++	}
++	printf("WHYREDGPU: clock: gfx3d rcg cmd %08x cfg %08x (%s)\n", rd(gpucc, CC_GFX3D_RCG_CMD),
++	    rd(gpucc, CC_GFX3D_RCG_CFG), (i < 100) ? "switched" : "update TIMED OUT");
++}
++
+ static void
+ step4_gx(void)
+ {
+@@ -376,6 +454,7 @@
+ 		printf("WHYREDGPU: %s clk %08x (%s)\n", i ? "rbbmtimer" : "gfx3d",
+ 		    v, (v & CBCR_OFF) ? "STILL OFF" : "on");
+ 	}
++	whyred_gpu_clock();
+ 	whyred_announce("step 4: READ the GPU block at 0x05000000");
+ 	dump_gpu();
+ 	gx_on = 1;
+@@ -924,6 +1003,13 @@
+ 	    ((opcode & 0x7f) << 16) | (pm4_parity(opcode) << 23));
+ }
+ 
++/*
++ * 0240: service streams spin up to 2 ms (a 10 ms sleep per draw call is a scheduler penalty), then sleep 1 ms at a
++ * time up to 15 s; bring-up steps keep the original 10 ms poll and 3 s budget.
++ */
++static int ring_svc_mode;
++static uint32_t whyred_svc_verbose;
++
+ /* Publish the packets and wait for the CP read pointer to catch up. */
+ static int
+ ring_submit(const char *what)
+@@ -932,14 +1018,42 @@
+ 
+ 	flush_dcache64((addr64_t)ring_pa, RING_BYTES, TRUE);
+ 	wr(gpu, A5_CP_RB_WPTR, ring_wptr);
+-	for (int i = 0; i < 300; i++) {
+-		rptr = rd(gpu, A5_CP_RB_RPTR);
+-		if (rptr == ring_wptr) {
+-			printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
+-			    what, rptr, ring_wptr, i * 10);
+-			return 0;
++	if (ring_svc_mode) {
++		uint64_t spin_until;
++
++		clock_interval_to_deadline(2, NSEC_PER_MSEC, &spin_until);
++		while (mach_absolute_time() < spin_until) {
++			rptr = rd(gpu, A5_CP_RB_RPTR);
++			if (rptr == ring_wptr) {
++				if (whyred_svc_verbose) {
++					printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u (<2 ms)\n",
++					    what, rptr, ring_wptr);
++				}
++				return 0;
++			}
++			__asm__ volatile("yield" ::: "memory");
++		}
++		for (int i = 0; i < 15000; i++) {
++			rptr = rd(gpu, A5_CP_RB_RPTR);
++			if (rptr == ring_wptr) {
++				if (whyred_svc_verbose || i >= 500) {
++					printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
++					    what, rptr, ring_wptr, i + 2);
++				}
++				return 0;
++			}
++			whyred_wait(1);
++		}
++	} else {
++		for (int i = 0; i < 300; i++) {
++			rptr = rd(gpu, A5_CP_RB_RPTR);
++			if (rptr == ring_wptr) {
++				printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
++				    what, rptr, ring_wptr, i * 10);
++				return 0;
++			}
++			whyred_wait(10);
+ 		}
+-		whyred_wait(10);
+ 	}
+ 	printf("WHYREDGPU: %s NOT consumed: RPTR %u WPTR %u, RBBM_STATUS %08x INT_0 "
+ 	    "%08x AHB_ERR %08x\n", what, rptr, ring_wptr, rd(gpu, A5_RBBM_STATUS),
+@@ -2640,6 +2754,7 @@
+ 		return 0;
+ 	}
+ 	seq = ++whyred_svc_seq;
++	ring_svc_mode = 1;
+ 	for (uint32_t i = 0; i < count; i++) {
+ 		ring_put(dw[i]);
+ 	}
+@@ -2651,17 +2766,18 @@
+ 	ring_put(0);
+ 	ring_put(0x12);
+ 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+-	ring_pkt7(CP_EVENT_WRITE, 4);
+-	ring_put(0x4u | (1u << 30));			/* CACHE_FLUSH_TS */
++	ring_pkt7(CP_MEM_WRITE, 3);			/* the fence: a plain CP write, like the client's own */
+ 	ring_put((uint32_t)(rptr_pa + 0xe00));
+ 	ring_put((uint32_t)((rptr_pa + 0xe00) >> 32));
+ 	ring_put(seq);
+ 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
++	*f = 0;
++	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+ 	if (ring_submit("service stream") != 0) {
+ 		*status = EIO;
+ 		return 0;
+ 	}
+-	for (int i = 0; i < 2000; i++) {
++	for (int i = 0; i < 10000; i++) {
+ 		flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+ 		if (*f == seq) {
+ 			return seq;
+@@ -2682,6 +2798,7 @@
+ 	}
+ 	*(volatile uint32_t *)(rptr_va + 0xe00) = 0;
+ 	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
++	(void)PE_parse_boot_argn("whyredgpu_verbose", &whyred_svc_verbose, sizeof(whyred_svc_verbose));
+ 	whyred_svc_ready = 1;
+ 	WhyredGPUStart();
+ 	printf("WHYREDGPU: service: started\n");
+@@ -2702,11 +2819,17 @@
+ 
+ 	(void)PE_parse_boot_argn("whyredgpu", &step, sizeof(step));
+ 	(void)PE_parse_boot_argn("whyredgpudelay", &delay_s, sizeof(delay_s));
++	if (step >= 30) {
++		/* the service must be up before backboardd matches IOAcceleratorES; keep the 25 s root wait */
++		whyred_fast_boot = 1;
++	}
+ 	if (delay_s > 300) {
+ 		delay_s = 300;
+ 	}
+-	printf("WHYREDGPU: ladder up to step %u in %u s\n", step, delay_s);
+-	whyred_wait(delay_s * 1000);
++	printf("WHYREDGPU: ladder up to step %u in %u s (fast=%d)\n", step, delay_s, whyred_fast_boot);
++	if (delay_s > 0) {
++		whyred_wait(delay_s * 1000);
++	}
+ 
+ 	gcc = ml_io_map(GCC_PA, GCC_SIZE);
+ 	gpucc = ml_io_map(GPUCC_PA, GPUCC_SIZE);
+diff --git a/iokit/Kernel/arm/WhyredGPU.cpp b/iokit/Kernel/arm/WhyredGPU.cpp
+--- a/iokit/Kernel/arm/WhyredGPU.cpp
++++ b/iokit/Kernel/arm/WhyredGPU.cpp
+@@ -5,7 +5,7 @@
+  *
+  * whyred_gpu.c wakes the GPU and starts the command processor (the ladder up to step 12, boot-arg
+  * whyredgpu=30); when the ring is up it calls WhyredGPUStart() and this service appears. A program
+- * opens it with IOServiceOpen() and speaks four requests (selectors of IOConnectCallStructMethod):
++ * opens it with IOServiceOpen() and speaks six requests (selectors of IOConnectCallStructMethod):
+  *
+  *   0 kWhyredInfo     -> struct whyred_info: version, whether the GPU is ready, how many streams went in, last fence
+  *   1 kWhyredBufNew   <- struct whyred_buf_new {size}, -> {handle, address}: a buffer of physically contiguous memory,
+@@ -16,6 +16,8 @@
+  *   3 kWhyredSubmit   <- an array of 32-bit PM4 words, -> struct whyred_submit_out {fence, status}: the words go into the
+  *                     ring followed by a cache flush and a fence write, and the call returns when the GPU has
+  *                     reached the fence (it is synchronous: one stream at a time).
++ *   4 kWhyredSubmitBuf <- a stream already in a client buffer: {handle, offset, dwords}; same fence.
++ *   5 kWhyredMetal    <- {on}: put MetalPluginName/MetalPluginClassName on IOAcceleratorES (or remove them).
+  *
+  * Nothing here protects the system from a program that names addresses it does not own: this is the bring-up
+  * interface (one trusted client, a root test tool or the Metal plug-in), not a security boundary.
+@@ -28,6 +30,9 @@
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOBufferMemoryDescriptor.h>
++#include <IOKit/IOSubMemoryDescriptor.h>
++#include <pexpert/pexpert.h>
++#include <kern/thread.h>
+ #include <mach/vm_param.h>
+ #include <sys/systm.h>
+ 
+@@ -43,9 +48,11 @@
+ 	kWhyredBufNew      = 1,
+ 	kWhyredBufFree     = 2,
+ 	kWhyredSubmit      = 3,
++	kWhyredSubmitBuf   = 4,
++	kWhyredMetal       = 5,
+ };
+ 
+-#define WHYRED_BUFFERS     64
++#define WHYRED_BUFFERS     256
+ #define WHYRED_BUFFER_MAX  (16ull << 20)
+ #define WHYRED_SUBMIT_MAX  16384           /* bytes of PM4 words in one stream */
+ 
+@@ -63,9 +70,72 @@
+ struct whyred_submit_out {
+ 	uint32_t fence, status;
+ };
++struct whyred_submit_buf {
++	uint32_t handle, offset, dwords, pad;
++};
+ 
+ static IOLock * gWhyredLock;
+ static uint32_t gWhyredSubmits, gWhyredLast;
++static uint32_t gWhyredVerbose;
++static IOReturn whyredMetalSet(uint32_t on);
++
++/*
++ * The pool: physically contiguous memory below 4 GB is nearly all gone a few minutes after boot (8 MB and 2 MB requests fail), and
++ * the GPU needs buffers in one piece. So the service takes one big block while the system is still young (WhyredGPUStart) and
++ * hands pieces of it out, a page at a time; when there is no pool a buffer is its own allocation, as before.
++ */
++#define WHYRED_POOL_PAGE   4096ull
++static IOBufferMemoryDescriptor * gPool;
++static uint64_t gPoolPhys, gPoolSize;
++static uint8_t * gPoolUsed;                     /* one byte per page, under gWhyredLock */
++static uint32_t gPoolPages;
++static int gPoolTried;
++
++static void
++whyredPoolInit(void)
++{
++	static const uint64_t sizes[] = { 128ull << 20, 64ull << 20, 32ull << 20, 16ull << 20, 8ull << 20, 4ull << 20 };
++
++	for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]) && gPool == NULL; i++) {
++		printf("WhyredGPU: pool of %llu MB: trying\n", sizes[i] >> 20);
++		IOBufferMemoryDescriptor * m = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
++		    kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache, sizes[i], 0x00000000FFFFF000ULL);
++
++		IOLog("WhyredGPU: pool of %llu MB: %s\n", sizes[i] >> 20, m != NULL ? "got it" : "no contiguous memory");
++		if (m != NULL) {
++			gPoolPages = (uint32_t)(sizes[i] / WHYRED_POOL_PAGE);
++			gPoolUsed = (uint8_t *)IOMalloc(gPoolPages);
++			if (gPoolUsed == NULL) {
++				m->release();
++				return;
++			}
++			bzero(gPoolUsed, gPoolPages);
++			gPoolPhys = m->getPhysicalSegment(0, NULL, kIOMemoryMapperNone);
++			gPoolSize = sizes[i];
++			gPool = m;
++			IOLog("WhyredGPU: pool: pa %llx size %llu MB\n", gPoolPhys, gPoolSize >> 20);
++		}
++	}
++	if (gPool == NULL) {
++		IOLog("WhyredGPU: no pool: buffers are allocated one by one\n");
++	}
++}
++
++/* the first run of NPAGES free pages of the pool (gWhyredLock held), marked used; the page it starts at, or -1 */
++static int64_t
++whyredPoolTake(uint32_t npages)
++{
++	uint32_t run = 0;
++
++	for (uint32_t i = 0; i < gPoolPages; i++) {
++		run = gPoolUsed[i] ? 0 : run + 1;
++		if (run == npages) {
++			memset(gPoolUsed + (i + 1 - npages), 1, npages);
++			return (int64_t)(i + 1 - npages);
++		}
++	}
++	return -1;
++}
+ 
+ class WhyredGPU : public IOService
+ {
+@@ -98,6 +168,11 @@
+ 	if (gWhyredLock == NULL) {
+ 		gWhyredLock = IOLockAlloc();
+ 	}
++	(void)PE_parse_boot_argn("whyredgpu_verbose", &gWhyredVerbose, sizeof(gWhyredVerbose));
++	if (!gPoolTried) {
++		gPoolTried = 1;
++		whyredPoolInit();
++	}
+ 	gpu = OSTypeAlloc(WhyredGPU);
+ 	if (gpu == NULL || provider == NULL || !gpu->init() || !gpu->attach(provider)) {
+ 		OSSafeReleaseNULL(gpu);
+@@ -108,22 +183,61 @@
+ 		gpu->detach(provider);
+ 		IOLog("WhyredGPU: the service did not start\n");
+ 	} else {
++		uint32_t metal = 0;
++
+ 		IOLog("WhyredGPU: service started\n");
++		if (PE_parse_boot_argn("whyredmetal", &metal, sizeof(metal)) && metal != 0) {
++			(void)whyredMetalSet(1);
++		}
+ 	}
+ 	gpu->release();
+ }
+ 
++/*
++ * Metal finds its device through the IOKit service of class IOAcceleratorES (the empty one the framebuffer driver publishes):
++ * it reads MetalPluginName and MetalPluginClassName from it and loads /System/Library/Extensions/<name>.bundle. The properties
++ * are put there only when a client asks (and taken away again), so the rest of the system keeps drawing as it did.
++ */
++static IOReturn
++whyredMetalSet(uint32_t on)
++{
++	OSDictionary * match = IOService::serviceMatching("IOAcceleratorES");
++	IOService * accel = match != NULL ? IOService::copyMatchingService(match) : NULL;
++
++	if (match != NULL) {
++		match->release();
++	}
++	if (accel == NULL) {
++		IOLog("WhyredGPU: Metal: there is no IOAcceleratorES service\n");
++		return kIOReturnNotFound;
++	}
++	if (on) {
++		accel->setProperty("MetalPluginName", "WhyredMetal");
++		accel->setProperty("MetalPluginClassName", "WhyredMetalDevice");
++	} else {
++		accel->removeProperty("MetalPluginName");
++		accel->removeProperty("MetalPluginClassName");
++	}
++	IOLog("WhyredGPU: Metal: plug-in properties %s on IOAcceleratorES\n", on ? "set" : "removed");
++	accel->release();
++	return kIOReturnSuccess;
++}
++
+ class WhyredGPUUserClient : public IOUserClient
+ {
+ 	OSDeclareDefaultStructors(WhyredGPUUserClient);
+ 
+ 	task_t                          fTask;
+-	IOBufferMemoryDescriptor *      fMemory[WHYRED_BUFFERS];   /* handle n is fMemory[n - 1] */
++	IOMemoryDescriptor *            fMemory[WHYRED_BUFFERS];   /* handle n is fMemory[n - 1] */
+ 	uint64_t                        fAddress[WHYRED_BUFFERS];
++	uint32_t                        fPoolAt[WHYRED_BUFFERS];   /* the pool page the buffer starts at ... */
++	uint32_t                        fPoolN[WHYRED_BUFFERS];    /* ... and its length in pages (0: not from the pool) */
+ 
+ 	IOReturn bufferNew(struct whyred_buf_new * request);
+ 	IOReturn bufferFree(uint32_t handle);
+ 	IOReturn submit(IOExternalMethodArguments * args, struct whyred_submit_out * out);
++	IOReturn submitBuf(const struct whyred_submit_buf * request, struct whyred_submit_out * out);
++	IOReturn run(uint32_t * words, size_t size, struct whyred_submit_out * out);
+ 
+ public:
+ 	bool selfTest(void);
+@@ -154,6 +268,10 @@
+ 		if (fMemory[i] != NULL) {
+ 			fMemory[i]->release();
+ 			fMemory[i] = NULL;
++			if (fPoolN[i] != 0) {
++				bzero(gPoolUsed + fPoolAt[i], fPoolN[i]);
++				fPoolN[i] = 0;
++			}
+ 		}
+ 	}
+ 	IOLockUnlock(gWhyredLock);
+@@ -172,7 +290,10 @@
+ 	if (type >= 1 && type <= WHYRED_BUFFERS && fMemory[type - 1] != NULL) {
+ 		fMemory[type - 1]->retain();
+ 		*memory = fMemory[type - 1];
+-		*options = 0;
++		*options = fPoolN[type - 1] != 0 ? kIOMapWriteCombineCache : 0;
++		if (gWhyredVerbose) {
++			IOLog("WhyredGPU: map of buffer %u (%s)\n", (unsigned)type, fPoolN[type - 1] != 0 ? "pool" : "own");
++		}
+ 		ret = kIOReturnSuccess;
+ 	}
+ 	IOLockUnlock(gWhyredLock);
+@@ -182,17 +303,42 @@
+ IOReturn
+ WhyredGPUUserClient::bufferNew(struct whyred_buf_new * request)
+ {
+-	IOBufferMemoryDescriptor * memory;
++	IOMemoryDescriptor * memory = NULL;
+ 	uint64_t size = round_page_64(request->size);
+ 	uint32_t slot = WHYRED_BUFFERS;
++	uint32_t at = 0, npages = 0;
+ 
+ 	if (request->size == 0 || size > WHYRED_BUFFER_MAX) {
+ 		return kIOReturnBadArgument;
+ 	}
+-	/* below 4 GB and in one piece: the GPU's page table is the identity of the first four gigabytes */
+-	memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+-	    kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache,
+-	    size, 0x00000000FFFFF000ULL);
++	if (gPool != NULL) {
++		int64_t first;
++
++		npages = (uint32_t)(size / WHYRED_POOL_PAGE);
++		IOLockLock(gWhyredLock);
++		first = whyredPoolTake(npages);
++		IOLockUnlock(gWhyredLock);
++		if (first >= 0) {
++			at = (uint32_t)first;
++			/* a piece of the pool's own (wired) descriptor: a physical-range descriptor made here panics when mapped or DMA'd */
++			memory = IOSubMemoryDescriptor::withSubRange(gPool, (uint64_t)at * WHYRED_POOL_PAGE, size, kIODirectionInOut);
++			if (memory == NULL) {
++				IOLockLock(gWhyredLock);
++				bzero(gPoolUsed + at, npages);
++				IOLockUnlock(gWhyredLock);
++			} else {
++				/* what a service buffer is: zeroed (the pool's pieces were somebody's before) */
++				bzero((uint8_t *)gPool->getBytesNoCopy() + (uint64_t)at * WHYRED_POOL_PAGE, size);
++			}
++		}
++	}
++	if (memory == NULL) {
++		npages = 0;
++		/* below 4 GB and in one piece: the GPU's page table is the identity of the first four gigabytes */
++		memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
++		    kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache,
++		    size, 0x00000000FFFFF000ULL);
++	}
+ 	if (memory == NULL) {
+ 		IOLog("WhyredGPU: no contiguous memory for a buffer of %llu bytes\n", size);
+ 		return kIOReturnNoMemory;
+@@ -205,16 +351,24 @@
+ 		}
+ 	}
+ 	if (slot == WHYRED_BUFFERS) {
++		if (npages != 0) {
++			bzero(gPoolUsed + at, npages);
++		}
+ 		IOLockUnlock(gWhyredLock);
+ 		memory->release();
+ 		return kIOReturnNoResources;
+ 	}
+ 	fMemory[slot] = memory;
+-	fAddress[slot] = memory->getPhysicalSegment(0, NULL, kIOMemoryMapperNone);
++	fPoolAt[slot] = at;
++	fPoolN[slot] = npages;
++	fAddress[slot] = npages != 0 ? gPoolPhys + (uint64_t)at * WHYRED_POOL_PAGE : memory->getPhysicalSegment(0, NULL, kIOMemoryMapperNone);
+ 	request->handle = slot + 1;
+ 	request->address = fAddress[slot];
+ 	request->size = size;
+ 	IOLockUnlock(gWhyredLock);
++	if (gWhyredVerbose) {
++		IOLog("WhyredGPU: buffer %u: pa %llx size %llu%s\n", request->handle, request->address, size, npages != 0 ? " (pool)" : "");
++	}
+ 	return kIOReturnSuccess;
+ }
+ 
+@@ -227,6 +381,10 @@
+ 	if (handle >= 1 && handle <= WHYRED_BUFFERS && fMemory[handle - 1] != NULL) {
+ 		fMemory[handle - 1]->release();
+ 		fMemory[handle - 1] = NULL;
++		if (fPoolN[handle - 1] != 0) {
++			bzero(gPoolUsed + fPoolAt[handle - 1], fPoolN[handle - 1]);
++			fPoolN[handle - 1] = 0;
++		}
+ 		ret = kIOReturnSuccess;
+ 	}
+ 	IOLockUnlock(gWhyredLock);
+@@ -239,8 +397,6 @@
+ {
+ 	uint32_t * words;
+ 	size_t size;
+-	IOReturn ret = kIOReturnSuccess;
+-	int status = 0;
+ 
+ 	if (args->structureInputDescriptor != NULL) {
+ 		size = (size_t)args->structureInputDescriptor->getLength();
+@@ -262,6 +418,15 @@
+ 	} else {
+ 		memcpy(words, args->structureInput, size);
+ 	}
++	return run(words, size, out);
++}
++
++IOReturn
++WhyredGPUUserClient::run(uint32_t * words, size_t size, struct whyred_submit_out * out)
++{
++	IOReturn ret = kIOReturnSuccess;
++	int status = 0;
++
+ 	IOLockLock(gWhyredLock);
+ 	out->fence = whyred_gpu_service_submit(words, (uint32_t)(size / 4), &status);
+ 	if (out->fence != 0) {
+@@ -269,6 +434,9 @@
+ 		gWhyredLast = out->fence;
+ 	}
+ 	IOLockUnlock(gWhyredLock);
++	if (status != 0 || gWhyredVerbose || gWhyredSubmits <= 5) {
++		IOLog("WhyredGPU: submit of %llu bytes: fence %u status %d, first words %08x %08x %08x %08x\n", (unsigned long long)size, out->fence, status, size >= 4 ? words[0] : 0, size >= 8 ? words[1] : 0, size >= 12 ? words[2] : 0, size >= 16 ? words[3] : 0);
++	}
+ 	out->status = (uint32_t)status;
+ 	if (status != 0) {
+ 		ret = kIOReturnIOError;
+@@ -277,6 +445,38 @@
+ 	return ret;
+ }
+ 
++/* The stream is already in one of the client's buffers: copy it out of there, which avoids IOKit's large-input path. */
++IOReturn
++WhyredGPUUserClient::submitBuf(const struct whyred_submit_buf * request, struct whyred_submit_out * out)
++{
++	uint32_t * words;
++	size_t size = (size_t)request->dwords * 4;
++	IOReturn ret = kIOReturnBadArgument;
++
++	if (request->dwords == 0 || size > WHYRED_SUBMIT_MAX || (request->offset & 3) != 0) {
++		return kIOReturnBadArgument;
++	}
++	words = (uint32_t *)IOMalloc(size);
++	if (words == NULL) {
++		return kIOReturnNoMemory;
++	}
++	IOLockLock(gWhyredLock);
++	if (request->handle >= 1 && request->handle <= WHYRED_BUFFERS && fMemory[request->handle - 1] != NULL &&
++	    (uint64_t)request->offset + size <= fMemory[request->handle - 1]->getLength()) {
++		if (fMemory[request->handle - 1]->readBytes(request->offset, words, size) == size) {
++			ret = kIOReturnSuccess;
++		} else {
++			ret = kIOReturnVMError;
++		}
++	}
++	IOLockUnlock(gWhyredLock);
++	if (ret != kIOReturnSuccess) {
++		IOFree(words, size);
++		return ret;
++	}
++	return run(words, size, out);
++}
++
+ IOReturn
+ WhyredGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments * args,
+     IOExternalMethodDispatch * dispatch, OSObject * target, void * reference)
+@@ -322,6 +522,22 @@
+ 		ret = submit(args, &r.out);
+ 		outSize = sizeof(r.out);
+ 		break;
++	case kWhyredSubmitBuf:
++		if (args->structureInput == NULL || size < sizeof(struct whyred_submit_buf)) {
++			return kIOReturnBadArgument;
++		}
++		if (!whyred_gpu_service_ready()) {
++			return kIOReturnNotReady;
++		}
++		ret = submitBuf((const struct whyred_submit_buf *)args->structureInput, &r.out);
++		outSize = sizeof(r.out);
++		break;
++	case kWhyredMetal:
++		if (args->structureInput == NULL || size < sizeof(uint32_t)) {
++			return kIOReturnBadArgument;
++		}
++		ret = whyredMetalSet(*(const uint32_t *)args->structureInput);
++		break;
+ 	default:
+ 		IOLog("WhyredGPU: request %u is not known here\n", selector);
+ 		return kIOReturnUnsupported;
+@@ -387,7 +603,8 @@
+ 	if (ret != kIOReturnSuccess || bn.handle == 0) {
+ 		return false;
+ 	}
+-	words = (volatile uint32_t *)fMemory[bn.handle - 1]->getBytesNoCopy();
++	words = fPoolN[bn.handle - 1] != 0 ? (volatile uint32_t *)((uint8_t *)gPool->getBytesNoCopy() + (uint64_t)fPoolAt[bn.handle - 1] * WHYRED_POOL_PAGE) :
++	    (volatile uint32_t *)((IOBufferMemoryDescriptor *)fMemory[bn.handle - 1])->getBytesNoCopy();
+ 
+ 	stream[0] = whyred_pkt7(61, 3);                    /* CP_MEM_WRITE: address, then the words */
+ 	stream[1] = (uint32_t)bn.address;

@@ -134,12 +134,14 @@ whyred_wait(unsigned ms)
 	thread_block(THREAD_CONTINUE_NULL);
 }
 
-/* Announce, then give the log 2 s to leave the machine. */
+static int whyred_fast_boot;
+
+/* Announce; bring-up steps pause 2 s for log flush, service mode (whyredgpu>=30) uses 10 ms. */
 static void
 whyred_announce(const char *what)
 {
 	printf("WHYREDGPU: about to %s\n", what);
-	whyred_wait(2000);
+	whyred_wait(whyred_fast_boot ? 10 : 2000);
 }
 
 /* Poll a bit until it equals want; returns the last value. */
@@ -296,6 +298,82 @@ ldo_bhs_mode(void)
 	wr(gpucc, CC_LDO_PWRSWITCH_CTRL, ctl);
 }
 
+/*
+ * 0240: GPU clock (boot-arg whyredgpuclk=160|266). The ladder leaves the GFX3D RCG on XO (cfg 0, 19.2 MHz), which is
+ * 14x slower than the 266 MHz Android runs the Adreno 509 at; a full-screen QuartzCore draw then outlasts the
+ * service's waits. The GPUCC is the same qcom,gpucc-sdm660 block, so the PLL/RCG values are the ones measured on
+ * the SDM660 reference; whyredgpu=4 must confirm the PLL lock before this is used for a boot that matters.
+ *   160 MHz: GPU PLL1 (0x40) L 0x21 ALPHA 0x55_55555600 USER_CTL 0x01200101, RCG cfg 0x303
+ *   266 MHz: GPU PLL0 (0x00) L 0x1b ALPHA 0xb5_55555600 USER_CTL 0x01200001, RCG cfg 0x103
+ */
+#define PLL_MODE        0x00u
+#define PLL_L           0x04u
+#define PLL_ALPHA       0x08u
+#define PLL_ALPHA_U     0x0cu
+#define PLL_USER_CTL    0x10u
+#define PLL_USER_CTL_U  0x14u
+#define PLL_CONFIG_CTL  0x18u
+#define PLL_TEST_CTL    0x20u
+#define PLL_TEST_CTL_U  0x24u
+
+static void
+whyred_gpu_clock(void)
+{
+	uint32_t mhz = 0, base, l, alpha, alpha_u, user, cfg, v;
+	int i;
+
+	if (!PE_parse_boot_argn("whyredgpuclk", &mhz, sizeof(mhz)) || mhz == 0) {
+		return;
+	}
+	if (mhz == 160) {
+		base = CC_GPU_PLL1_MODE; l = 0x21; alpha = 0x55555600u; alpha_u = 0x55; user = 0x01200101u; cfg = 0x303;
+	} else if (mhz == 266) {
+		base = CC_GPU_PLL0_MODE; l = 0x1b; alpha = 0x55555600u; alpha_u = 0xb5; user = 0x01200001u; cfg = 0x103;
+	} else {
+		printf("WHYREDGPU: whyredgpuclk=%u is not 160 or 266\n", mhz);
+		return;
+	}
+	printf("WHYREDGPU: clock: gfx3d rcg cfg %08x, PLL mode %08x -> %u MHz\n", rd(gpucc, CC_GFX3D_RCG_CFG),
+	    rd(gpucc, base + PLL_MODE), mhz);
+	wr(gpucc, base + PLL_MODE, 0);
+	wr(gpucc, base + PLL_L, l);
+	wr(gpucc, base + PLL_ALPHA, alpha);
+	wr(gpucc, base + PLL_ALPHA_U, alpha_u);
+	wr(gpucc, base + PLL_USER_CTL, user);
+	wr(gpucc, base + PLL_USER_CTL_U, 4);
+	wr(gpucc, base + PLL_CONFIG_CTL, 0x4001055bu);
+	wr(gpucc, base + PLL_TEST_CTL, 0);
+	wr(gpucc, base + PLL_TEST_CTL_U, 0);
+	wr(gpucc, base + PLL_MODE, 2);			/* BYPASSNL */
+	whyred_wait(1);
+	wr(gpucc, base + PLL_MODE, 6);			/* RESET_N */
+	for (i = 0; i < 100; i++) {
+		v = rd(gpucc, base + PLL_MODE);
+		if (v & 0x80000000u) {
+			break;
+		}
+		whyred_wait(1);
+	}
+	printf("WHYREDGPU: clock: PLL mode %08x after %d ms (%s)\n", rd(gpucc, base + PLL_MODE), i,
+	    (i < 100) ? "locked" : "NOT locked");
+	if (i >= 100) {
+		wr(gpucc, base + PLL_MODE, 0);
+		return;
+	}
+	wr(gpucc, base + PLL_MODE, 7);			/* OUTCTRL */
+	whyred_wait(1);
+	wr(gpucc, CC_GFX3D_RCG_CFG, cfg);
+	wr(gpucc, CC_GFX3D_RCG_CMD, rd(gpucc, CC_GFX3D_RCG_CMD) | 1u);
+	for (i = 0; i < 100; i++) {
+		if (!(rd(gpucc, CC_GFX3D_RCG_CMD) & 1u)) {
+			break;
+		}
+		whyred_wait(1);
+	}
+	printf("WHYREDGPU: clock: gfx3d rcg cmd %08x cfg %08x (%s)\n", rd(gpucc, CC_GFX3D_RCG_CMD),
+	    rd(gpucc, CC_GFX3D_RCG_CFG), (i < 100) ? "switched" : "update TIMED OUT");
+}
+
 static void
 step4_gx(void)
 {
@@ -376,6 +454,7 @@ step4_gx(void)
 		printf("WHYREDGPU: %s clk %08x (%s)\n", i ? "rbbmtimer" : "gfx3d",
 		    v, (v & CBCR_OFF) ? "STILL OFF" : "on");
 	}
+	whyred_gpu_clock();
 	whyred_announce("step 4: READ the GPU block at 0x05000000");
 	dump_gpu();
 	gx_on = 1;
@@ -924,6 +1003,13 @@ ring_pkt7(uint32_t opcode, uint32_t cnt)
 	    ((opcode & 0x7f) << 16) | (pm4_parity(opcode) << 23));
 }
 
+/*
+ * 0240: service streams spin up to 2 ms (a 10 ms sleep per draw call is a scheduler penalty), then sleep 1 ms at a
+ * time up to 15 s; bring-up steps keep the original 10 ms poll and 3 s budget.
+ */
+static int ring_svc_mode;
+static uint32_t whyred_svc_verbose;
+
 /* Publish the packets and wait for the CP read pointer to catch up. */
 static int
 ring_submit(const char *what)
@@ -932,14 +1018,42 @@ ring_submit(const char *what)
 
 	flush_dcache64((addr64_t)ring_pa, RING_BYTES, TRUE);
 	wr(gpu, A5_CP_RB_WPTR, ring_wptr);
-	for (int i = 0; i < 300; i++) {
-		rptr = rd(gpu, A5_CP_RB_RPTR);
-		if (rptr == ring_wptr) {
-			printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
-			    what, rptr, ring_wptr, i * 10);
-			return 0;
+	if (ring_svc_mode) {
+		uint64_t spin_until;
+
+		clock_interval_to_deadline(2, NSEC_PER_MSEC, &spin_until);
+		while (mach_absolute_time() < spin_until) {
+			rptr = rd(gpu, A5_CP_RB_RPTR);
+			if (rptr == ring_wptr) {
+				if (whyred_svc_verbose) {
+					printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u (<2 ms)\n",
+					    what, rptr, ring_wptr);
+				}
+				return 0;
+			}
+			__asm__ volatile("yield" ::: "memory");
 		}
-		whyred_wait(10);
+		for (int i = 0; i < 15000; i++) {
+			rptr = rd(gpu, A5_CP_RB_RPTR);
+			if (rptr == ring_wptr) {
+				if (whyred_svc_verbose || i >= 500) {
+					printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
+					    what, rptr, ring_wptr, i + 2);
+				}
+				return 0;
+			}
+			whyred_wait(1);
+		}
+	} else {
+		for (int i = 0; i < 300; i++) {
+			rptr = rd(gpu, A5_CP_RB_RPTR);
+			if (rptr == ring_wptr) {
+				printf("WHYREDGPU: %s consumed: RPTR %u WPTR %u after %d ms\n",
+				    what, rptr, ring_wptr, i * 10);
+				return 0;
+			}
+			whyred_wait(10);
+		}
 	}
 	printf("WHYREDGPU: %s NOT consumed: RPTR %u WPTR %u, RBBM_STATUS %08x INT_0 "
 	    "%08x AHB_ERR %08x\n", what, rptr, ring_wptr, rd(gpu, A5_RBBM_STATUS),
@@ -2640,6 +2754,7 @@ whyred_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
 		return 0;
 	}
 	seq = ++whyred_svc_seq;
+	ring_svc_mode = 1;
 	for (uint32_t i = 0; i < count; i++) {
 		ring_put(dw[i]);
 	}
@@ -2651,17 +2766,18 @@ whyred_gpu_service_submit(const uint32_t *dw, uint32_t count, int *status)
 	ring_put(0);
 	ring_put(0x12);
 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
-	ring_pkt7(CP_EVENT_WRITE, 4);
-	ring_put(0x4u | (1u << 30));			/* CACHE_FLUSH_TS */
+	ring_pkt7(CP_MEM_WRITE, 3);			/* the fence: a plain CP write, like the client's own */
 	ring_put((uint32_t)(rptr_pa + 0xe00));
 	ring_put((uint32_t)((rptr_pa + 0xe00) >> 32));
 	ring_put(seq);
 	ring_pkt7(CP_WAIT_FOR_IDLE, 0);
+	*f = 0;
+	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
 	if (ring_submit("service stream") != 0) {
 		*status = EIO;
 		return 0;
 	}
-	for (int i = 0; i < 2000; i++) {
+	for (int i = 0; i < 10000; i++) {
 		flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
 		if (*f == seq) {
 			return seq;
@@ -2682,6 +2798,7 @@ whyred_service_start(int selftest)
 	}
 	*(volatile uint32_t *)(rptr_va + 0xe00) = 0;
 	flush_dcache64((addr64_t)(rptr_pa + 0xe00), 64, TRUE);
+	(void)PE_parse_boot_argn("whyredgpu_verbose", &whyred_svc_verbose, sizeof(whyred_svc_verbose));
 	whyred_svc_ready = 1;
 	WhyredGPUStart();
 	printf("WHYREDGPU: service: started\n");
@@ -2702,11 +2819,17 @@ whyred_gpu_thread(__unused void *arg, __unused wait_result_t wr_)
 
 	(void)PE_parse_boot_argn("whyredgpu", &step, sizeof(step));
 	(void)PE_parse_boot_argn("whyredgpudelay", &delay_s, sizeof(delay_s));
+	if (step >= 30) {
+		/* the service must be up before backboardd matches IOAcceleratorES; keep the 25 s root wait */
+		whyred_fast_boot = 1;
+	}
 	if (delay_s > 300) {
 		delay_s = 300;
 	}
-	printf("WHYREDGPU: ladder up to step %u in %u s\n", step, delay_s);
-	whyred_wait(delay_s * 1000);
+	printf("WHYREDGPU: ladder up to step %u in %u s (fast=%d)\n", step, delay_s, whyred_fast_boot);
+	if (delay_s > 0) {
+		whyred_wait(delay_s * 1000);
+	}
 
 	gcc = ml_io_map(GCC_PA, GCC_SIZE);
 	gpucc = ml_io_map(GPUCC_PA, GPUCC_SIZE);

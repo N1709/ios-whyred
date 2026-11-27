@@ -101,6 +101,9 @@ Build the lavender image with `BOARD=lavender shim/build.sh`.
 | `sweetnopb=1` | Refuse to exec PosterBoard and log it, to isolate the lock-screen poster crash (0216) |
 | `sweetemmc_dma=0` | Keep eMMC reads on PIO; ADMA2 is the default after its self-test |
 | `whyredgpu=N` | Run GPU ladder step N after `whyredgpudelay` seconds (default 25); `30` starts the IOKit service after the ring is up, `31` also runs its self-test; off by default |
+| `whyredmetal=1` | Publish `WhyredMetal`/`WhyredMetalDevice` on `IOAcceleratorES`; only with `whyredgpu=30` and the bundle installed |
+| `whyredgpuclk=160\|266` | Switch the GFX3D PLL/RCG from XO to the given frequency; off by default, verify at step 4 |
+| `whyredgpu_verbose=1` | Log every GPU service submission and buffer map |
 | `whyredaud=N` | Run the ADSP audio step N after `whyredauddelay` seconds; `whyredaudforce=1` overrides its checks; off by default |
 | `whyredwlan=1` | Probe WCN3990 after `whyredwlandelay` seconds (default 25); read only |
 | `whyredmodem=N` | Run the MSS/QDSP6 step N after `whyredmodemdelay` seconds; `whyredmodemclk=<mask>` selects the MSS clocks; off by default |

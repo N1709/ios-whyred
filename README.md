@@ -73,5 +73,8 @@ open-source releases (xnu, IOHIDFamily, libpthread, hfs),
 [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build),
 [ipsw](https://github.com/blacktop/ipsw), Qualcomm/Xiaomi's published Linux
 kernel sources, and the hardware work in
-[MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa). iOS itself is
-Apple's and is not distributed here.
+[MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa). The Metal service
+and the A5xx plug-in follow
+[aLpHa-Git-69/lavender-metal](https://github.com/aLpHa-Git-69/lavender-metal)
+and [oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel)
+(MIT; Mesa's ir3 is MIT). iOS itself is Apple's and is not distributed here.

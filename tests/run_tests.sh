@@ -1967,6 +1967,34 @@ for old in ('lavender', 'LAVENDER', 'lavgpu', 'LAVGPU'):
 PY2
 echo "ok   0217 merges the IOKit service, gated by whyredgpu=30"
 
+echo "== GPU: 0240 brings the Metal service pieces =="
+P240="xnu/patches/0240-whyred-gpu-metal-service.patch"
+python3 tools/check_patch.py "$P240" -q \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:kWhyredMetal' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:kWhyredSubmitBuf' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:MetalPluginName' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:WhyredMetalDevice' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:whyredPoolInit' \
+	--added-contains 'iokit/Kernel/arm/WhyredGPU.cpp:whyredmetal' \
+	--added-contains 'bsd/dev/whyred_gpu.c:whyred_fast_boot' \
+	--added-contains 'bsd/dev/whyred_gpu.c:whyredgpuclk' \
+	--added-contains 'bsd/dev/whyred_gpu.c:CP_MEM_WRITE'
+python3 - <<'PY2'
+src = open('xnu/patches/0240-whyred-gpu-metal-service.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# The service takes the pool before the low memory is fragmented, and a
+# Metal stream is a plain CP_MEM_WRITE fence, not a CACHE_FLUSH_TS event.
+assert 'ring_svc_mode = 1' in body
+assert 'whyredgpu_verbose' in body
+# No lavender names may survive the merge.
+for old in ('lavgpu', 'LAVGPU', 'lavender', 'Lavender'):
+    assert old not in body, old
+PY2
+echo "ok   0240 adds the pool, submit-by-buffer and Metal plug-in properties"
+
 echo "== TOUCH: 0218 feeds F12 into SweetHID =="
 P218="xnu/patches/0218-whyred-touch-hid.patch"
 python3 tools/check_patch.py "$P218" -q \

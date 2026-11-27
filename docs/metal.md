@@ -1,0 +1,116 @@
+# Metal on whyred
+
+The Metal path has two halves:
+
+1. **Kernel service** (`drivers/gpu/`, patch `0240`): the Adreno 509 command
+   processor, the `WhyredGPU` IOKit service, contiguous buffers and synchronous
+   PM4 submission.
+2. **Userland plug-in** (`WhyredMetal.bundle`): the `MTLDevice` implementation,
+   the A5xx PM4 builders and the AIR -> NIR -> ir3 shader compiler. It is built
+   from `aLpHa-Git-69/lavender-metal` and hakios's Mesa patches; it is not in
+   this repository.
+
+The kernel half is merged and host-checked. The plug-in still has to be built
+on a Mac and copied into the iOS root. Neither half has run on whyred yet: the
+GPU ladder itself has never been booted (`drivers/gpu/README.md`).
+
+## Kernel side (0240)
+
+The service now has six selectors:
+
+| # | Selector | What |
+| --- | --- | --- |
+| 0 | `kWhyredInfo` | version, ready, submissions, last fence |
+| 1 | `kWhyredBufNew` | contiguous buffer `{size}` -> `{handle, address}` |
+| 2 | `kWhyredBufFree` | release a buffer |
+| 3 | `kWhyredSubmit` | inline PM4 words -> fence |
+| 4 | `kWhyredSubmitBuf` | PM4 words already in a client buffer -> fence |
+| 5 | `kWhyredMetal` | set/remove `MetalPluginName` and `MetalPluginClassName` on `IOAcceleratorES` |
+
+A buffer is a page slice of one contiguous pool (128 MB down to 4 MB, taken
+when `whyredgpu=30` starts the service) or its own allocation when the pool is
+gone. The pool matters because the Metal plug-in allocates many small buffers
+after iOS has fragmented the low 4 GB.
+
+The service submission uses `CP_MEM_WRITE` for the fence (a plain command
+processor write, the same one the client's own streams use), spins 2 ms and
+then sleeps 1 ms at a time up to 15 s. `whyredgpu=30` also switches the
+bring-up announcements from 2 s to 10 ms, so the service is up well before
+`backboardd` starts matching `IOAcceleratorES`.
+
+### Boot arguments
+
+| Argument | What |
+| --- | --- |
+| `whyredgpu=30` | run the ladder and start the IOKit service |
+| `whyredmetal=1` | publish `WhyredMetal` / `WhyredMetalDevice` on `IOAcceleratorES` |
+| `whyredgpuclk=160` or `266` | switch the GFX3D RCG/PLL from XO to the given frequency (off by default) |
+| `whyredgpu_verbose=1` | log every service submission and buffer map |
+| `whyredgpudelay=S` | wait before step 1 (default 25 s) |
+
+Do not set `whyredmetal=1` until `WhyredMetal.bundle` is in the root: Metal
+will then find the property and fail to load the missing bundle.
+
+The clock values are the SDM660 GPUCC values; whyred uses the same
+`qcom,gpucc-sdm660` block. Confirm the PLL lock at `whyredgpu=4` before using
+`whyredgpuclk` on a boot that matters.
+
+## Userland side
+
+Sources:
+
+- `https://github.com/aLpHa-Git-69/lavender-metal` at `cc5b8db`
+  (`userland/`, the A5xx layer and the plug-in).
+- `https://github.com/oosexgang/hakios-xnu-kernel` at `63fc2b4`,
+  `components/metal/plugin/tools/mesa` (the AIR front end, ir3 patches and
+  `hakios-drm`). MIT; see `userland/hk/NOTICE` in lavender-metal.
+
+The plug-in must be renamed for this port:
+
+- service name `LavenderGPU` -> `WhyredGPU`
+- bundle `LavenderMetal.bundle` -> `WhyredMetal.bundle`
+- class `LavenderMetalDevice` -> `WhyredMetalDevice`
+- GPU id `512` -> `509` (`LAVENDER_GPU_ID` -> `WHYRED_GPU_ID`)
+
+### Build (macOS)
+
+```sh
+git clone https://github.com/aLpHa-Git-69/lavender-metal.git
+git -C lavender-metal checkout cc5b8db
+git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/oosexgang/hakios-xnu-kernel.git hakios
+git -C hakios sparse-checkout set --no-cone components/metal/plugin/tools/mesa
+
+# rename the plug-in and service strings first (Lavender* -> Whyred*,
+# LAVENDER_GPU_ID=512 -> WHYRED_GPU_ID=509)
+
+cd lavender-metal
+B=/tmp/mi tools/mesa-ios/build-mac.sh ../hakios/components/metal/plugin/tools/mesa
+cd userland
+bash build-lavmetal.sh
+```
+
+The Mesa build needs Xcode, the iPhoneOS SDK, `meson`, `ninja`, `mako`,
+`pyyaml` and a newer bison; `build-mac.sh` installs what it can under `$B`.
+The result is `out/WhyredMetal.bundle`.
+
+Copy it to `/System/Library/Extensions/WhyredMetal.bundle` in the iOS root
+(the root-image builder, not a partition write) and boot with:
+
+```
+whyredgpu=30 whyredmetal=1
+```
+
+## Order of work
+
+1. Extract the Adreno firmware from the phone's vendor partition and record
+   the names/hashes (`drivers/gpu/hw.md`).
+2. Boot `whyredgpu=4`; confirm the GX GDSC and the RBBM/CP reads.
+3. Boot `whyredgpu=12`; confirm the ring, microcode and fence.
+4. Boot `whyredgpu=30`; confirm `WhyredGPU` appears and the self-test fence
+   completes (`whyredgpu=31`).
+5. Install the bundle and boot with `whyredmetal=1`; check
+   `MTLCreateSystemDefaultDevice()` and `/var/root/whyredmetal.log`.
+
+Step 4 is the gate: a Metal plug-in on top of a command processor that has
+never run cannot be debugged from the plug-in side.
