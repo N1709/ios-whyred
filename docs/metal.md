@@ -8,13 +8,15 @@ The Metal path has three parts:
 2. **Whyred userland layer** (`N1709/whyred-metal`): the A5xx register/PM4
    layer, the fake command processor and its host tests.
 3. **Metal plug-in** (`WhyredMetal.bundle`): the `MTLDevice` implementation,
-   the render/compute builders and the AIR -> NIR -> ir3 shader compiler. It
-   is adapted from `aLpHa-Git-69/lavender-metal` and hakios's Mesa patches; it
-   is not in this repository.
+   the render/compute builders and the AIR -> NIR -> ir3 shader compiler. Its
+   source is in `whyred-metal/userland/plugin/`, adapted from
+   `aLpHa-Git-69/lavender-metal` and hakios's Mesa patches; it is not in this
+   repository.
 
-The kernel half is merged and host-checked. The plug-in still has to be built
-on a Mac and copied into the iOS root. Neither half has run on whyred yet: the
-GPU ladder itself has never been booted (`drivers/gpu/README.md`).
+The kernel half is merged and host-checked. The plug-in source is in
+`whyred-metal`; it still has to be built on a Mac and copied into the iOS
+root. Nothing has run on whyred yet: the GPU ladder itself has never been
+booted (`drivers/gpu/README.md`).
 
 ## Whyred GPU repository
 
@@ -22,12 +24,13 @@ GPU ladder itself has never been booted (`drivers/gpu/README.md`).
 implementation: `userland/include/whyred-metal/` (A5xx registers, PM4 packets,
 fake CP), `userland/tests/cp_test.cpp`, the hardware map in
 `docs/HARDWARE-A509.md`, the plan and the ladder notes. Its `kernel/` copies
-are older snapshots of this patch series; the patches here are canonical.
+are snapshots of this patch series; the patches here are canonical.
 
-Its own status table lists the Metal plug-in as **not started**, so there is no
-bundle to build from it yet. The plug-in source to adapt is lavender-metal's
-`LavenderMetal.m` (the only part that has run on iOS, on lavender); it opens
-the service by name and uses selectors 0-5.
+`userland/plugin/` holds the Metal plug-in: `WhyredMetal.m`, the A5xx builders
+(`why5.c`, `why5r.c`), the compiler wrapper (`whycc.cpp`) with hakios's `hk/`,
+the Mesa register headers and `build-whyredmetal.sh`. It is renamed for this
+service (`WhyredGPU`, `WhyredMetal.bundle`, `WhyredMetalDevice`) and the
+compiler targets GPU id 509. It is **source only, not built yet**.
 
 ## Kernel side (0240)
 
@@ -74,42 +77,41 @@ The clock values are the SDM660 GPUCC values; whyred uses the same
 
 Sources:
 
-- `https://github.com/N1709/whyred-metal`: the whyred A5xx layer, fake CP and
-  host tests. The plug-in is added here, not in ios-whyred.
+- `https://github.com/N1709/whyred-metal`: the whyred A5xx layer, fake CP,
+  host tests and the plug-in source in `userland/plugin/`. The plug-in belongs
+  here, not in ios-whyred.
 - `https://github.com/aLpHa-Git-69/lavender-metal` at `cc5b8db`
-  (`userland/`, the plug-in `LavenderMetal.m` and its A5xx builders).
+  (`userland/`, the plug-in `LavenderMetal.m` and its A5xx builders): the
+  source the whyred plug-in was adapted from.
 - `https://github.com/oosexgang/hakios-xnu-kernel` at `63fc2b4`,
   `components/metal/plugin/tools/mesa` (the AIR front end, ir3 patches and
-  `hakios-drm`). MIT; see `userland/hk/NOTICE` in lavender-metal.
+  `hakios-drm`). MIT; see `userland/plugin/hk/NOTICE`.
 
-The plug-in must be renamed for this port:
+The whyred plug-in is already renamed:
 
-- service name `LavenderGPU` -> `WhyredGPU`
-- bundle `LavenderMetal.bundle` -> `WhyredMetal.bundle`
-- class `LavenderMetalDevice` -> `WhyredMetalDevice`
-- GPU id `512` -> `509` (`LAVENDER_GPU_ID` -> `WHYRED_GPU_ID`)
+- service name `WhyredGPU`
+- bundle `WhyredMetal.bundle`
+- class `WhyredMetalDevice`
+- GPU id `509` (`WHYRED_GPU_ID=509`)
 
 ### Build (macOS)
 
 ```sh
-git clone https://github.com/aLpHa-Git-69/lavender-metal.git
-git -C lavender-metal checkout cc5b8db
+git clone https://github.com/N1709/whyred-metal.git
 git clone --depth 1 --filter=blob:none --sparse \
     https://github.com/oosexgang/hakios-xnu-kernel.git hakios
 git -C hakios sparse-checkout set --no-cone components/metal/plugin/tools/mesa
 
-# rename the plug-in and service strings first (Lavender* -> Whyred*,
-# LAVENDER_GPU_ID=512 -> WHYRED_GPU_ID=509)
-
-cd lavender-metal
+cd whyred-metal
 B=/tmp/mi tools/mesa-ios/build-mac.sh ../hakios/components/metal/plugin/tools/mesa
-cd userland
-bash build-lavmetal.sh
+cd userland/plugin
+bash build-whyredmetal.sh
 ```
 
 The Mesa build needs Xcode, the iPhoneOS SDK, `meson`, `ninja`, `mako`,
 `pyyaml` and a newer bison; `build-mac.sh` installs what it can under `$B`.
-The result is `out/WhyredMetal.bundle`.
+The result is `userland/plugin/out/WhyredMetal.bundle` and
+`out/whyredmetal_test`.
 
 Copy it to `/System/Library/Extensions/WhyredMetal.bundle` in the iOS root
 (the root-image builder, not a partition write) and boot with:

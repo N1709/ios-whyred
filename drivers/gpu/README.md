@@ -14,10 +14,12 @@
 - **State:** compiled and host-checked, **not booted on whyred**. The ladder
   is off unless `whyredgpu=N`; `30` starts the service, `31` also runs its
   self-test.
-- **Metal:** the whyred A5xx layer and host tests live in
-  [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal); its Metal
-  plug-in is not started. The `WhyredMetal.bundle` itself is built from
-  `lavender-metal` + hakios's Mesa patches on macOS; see `docs/metal.md`.
+- **Metal:** the whyred A5xx layer, host tests and the `WhyredMetal` plug-in
+  source live in
+  [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal)
+  (`userland/plugin/`); the plug-in is adapted from lavender-metal, renamed for
+  `WhyredGPU` and targets GPU id 509. It still has to be built on macOS with
+  the iOS Mesa archives; see `docs/metal.md`.
   It is not in this repository and needs the service verified first.
 - **Next, in order:**
   1. Extract the Adreno firmware from the phone's own vendor partition and

@@ -12,9 +12,10 @@ describes the pre-0238 state.
 2026-11-27: patch `0240` adds the GPU service's contiguous pool,
 `kWhyredSubmitBuf` and the Metal plug-in properties (`whyredmetal=1`); it is
 host-checked, not booted. The whyred A5xx userland layer and host tests live
-in [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal); its Metal
-plug-in is not started, so the bundle build is still lavender-metal + hakios
-(`docs/metal.md`).
+in [`N1709/whyred-metal`](https://github.com/N1709/whyred-metal), and its
+`userland/plugin/` now holds the `WhyredMetal` plug-in source (adapted from
+lavender-metal, renamed for `WhyredGPU`, compiler GPU id 509). It is **not
+built yet**: that needs macOS + the iOS Mesa archives (`docs/metal.md`).
 
 The P3 mode experiment (0229-0231) never fixed the
 black screen: the 0230 boot stayed sRGB and the user's manual test flashed an

@@ -23,7 +23,7 @@ Last updated: 2026-11-26.
 | RTC / date | Added (0209), not booted |
 | eMMC ADMA2 reads | Added (0210), not booted |
 | Panel 60 Hz / present timing | Added (0207), not booted |
-| GPU / Metal | Ladder + IOKit service (0211/0217); 0240 adds the pool, `kWhyredSubmitBuf` and the Metal properties, not booted. A5xx userland + host tests in `N1709/whyred-metal` (plug-in not started); `WhyredMetal.bundle` still to build (`docs/metal.md`) |
+| GPU / Metal | Ladder + IOKit service (0211/0217); 0240 adds the pool, `kWhyredSubmitBuf` and the Metal properties, not booted. A5xx userland + host tests + `WhyredMetal` plug-in source in `N1709/whyred-metal/userland/plugin/` (build on macOS pending, `docs/metal.md`) |
 | Wi-Fi | Added (0214), not booted |
 | Bluetooth | No |
 | Audio | Added (0213), not booted |
