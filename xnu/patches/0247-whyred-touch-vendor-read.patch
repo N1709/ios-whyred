@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
 --- a/bsd/dev/whyred_touch.c
 +++ b/bsd/dev/whyred_touch.c
-@@ -1798,6 +1798,43 @@
+@@ -1798,6 +1798,45 @@
  }
  
  /*
@@ -12,6 +12,8 @@ diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
 + * with no writes first; only if it streams, do the reset and test again, so
 + * one boot answers both without writing to a part that already answers.
 + */
++static void dsx_prereset_do(void);
++
 +static int
 +dsx_vendor_probe(void)
 +{
@@ -45,7 +47,7 @@ diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
   * 0241: the vendor resume writes F01 control before it trusts any read. In
   * LPWG the part ignores addressed reads but still ACKs the write, so a blind
   * write is the only way back into application mode. Clear the three sleep
-@@ -1838,16 +1875,12 @@
+@@ -1838,16 +1877,12 @@
   * it is unproven.
   */
  static void
@@ -63,7 +65,7 @@ diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
  	printf("WHYRED TOUCH: pre-reset before the first read (0245)\n");
  	for (i = 0; i < (int)(sizeof(cmd_base) / sizeof(cmd_base[0])); i++) {
  		int rc;
-@@ -1865,6 +1898,17 @@
+@@ -1865,6 +1900,17 @@
  	delay(100000);
  }
  
@@ -81,7 +83,7 @@ diff --git a/bsd/dev/whyred_touch.c b/bsd/dev/whyred_touch.c
  /*
   * 0206 order: map first, reset second. The stream is the only place the real
   * F01 command base can be read on this unit, and the reset must go to that
-@@ -1892,7 +1936,9 @@
+@@ -1892,7 +1938,9 @@
  	} else if (dsx_pdt_stream() != 0) {
  		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
  	}

@@ -1805,6 +1805,8 @@ dsx_gap_sweep(void)
  * with no writes first; only if it streams, do the reset and test again, so
  * one boot answers both without writing to a part that already answers.
  */
+static void dsx_prereset_do(void);
+
 static int
 dsx_vendor_probe(void)
 {

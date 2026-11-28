@@ -2585,6 +2585,8 @@ mirror = Path('drivers/touch/whyred_touch.c').read_text(encoding='utf-8')
 probe = mirror.split('dsx_reset_probe(void)', 1)[1]
 assert probe.index('dsx_vendor_probe()') < probe.index('dsx_gap_sweep()')
 assert 'if (!PE_parse_boot_argn("sweetouchvendor", &on, sizeof(on)) || !on)' in mirror
+# C99: the reset helper is defined below, so its prototype must come first.
+assert mirror.index('static void dsx_prereset_do(void);') < mirror.index('dsx_vendor_probe(void)')
 # Stage one is read-only: the reset is only reached after the first test.
 v = mirror.split('dsx_vendor_probe(void)', 1)[1]
 v = v[:v.index('\n}\n')]
