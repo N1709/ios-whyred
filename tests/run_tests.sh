@@ -2548,6 +2548,30 @@ assert 'if (!PE_parse_boot_argn("sweetouchprereset", &on, sizeof(on)) || !on)' i
 PY
 echo "ok   0245 resets via 0x06 and 0x26 before any read"
 
+echo "== TOUCH: 0246 sweeps the post-read gap =="
+P246="xnu/patches/0246-whyred-touch-gap-sweep.patch"
+python3 tools/check_patch.py "$P246" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchgapsweep' \
+	--added-contains 'bsd/dev/whyred_touch.c:touch_gap_us' \
+	--added-contains 'bsd/dev/whyred_touch.c:gap %u us -> %s' \
+	--added-contains 'bsd/dev/whyred_touch.c:{ 0, 100, 500, 1000, 5000 }'
+python3 - <<'PY'
+from pathlib import Path
+mirror = Path('drivers/touch/whyred_touch.c').read_text(encoding='utf-8')
+# The sweep runs before the plain address test and stays opt-in.
+probe = mirror.split('dsx_reset_probe(void)', 1)[1]
+assert probe.index('dsx_gap_sweep()') < probe.index('addressable = dsx_addr_works();')
+assert 'if (!PE_parse_boot_argn("sweetouchgapsweep", &on, sizeof(on)) || !on)' in mirror
+# The gap is applied after each bit-bang read, never before the address phase.
+assert mirror.count('touch_gap_delay();') == 2
+assert 'sweetouchgap' in mirror
+PY
+grep -Fq 'gapsweep=${SWEETGAPSWEEP:-0}' tools/build-touch-diag.sh
+grep -Fq 'sweetouchgapsweep=$gapsweep' tools/build-touch-diag.sh
+grep -Fq 'prereset=${SWEETOUCHPRERESET:-0}' tools/build-touch-diag.sh
+grep -Fq 'sweetouchprereset=$prereset' tools/build-touch-diag.sh
+echo "ok   0246 sweeps the post-read gap and the build script carries both flags"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but

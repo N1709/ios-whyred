@@ -368,6 +368,37 @@ pin_read(struct touch_pin *p)
  */
 #define TOUCH_LINE_WAIT_US	500
 static uint32_t touch_line_wait_us = TOUCH_LINE_WAIT_US;
+static uint32_t touch_gap_us;
+
+/*
+ * 0246: the DSX honors the first addressed read and then keeps its pointer
+ * moving. The vendor driver has no post-read gap, but the bit-bang master
+ * may need one for the part to retire the STOP before the next address
+ * phase. sweetouchgap=<us> sets a single gap; sweetouchgapsweep=1 tries
+ * 0/100/500/1000/5000 us in one boot.
+ */
+static void
+touch_gap_config(void)
+{
+	uint32_t us = 0;
+
+	if (!PE_parse_boot_argn("sweetouchgap", &us, sizeof(us)) || !us) {
+		return;
+	}
+	if (us > 20000) {
+		us = 20000;
+	}
+	touch_gap_us = us;
+	printf("WHYRED TOUCH: post-read gap %u us\n", us);
+}
+
+static void
+touch_gap_delay(void)
+{
+	if (touch_gap_us) {
+		delay(touch_gap_us);
+	}
+}
 
 static void
 bb_delay(void)
@@ -782,6 +813,7 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
 			buf[i] = i2c_read(i + 1 < len);
 		}
 		i2c_stop();
+		touch_gap_delay();
 		return 0;
 	}
 
@@ -836,6 +868,7 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
 		buf[i] = i2c_read(i + 1 < len);
 	}
 	i2c_stop();
+	touch_gap_delay();
 	return 0;
 }
 
@@ -1737,6 +1770,34 @@ dsx_fast_known_bases(void)
 }
 
 /*
+ * 0246: one boot tests the post-read gap. The address test reads the same
+ * PDT record twice; a gap that lets the part retire the STOP should make
+ * both reads return the same bytes. Stop at the first gap that works.
+ */
+static int
+dsx_gap_sweep(void)
+{
+	static const uint32_t gaps[] = { 0, 100, 500, 1000, 5000 };
+	uint32_t on = 0;
+	int i, ok;
+
+	if (!PE_parse_boot_argn("sweetouchgapsweep", &on, sizeof(on)) || !on) {
+		return -1;
+	}
+	for (i = 0; i < (int)(sizeof(gaps) / sizeof(gaps[0])); i++) {
+		touch_gap_us = gaps[i];
+		ok = dsx_addr_works();
+		printf("WHYRED TOUCH: gap %u us -> %s\n", gaps[i],
+		    ok ? "addressable" : "streaming");
+		if (ok) {
+			return 1;
+		}
+	}
+	touch_gap_us = 0;
+	return 0;
+}
+
+/*
  * 0241: the vendor resume writes F01 control before it trusts any read. In
  * LPWG the part ignores addressed reads but still ACKs the write, so a blind
  * write is the only way back into application mode. Clear the three sleep
@@ -1831,7 +1892,11 @@ dsx_reset_probe(void)
 	} else if (dsx_pdt_stream() != 0) {
 		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
 	}
-	addressable = dsx_addr_works();
+	if (dsx_gap_sweep() > 0) {
+		addressable = 1;
+	} else {
+		addressable = dsx_addr_works();
+	}
 	if (dsx_readonly) {
 		printf("WHYRED TOUCH: readonly=1, no register writes\n");
 	} else if (!addressable && dsx_f01_wake_blind()) {
@@ -2865,6 +2930,7 @@ whyred_touch_early(void)
 		at = 4000;
 	}
 	touch_line_wait_config();
+	touch_gap_config();
 	dsx_early_ran = 1;
 	touch_early_mark(1, 0xffff0000);	/* red: entered */
 	/*
@@ -3000,6 +3066,7 @@ whyred_touch_probe(void)
 	}
 	touch_probe_done = 1;
 	touch_line_wait_config();
+	touch_gap_config();
 
 	/*
 	 * Arm the way out before the first clock or QUP register write. A stall

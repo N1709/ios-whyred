@@ -44,6 +44,15 @@
 # use the known F01/F12 bases, so the address test is the first addressed
 # read. Without it the scan advances the DSX read pointer and the test
 # reports stream bytes even when the address phase would work.
+#
+# SWEETGAPSWEEP=1 adds `sweetouchgapsweep=1`: the early probe tries a 0, 100,
+# 500, 1000 and 5000 us post-read gap in one boot and logs which one makes
+# the second addressed read repeat the first. It is read-only.
+#
+# SWEETOUCHPRERESET=1 adds `sweetouchprereset=1`: write the F01 device reset
+# to 0x06 and 0x26 and the wake value to F01 control 0x0d before the first
+# read, so one boot shows whether a reset that lands before the address test
+# restores addressing. This one writes to the DSX.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -54,6 +63,8 @@ reboot=${SWEETREBOOT:-1}
 power=${SWEETOUCHPOWER:-0}
 ro=${SWEETOUCHREADONLY:-0}
 fast=${SWEETOUCHFAST:-0}
+gapsweep=${SWEETGAPSWEEP:-0}
+prereset=${SWEETOUCHPRERESET:-0}
 out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}
 
 arg=${1:?usage: build-touch-diag.sh RUN_ID|KERNEL}
@@ -70,6 +81,8 @@ echo "kernel: $kernel ($(stat -c%s "$kernel") bytes)"
 cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweetouchpower=$power sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=$reboot"
 [ "$ro" = 1 ] && cmdl="$cmdl sweetouchreadonly=1"
 [ "$fast" = 1 ] && cmdl="$cmdl sweetouchfast=1"
+[ "$gapsweep" = 1 ] && cmdl="$cmdl sweetouchgapsweep=$gapsweep"
+[ "$prereset" = 1 ] && cmdl="$cmdl sweetouchprereset=$prereset"
 if [ "$early" != 0 ]; then
 	cmdl="$cmdl sweetouchearly=$early"
 fi
