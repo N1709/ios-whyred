@@ -115,8 +115,11 @@ lock screen is visible.
    userland present, so the lock screen must be up first.
 3. If GPIO 53 turns out not to reset the DSX (live DT has no
    `synaptics,reset-gpio`), the result is a clean negative: panel blinks,
-   probe still streams. Then 2 us bit-bang (`sweetouchscl=2`) and QUP1
-   (SError `0xbf000002`).
+   probe still streams. The 2 us bit-bang (`sweetouchscl=2`) is the other
+   cheap check. QUP1 is 0248: the 0190 SError is at the first
+   `QUP_HW_VERSION` read even with the GCC clocks on; 0248 reads/releases
+   `GCC_BLSP1_BCR` and writes `QUP_SW_RESET` before that read, which is
+   the vendor/mainline order. Not booted.
 4. Once the address phase works, program F01/F12 and verify ordinary tap,
    swipe and multi-touch through `SweetHIDTouch` with no phantom contacts.
 
@@ -132,7 +135,9 @@ lock screen is visible.
   `dsx_addressable`; a still-streaming part is left alone.
 * The latest boot proves an APPS-owned LDO11 disable/enable cycle succeeds,
   but it does not restore addressing. Next diagnostics keep general-call
-  reset and QUP framing separate; recovery remains read-only.
+  reset and QUP framing separate; recovery remains read-only. The 0248
+  QUP bring-up reads/releases the BLSP1 BCR and resets the SE before the
+  first register read; a ring that stops now names the exact access.
 * F12 query block: `01 01 01 02 00 00 00 0e 0f 15 c7 11 12 33 13 49 07 83
   02 0b 81 04 03`.
 * Missing: a coherent addressed read or a successful wake from LPWG, so the

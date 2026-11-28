@@ -1,0 +1,100 @@
+diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
+--- a/bsd/dev/sweet_i2c.c
++++ b/bsd/dev/sweet_i2c.c
+@@ -59,6 +59,8 @@
+ #define GCC_BLSP1_AHB_CMD	(GCC_BASE + 0x52004u)
+ #define GCC_BLSP1_AHB_ENA	(1u << 17)	/* gcc_blsp1_ahb_clk */
+ #define GCC_BLSP1_AHB_HALT	(GCC_BASE + 0x17004u)
++#define GCC_BLSP1_BCR		(GCC_BASE + 0x17000u)
++#define GCC_BLSP1_BCR_ARES	(1u << 0)
+ #define GCC_I2C1_APPS_CMD	(GCC_BASE + 0x19008u)
+ #define GCC_I2C1_APPS_ENA	(1u << 0)	/* qup1_i2c_apps_clk */
+ #define GCC_I2C1_SRC_CMD	(GCC_BASE + 0x19020u)	/* cmd_rcgr */
+@@ -177,14 +179,32 @@
+ {
+ 	volatile uint32_t *ahb = io_win(GCC_BLSP1_AHB_CMD);
+ 	volatile uint32_t *ahb_halt = io_win(GCC_BLSP1_AHB_HALT);
++	volatile uint32_t *bcr = io_win(GCC_BLSP1_BCR);
+ 	volatile uint32_t *app = io_win(GCC_I2C1_APPS_CMD);
+ 	volatile uint32_t *cmd = io_win(GCC_I2C1_SRC_CMD);
+ 	volatile uint32_t *cfg = io_win(GCC_I2C1_SRC_CFG);
+ 	volatile uint32_t *m = io_win(GCC_I2C1_SRC_M);
+ 	volatile uint32_t *n = io_win(GCC_I2C1_SRC_N);
+ 	volatile uint32_t *d = io_win(GCC_I2C1_SRC_D);
++	uint32_t bcrv;
+ 	int i, ret = 0;
+ 
++	/*
++	 * 0248: the BLSP1 block reset sits in front of every QUP register and
++	 * the vendor clock driver models it as local_vote_clk.bcr_reg. Nothing
++	 * in the boot path is known to release it on whyred, so read it first
++	 * and clear only the assert bit: if it was already 0 this is a no-op,
++	 * and if the bootloader left BLSP1 in reset the first QUP access is no
++	 * longer an SError.
++	 */
++	bcrv = *bcr;
++	printf("WHYRED I2C: BLSP1 BCR 0x%08x\n", bcrv);
++	if (bcrv & GCC_BLSP1_BCR_ARES) {
++		*bcr = bcrv & ~GCC_BLSP1_BCR_ARES;
++		delay(1000);
++		printf("WHYRED I2C: BLSP1 BCR released -> 0x%08x\n", *bcr);
++	}
++
+ 	*ahb |= GCC_BLSP1_AHB_ENA;
+ 	for (i = 0; i < 200; i++) {
+ 		/*
+@@ -200,6 +220,7 @@
+ 		}
+ 		delay(10);
+ 	}
++	printf("WHYRED I2C: AHB vote 0x%08x halt 0x%08x\n", *ahb, *ahb_halt);
+ 	if (i == 200) {
+ 		printf("WHYRED I2C: BLSP1_AHB not verifiably on (cmd 0x%08x "
+ 		    "halt 0x%08x, need NOC on), refusing the QUP\n",
+@@ -449,27 +470,34 @@
+ 		}
+ 	}
+ 
+-	printf("WHYRED I2C: QUP mapped, probing the SE\n");
++	printf("WHYRED I2C: QUP mapped, resetting the SE first (vendor order)\n");
+ 	delay(1500000);
+ 
+ 	/*
+-	 * Read before the first write. Ring 0195 stops on the SW reset and
+-	 * cannot say which of the two it is, so ask the SE for HW_VERSION
+-	 * first: a ring that stops on this line means the register window
+-	 * itself does not answer (CX/NoC side of the BLSP1 slave port), a
+-	 * printed version means the window is alive and the SW reset is what
+-	 * never completes.
++	 * 0248: the vendor probe writes QUP_SW_RESET before it reads any SE
++	 * register; i2c-msm-v2.c and i2c-qup.c both do. The 0190 image read
++	 * HW_VERSION first and took the SError there. A QUP core left in reset
++	 * by the bootloader is the one difference this order removes: the
++	 * reset register is on the AHB side and accepts the write, the core
++	 * registers only answer after it. The line is on SYSTEM before the
++	 * write, so a ring that stops here names the SW_RESET write itself.
+ 	 */
+-	v = qup[QUP_HW_VERSION / 4];
+-	printf("WHYRED I2C: SE version 0x%08x, STATE 0x%08x\n", v,
+-	    qup[QUP_STATE / 4]);
++	printf("WHYRED I2C: SE reset write\n");
++	qup[QUP_SW_RESET / 4] = 1;
++	delay(1500000);
++	printf("WHYRED I2C: SE reset written\n");
++	delay(1500000);
+ 
+-	printf("WHYRED I2C: resetting the SE\n");
+-	sweet_sw_reset();
++	v = qup[QUP_STATE / 4];
++	printf("WHYRED I2C: SE state 0x%08x\n", v);
+ 	if (sweet_state_set(QUP_STATE_RESET) != 0) {
+ 		return -1;
+ 	}
+ 
++	v = qup[QUP_HW_VERSION / 4];
++	printf("WHYRED I2C: SE version 0x%08x, STATE 0x%08x\n", v,
++	    qup[QUP_STATE / 4]);
++
+ 	v = qup[QUP_CONFIG / 4];
+ 	v &= ~(QUP_NO_INPUT | QUP_NO_OUTPUT | QUP_N_MASK | QUP_MINI_CORE_MASK);
+ 	v |= QUP_N_VAL | QUP_MINI_CORE_I2C_VAL;

@@ -2597,6 +2597,26 @@ grep -Fq 'vendor=${SWEETVENDOR:-0}' tools/build-touch-diag.sh
 grep -Fq 'sweetouchvendor=$vendor' tools/build-touch-diag.sh
 echo "ok   0247 tests the vendor read order before any write"
 
+echo "== TOUCH: 0248 resets the QUP before the first SE read =="
+P248="xnu/patches/0248-whyred-qup-reset-first.patch"
+python3 tools/check_patch.py "$P248" -q \
+	--added-contains 'bsd/dev/sweet_i2c.c:GCC_BLSP1_BCR' \
+	--added-contains 'bsd/dev/sweet_i2c.c:SE reset write' \
+	--added-contains 'bsd/dev/sweet_i2c.c:qup[QUP_SW_RESET / 4] = 1;' \
+	--added-contains 'bsd/dev/sweet_i2c.c:BLSP1 BCR released'
+python3 - <<'PY2'
+from pathlib import Path
+p = Path('xnu/patches/0248-whyred-qup-reset-first.patch').read_text()
+# Hunk context plus added lines, in new-file order.
+lines = [l[1:] for l in p.splitlines()
+         if l[:1] in ('+', ' ') and not l.startswith('+++')]
+body = '\n'.join(lines)
+assert body.index('SE reset write') < body.index('SE version 0x%08x')
+assert body.index('qup[QUP_SW_RESET / 4] = 1;') < body.index('SE version 0x%08x')
+assert body.index('BLSP1 BCR released') < body.index('QUP mapped, resetting the SE')
+PY2
+echo "ok   0248 writes SW_RESET before the first SE register read"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but
