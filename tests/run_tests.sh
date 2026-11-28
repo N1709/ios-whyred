@@ -2572,6 +2572,29 @@ grep -Fq 'prereset=${SWEETOUCHPRERESET:-0}' tools/build-touch-diag.sh
 grep -Fq 'sweetouchprereset=$prereset' tools/build-touch-diag.sh
 echo "ok   0246 sweeps the post-read gap and the build script carries both flags"
 
+echo "== TOUCH: 0247 uses the vendor read order =="
+P247="xnu/patches/0247-whyred-touch-vendor-read.patch"
+python3 tools/check_patch.py "$P247" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchvendor' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_vendor_probe' \
+	--added-contains 'bsd/dev/whyred_touch.c:DFRAME_PAGE_A1;' \
+	--added-contains 'bsd/dev/whyred_touch.c:repeated start'
+python3 - <<'PY2'
+from pathlib import Path
+mirror = Path('drivers/touch/whyred_touch.c').read_text(encoding='utf-8')
+probe = mirror.split('dsx_reset_probe(void)', 1)[1]
+assert probe.index('dsx_vendor_probe()') < probe.index('dsx_gap_sweep()')
+assert 'if (!PE_parse_boot_argn("sweetouchvendor", &on, sizeof(on)) || !on)' in mirror
+# Stage one is read-only: the reset is only reached after the first test.
+v = mirror.split('dsx_vendor_probe(void)', 1)[1]
+v = v[:v.index('\n}\n')]
+assert v.index('dsx_addr_works();') < v.index('dsx_prereset_do();')
+assert v.index('if (dsx_readonly)') < v.index('dsx_prereset_do();')
+PY2
+grep -Fq 'vendor=${SWEETVENDOR:-0}' tools/build-touch-diag.sh
+grep -Fq 'sweetouchvendor=$vendor' tools/build-touch-diag.sh
+echo "ok   0247 tests the vendor read order before any write"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but

@@ -1798,6 +1798,43 @@ dsx_gap_sweep(void)
 }
 
 /*
+ * 0247: the vendor driver's read is a page select as its own transaction,
+ * then ONE address byte and a repeated start into the data - our
+ * DFRAME_PAGE_A1, not the 0236 address-then-stop framing. The vendor also
+ * issues an F01 software reset before it trusts the PDT. Test the framing
+ * with no writes first; only if it streams, do the reset and test again, so
+ * one boot answers both without writing to a part that already answers.
+ */
+static int
+dsx_vendor_probe(void)
+{
+	uint32_t on = 0;
+	int ok;
+
+	if (!PE_parse_boot_argn("sweetouchvendor", &on, sizeof(on)) || !on) {
+		return -1;
+	}
+	dsx_frame = DFRAME_PAGE_A1;
+	dsx_page = -1;
+	ok = dsx_addr_works();
+	printf("WHYRED TOUCH: vendor read (page, addr, repeated start) -> %s\n",
+	    ok ? "addressable" : "streaming");
+	if (ok) {
+		return 1;
+	}
+	if (dsx_readonly) {
+		printf("WHYRED TOUCH: readonly=1, vendor reset skipped\n");
+		return 0;
+	}
+	dsx_prereset_do();
+	dsx_page = -1;
+	ok = dsx_addr_works();
+	printf("WHYRED TOUCH: vendor reset then vendor read -> %s\n",
+	    ok ? "addressable" : "streaming");
+	return ok;
+}
+
+/*
  * 0241: the vendor resume writes F01 control before it trusts any read. In
  * LPWG the part ignores addressed reads but still ACKs the write, so a blind
  * write is the only way back into application mode. Clear the three sleep
@@ -1838,16 +1875,12 @@ dsx_f01_wake_blind(void)
  * it is unproven.
  */
 static void
-dsx_prereset(void)
+dsx_prereset_do(void)
 {
 	static const uint16_t cmd_base[] = { 0x0006, 0x0026 };
 	uint8_t cmd = 0x01, wake = 0x84;
-	uint32_t on = 0;
 	int i;
 
-	if (!PE_parse_boot_argn("sweetouchprereset", &on, sizeof(on)) || !on) {
-		return;
-	}
 	printf("WHYRED TOUCH: pre-reset before the first read (0245)\n");
 	for (i = 0; i < (int)(sizeof(cmd_base) / sizeof(cmd_base[0])); i++) {
 		int rc;
@@ -1863,6 +1896,17 @@ dsx_prereset(void)
 	printf("WHYRED TOUCH: pre-reset f01 ctrl 0x000d <- 0x%02x %s\n",
 	    wake, i == 0 ? "ack" : "nack");
 	delay(100000);
+}
+
+static void
+dsx_prereset(void)
+{
+	uint32_t on = 0;
+
+	if (!PE_parse_boot_argn("sweetouchprereset", &on, sizeof(on)) || !on) {
+		return;
+	}
+	dsx_prereset_do();
 }
 
 /*
@@ -1892,7 +1936,9 @@ dsx_reset_probe(void)
 	} else if (dsx_pdt_stream() != 0) {
 		printf("WHYRED TOUCH: no pdt stream; using the walk only\n");
 	}
-	if (dsx_gap_sweep() > 0) {
+	if (dsx_vendor_probe() > 0) {
+		addressable = 1;
+	} else if (dsx_gap_sweep() > 0) {
 		addressable = 1;
 	} else {
 		addressable = dsx_addr_works();

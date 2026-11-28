@@ -53,6 +53,11 @@
 # to 0x06 and 0x26 and the wake value to F01 control 0x0d before the first
 # read, so one boot shows whether a reset that lands before the address test
 # restores addressing. This one writes to the DSX.
+#
+# SWEETVENDOR=1 adds `sweetouchvendor=1`: replicate the vendor probe order.
+# It reads with DFRAME_PAGE_A1 (page select, one address byte, repeated
+# start) and only if that still streams issues the F01 reset, then reads
+# again. The first stage is read-only; the second writes to the DSX.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -65,6 +70,7 @@ ro=${SWEETOUCHREADONLY:-0}
 fast=${SWEETOUCHFAST:-0}
 gapsweep=${SWEETGAPSWEEP:-0}
 prereset=${SWEETOUCHPRERESET:-0}
+vendor=${SWEETVENDOR:-0}
 out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}
 
 arg=${1:?usage: build-touch-diag.sh RUN_ID|KERNEL}
@@ -83,6 +89,7 @@ cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unse
 [ "$fast" = 1 ] && cmdl="$cmdl sweetouchfast=1"
 [ "$gapsweep" = 1 ] && cmdl="$cmdl sweetouchgapsweep=$gapsweep"
 [ "$prereset" = 1 ] && cmdl="$cmdl sweetouchprereset=$prereset"
+[ "$vendor" = 1 ] && cmdl="$cmdl sweetouchvendor=$vendor"
 if [ "$early" != 0 ]; then
 	cmdl="$cmdl sweetouchearly=$early"
 fi
