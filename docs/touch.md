@@ -134,6 +134,7 @@ The F12 query block read on this unit:
 | `sweetouchreboot=1` | reboot to the bootloader when the probe finishes; also arms the reboot watchdog, because this is the only boot that intentionally leaves XNU |
 | `sweetouchwatchdog=SEC` | watchdog delay for `sweetouchreboot=1` (default 300 s, `0` disables). The probe cancels it once it finishes, so a normal or log boot is never reset |
 | `sweetouchpower=1` | late probe only: toggle PM660 LDO11 (`vcc_i2c`) through the SPMI arbiter, after refusing an APID another EE owns; off by default, a fault leaves `WHYRED TOUCH:` lines in the ring |
+| `sweetouchprereset=1` | before the first read, write the F01 device reset to `0x06` and `0x26` and the wake value to F01 control `0x0d`; the only ordering where a reset can still land on a part that streams after its first read |
 | `sweetouchnosleep=0` | do not force `NO_SLEEP_ON` when the panel is on (0225; the default is to force it) |
 | `sweetouchgcall=1` | try the I2C general-call reset (address `0x00`, byte `0x06`) when the address phase is ignored (0225; opt-in because it reaches every device on BLSP1 QUP1) |
 

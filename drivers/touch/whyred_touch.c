@@ -1768,6 +1768,43 @@ dsx_f01_wake_blind(void)
 }
 
 /*
+ * 0245: the reset has to be the first transaction after the bus is cleared.
+ * 0241 wrote F01 only after dsx_addr_works() had already walked the stream,
+ * where the ACK proves the I2C address byte and nothing else, so the write
+ * landed on the stream pointer. Here the reset comes before the first read:
+ * the RMI4 default command base (0x06) first, then the base this unit's
+ * streamed F01 record names (0x26), then the vendor wake value. Opt-in while
+ * it is unproven.
+ */
+static void
+dsx_prereset(void)
+{
+	static const uint16_t cmd_base[] = { 0x0006, 0x0026 };
+	uint8_t cmd = 0x01, wake = 0x84;
+	uint32_t on = 0;
+	int i;
+
+	if (!PE_parse_boot_argn("sweetouchprereset", &on, sizeof(on)) || !on) {
+		return;
+	}
+	printf("WHYRED TOUCH: pre-reset before the first read (0245)\n");
+	for (i = 0; i < (int)(sizeof(cmd_base) / sizeof(cmd_base[0])); i++) {
+		int rc;
+
+		dsx_page = -1;
+		rc = dsx_write_f(DSX_ADDR, cmd_base[i], &cmd, 1);
+		printf("WHYRED TOUCH: pre-reset f01 0x%04x <- 0x01 %s\n",
+		    cmd_base[i], rc == 0 ? "ack" : "nack");
+		delay(300000);
+	}
+	dsx_page = -1;
+	i = dsx_write_f(DSX_ADDR, 0x000d, &wake, 1);
+	printf("WHYRED TOUCH: pre-reset f01 ctrl 0x000d <- 0x%02x %s\n",
+	    wake, i == 0 ? "ack" : "nack");
+	delay(100000);
+}
+
+/*
  * 0206 order: map first, reset second. The stream is the only place the real
  * F01 command base can be read on this unit, and the reset must go to that
  * base. If the part is already addressable (cold boot, pointer at 0) no reset
@@ -2866,6 +2903,11 @@ whyred_touch_early(void)
 	touch_early_mark(5, 0xff00ffff);	/* cyan: pins set */
 	(void)i2c_clear_bus();
 	touch_early_mark(6, 0xff0000ff);	/* blue: bus cleared */
+	/*
+	 * 0245: a diagnostic boot can reset the part before the first read.
+	 * The normal boot stays read-first, so this is opt-in.
+	 */
+	dsx_prereset();
 	/*
 	 * 0220: no rail toggle here. whyred_touch_early() runs before
 	 * santoni_log_start(), so an SError from the SPMI arbiter panics

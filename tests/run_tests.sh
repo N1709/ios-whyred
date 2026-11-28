@@ -2527,6 +2527,27 @@ assert 'pmap_map_bd' in patch
 PY
 echo "ok   0244 removes the pre-VM hook and probes before machine_startup"
 
+echo "== TOUCH: 0245 resets the DSX before the first read =="
+P245="xnu/patches/0245-whyred-touch-prereset.patch"
+python3 tools/check_patch.py "$P245" -q \
+	--added-contains 'bsd/dev/whyred_touch.c:sweetouchprereset' \
+	--added-contains 'bsd/dev/whyred_touch.c:dsx_prereset' \
+	--added-contains 'bsd/dev/whyred_touch.c:pre-reset before the first read' \
+	--added-contains 'bsd/dev/whyred_touch.c:0x0006, 0x0026'
+python3 - <<'PY'
+from pathlib import Path
+mirror = Path('drivers/touch/whyred_touch.c').read_text(encoding='utf-8')
+# The helper must be defined before dsx_reset_probe(), and the early probe
+# must call it before dsx_prereset's first read (dsx_reset_probe).
+assert mirror.index('dsx_prereset(void)') < mirror.index('dsx_reset_probe(void)')
+early = mirror.split('whyred_touch_early(void)', 1)[1]
+early = early[:early.index('\n}\n')]
+assert early.index('dsx_prereset();') < early.index('dsx_reset_probe();')
+# Default boot stays byte-identical: the write only happens opt-in.
+assert 'if (!PE_parse_boot_argn("sweetouchprereset", &on, sizeof(on)) || !on)' in mirror
+PY
+echo "ok   0245 resets via 0x06 and 0x26 before any read"
+
 echo "== DISPLAY: the lock-screen recovery build has no mode registry =="
 # 0229-0231 were the P3 mode experiment; the 35e591a state that reached the
 # lock screen predates them.  This build keeps 0228 and every touch patch but

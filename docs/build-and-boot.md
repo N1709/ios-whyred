@@ -209,6 +209,7 @@ IRQ witness on GPIO 67 during the F12 poll.
 | `sweetouchi2c=1` | run the probe: scan `0x08`..`0x77`, then dump the RMI4 identification |
 | `sweeti2c=1` | after the address scan, bring up the BLSP1 QUP1 hardware master and read the DSX through it; the bit-bang remains the fallback if the clocks or the SE do not come up |
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) per the DT: low 20 ms, high 200 ms, then 50 ms settle before the scan |
+| `sweetouchprereset=1` | before the first read, write the F01 device reset to `0x06` and `0x26` (300 ms each) and the vendor wake value `0x84` to F01 control `0x0d`; only useful on a part that streams after its first read |
 | `sweetouchpower=1` | late probe only: toggle PM660 LDO11 (`vcc_i2c`) through the SPMI arbiter after checking that the APID is APPS-owned; off by default because a non-owned arbiter access raises the SError that panicked the pre-log probe |
 | `sweetouchwait=SECONDS` | hold the boot after the scan (default 15 s, 0 = no hold, max 60); the panel is usually muted by then, so prefer the ring |
 | `sweetouchtouch=SECONDS` | poll F12 touch data for that long: top band of the panel is blue while waiting, green on the first change or IRQ edge, and every change goes to the ring (max 60) |
